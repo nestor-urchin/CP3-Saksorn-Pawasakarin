@@ -1,0 +1,5 @@
+print('---Your Score---')
+FE = float(input('Foundation English: '))
+GB = float(input('General Business: '))
+ITC = float(input('Introduction to Computer Systetem: '))
+CP = float(input('Computer Programing: '))
