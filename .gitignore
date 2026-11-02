@@ -21,3 +21,7 @@
 **/.impeccable/live/deferred-svelte-component-accepts.json
 **/.impeccable/live/*.png
 # impeccable-ignore-end
+
+# Python cache
+__pycache__/
+*.pyc
