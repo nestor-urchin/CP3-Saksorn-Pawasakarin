@@ -120,7 +120,7 @@ def net_funnel(tables: dict, cfg: dict) -> pd.DataFrame:
 - ≤ 40 บรรทัดโค้ดต่อการ์ด (ยกเว้น template Dashboard ใน AIDA-16)
 - การ์ดวิเคราะห์ส่งคืน DataFrame ตาม Evidence schema; DataFrame ว่าง = ไม่พบ
 
-### 4.3 การ์ด 24 ใบ
+### 4.3 การ์ด 25 ใบ
 | กลุ่ม | การ์ด | วิธี | ไฟล์ |
 |---|---|---|---|
 | เตรียมข้อมูล + Gate | `PREP-MAP`, `PROF-PROFILE`, `GATE-CAPABILITY` | จับคู่คอลัมน์, Dataset Profile + Gate, Run/Skip ทุกการ์ด | AIDA-19 |
@@ -139,6 +139,7 @@ def net_funnel(tables: dict, cfg: dict) -> pd.DataFrame:
 | | `CPTY-NEW-LARGE` | ยอดโอนครั้งแรกให้คู่ค้าใหม่ ≥ ตัวคูณ × median ของบัญชี | AIDA-18 |
 | Money Flow | `FLOW-TRACE` | BFS ตามเวลา ไปข้างหน้า/ย้อนกลับ ≤ `FLOW.MAX_HOPS` ทอด (อัตโนมัติ + ตามคำสั่ง) | AIDA-18 |
 | | `FLOW-LAYERING` | เส้นทาง ≥ 3 ทอดที่แต่ละทอดส่งต่อ ≥ `FLOW.MIN_PASS_RATIO` | AIDA-18 |
+| Evidence builder (ใช้ร่วม) | `CORE-EVIDENCE` | ฟังก์ชันสร้างแถว Evidence ตาม schema 4.4 ให้ทุกการ์ดวิเคราะห์ใช้ร่วมกัน (โหลดก่อนการ์ดอื่น) | AIDA-19 |
 | รวมผล + ประเมิน | `UNIFY-FINDINGS`, `ASSESS-CMP` | จัดกลุ่ม entity + risk + เดือน; ตาราง Priority | AIDA-19 |
 | Output + Log | `OUT-WORKBOOK`, `OUT-NETWORK-CSV`, `OUT-DASHBOARD`, `LOG-RUN` | | AIDA-19 |
 
@@ -158,7 +159,7 @@ def net_funnel(tables: dict, cfg: dict) -> pd.DataFrame:
 **ความเสี่ยงใน B1**
 | Risk | ชื่อ | entity | การ์ดที่ให้ Evidence |
 |---|---|---|---|
-| R1 | การเคลื่อนย้ายเงินผิดปกติ | account | STAT-MAD, BEH-VELOCITY, BEH-SPIKE, TEMP-OFFHOURS, NET-CYCLE, NET-FUNNEL, FLOW-LAYERING |
+| R1 | การเคลื่อนย้ายเงินผิดปกติ | account | STAT-MAD, BEH-VELOCITY, BEH-SPIKE, TEMP-OFFHOURS, NET-CYCLE, NET-FUNNEL, FLOW-LAYERING, MULE-DWELL, MULE-NEW-ACCT |
 | R2 | รูปแบบบัญชีรับ-ส่งต่อเงิน (Mule Account pattern) | account | MULE-PATTERN (+ สัญญาณที่ถูกรวมเข้ามา) |
 | R3 | ธุรกรรมข้ามกลุ่มบัญชี Mule (Mule network) | network | MULE-CROSS-TX, MULE-NETWORK |
 | R4 | ความผิดปกติของคู่ค้า (Counterparty) | account | CPTY-PROFILE, CPTY-NEW-LARGE |
@@ -176,7 +177,9 @@ FLOW-TRACE ไม่สร้าง Evidence — สร้าง Money Flow trai
 | Key | ค่า | ความหมาย |
 |---|---|---|
 | `MULE.DWELL_HOURS` | 24 | เงินเข้าแล้วออกภายในกี่ชั่วโมง ถือว่า dwell สั้น |
+| `MULE.DWELL_MIN_PAIRS` | 3 | จำนวนคู่เงินเข้า-เงินออกที่ dwell สั้นขั้นต่ำ จึงนับเป็นสัญญาณ (Ruling R-1) |
 | `MULE.NEW_ACCT_DAYS` | 30 | บัญชีอายุไม่เกินกี่วันเมื่อเริ่มมีรายการมาก |
+| `MULE.NEW_ACCT_MIN_TX` | 20 | จำนวนรายการขั้นต่ำภายใน `MULE.NEW_ACCT_DAYS` ที่ถือว่า "มีรายการมาก" (Ruling R-1) |
 | `MULE.MIN_SIGNALS` | 3 (จาก 5 สัญญาณ) | จำนวนสัญญาณขั้นต่ำที่ถือว่าเข้ารูปแบบ Mule |
 | `MULE.CROSS.MIN_LINKS` | 2 | collector/feeder ต้องเชื่อมกับบัญชี Mule อย่างน้อยกี่บัญชี |
 | `MULE.NETWORK.MIN_SIZE` | 3 | จำนวนบัญชีขั้นต่ำของกลุ่มเครือข่าย |

@@ -4,6 +4,7 @@ Usage: python3 validate_pack.py [pack_dir]
 pack_dir defaults to the aida-knowledge/ folder that contains this script.
 Exit code 0 when every check passes, 1 otherwise.
 """
+import json
 import re
 import sys
 from pathlib import Path
@@ -26,6 +27,15 @@ SHARED_TABLE_HEADINGS = ["### ตาราง Priority", "### ตาราง Co
 NEGATION_RE = re.compile(r"≠|ไม่(?!ว่า)|ห้าม|\bnot\b", re.IGNORECASE)
 NEGATION_WINDOW = 20
 RESERVED_IDS = {"16", "17", "18", "19"}
+
+MACHINE_CONFIG_HEADING = "## Machine Config (สำหรับ recipe)"
+HEADING_KEY_RE = re.compile(r"^#{2,4}\s+([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)+)\b", re.MULTILINE)
+RECIPE_FENCE_OPEN = re.compile(r"^```python\s*$")
+RECIPE_FENCE_CLOSE = re.compile(r"^```\s*$")
+RECIPE_H1 = re.compile(r"^#\s*RECIPE\s+(\S+)\s+v\d+\.\d+\s*\|\s*Skill:\s*.+?\s*\|\s*Risk:\s*(R[1-4]|-)\s*$")
+RECIPE_H2 = re.compile(r"^#\s*Registry:\s*.+?\s*\|\s*Input:\s*.+?\s*$")
+CFG_KEY_RE = re.compile(r"""cfg\[\s*["']([^"']+)["']\s*\]""")
+RECIPE_MAX_LINES = 40  # code lines after the two header comment lines
 
 
 def _read(path: Path) -> str:
@@ -144,6 +154,108 @@ def check_shared_tables(knowledge_dir: Path) -> list[str]:
     return errors
 
 
+def registry_key_names(path: Path) -> set[str]:
+    """Every key AIDA-14 defines: as a `KEY = value` reference or as a `### KEY` heading (R-3)."""
+    registry, _ = parse_registry(path)
+    return set(registry) | set(HEADING_KEY_RE.findall(_read(path)))
+
+
+def parse_machine_config(path: Path) -> tuple[dict, list[str]]:
+    """Return the Machine Config JSON from AIDA-14. ({}, []) when the heading is absent."""
+    lines = _read(path).splitlines()
+    stripped = [line.strip() for line in lines]
+    if MACHINE_CONFIG_HEADING not in stripped:
+        return {}, []
+    i = stripped.index(MACHINE_CONFIG_HEADING) + 1
+    while i < len(lines) and not stripped[i].startswith("```"):
+        if stripped[i].startswith("#"):
+            return {}, [f"{path.name}: no ```json block under '{MACHINE_CONFIG_HEADING}'"]
+        i += 1
+    j = i + 1
+    while j < len(lines) and not stripped[j].startswith("```"):
+        j += 1
+    if i >= len(lines) or j >= len(lines):
+        return {}, [f"{path.name}: no closed ```json block under '{MACHINE_CONFIG_HEADING}'"]
+    try:
+        config = json.loads("\n".join(lines[i + 1:j]))
+    except json.JSONDecodeError as e:
+        return {}, [f"{path.name}: Machine Config is not valid JSON ({e.msg}, line {e.lineno})"]
+    if not isinstance(config, dict):
+        return {}, [f"{path.name}: Machine Config must be a JSON object"]
+    return config, []
+
+
+def priority_from_table(text: str) -> dict | None:
+    """Parse '### ตาราง Priority' into {Confidence: {Materiality: Priority}} (note '+ Human Review' dropped)."""
+    rows = _table_after(text, "### ตาราง Priority")
+    if not rows or len(rows) < 3:
+        return None
+    cells = lambda row: [c.strip() for c in row.strip("|").split("|")]
+    header = cells(rows[0])[1:]
+    table: dict = {}
+    for row in rows[2:]:
+        c = cells(row)
+        table[c[0]] = {m: v.split("+")[0].strip() for m, v in zip(header, c[1:])}
+    return table
+
+
+def check_machine_config(registry_path: Path) -> list[str]:
+    config, errors = parse_machine_config(registry_path)
+    if errors:
+        return errors
+    registry, _ = parse_registry(registry_path)
+    if not config:
+        if "REGISTRY.VERSION" in registry:
+            return [f"{registry_path.name}: missing '{MACHINE_CONFIG_HEADING}' JSON block"]
+        return []
+    known = registry_key_names(registry_path)
+    for key in config:
+        if not key.startswith("_") and key not in known:
+            errors.append(f"{registry_path.name}: Machine Config key {key} is not in the AIDA-14 tables")
+    if "REGISTRY.VERSION" in registry and config.get("REGISTRY.VERSION") != registry["REGISTRY.VERSION"]:
+        errors.append(f"{registry_path.name}: Machine Config REGISTRY.VERSION "
+                      f"'{config.get('REGISTRY.VERSION')}' != '{registry['REGISTRY.VERSION']}'")
+    if "ASSESS.PRIORITY" in config:
+        table = priority_from_table(_read(registry_path))
+        if table is not None and config["ASSESS.PRIORITY"] != table:
+            errors.append(f"{registry_path.name}: Machine Config ASSESS.PRIORITY differs from '### ตาราง Priority'")
+    return errors
+
+
+def check_recipes(path: Path, registry_keys: set[str]) -> list[str]:
+    """Check recipe cards (```python blocks starting with '# RECIPE'): header, length, cfg keys."""
+    lines = _read(path).splitlines()
+    errors: list[str] = []
+    i = 0
+    while i < len(lines):
+        if not RECIPE_FENCE_OPEN.match(lines[i]):
+            i += 1
+            continue
+        start = i + 1
+        j = start
+        while j < len(lines) and not RECIPE_FENCE_CLOSE.match(lines[j]):
+            j += 1
+        block = lines[start:j]
+        i = j + 1
+        if not (block and block[0].startswith("# RECIPE")):
+            continue
+        where = f"{path.name}:{start + 1}"
+        if j >= len(lines):
+            errors.append(f"{where}: recipe code fence never closed")
+            continue
+        m1 = RECIPE_H1.match(block[0])
+        if not (m1 and len(block) > 1 and RECIPE_H2.match(block[1])):
+            errors.append(f"{where}: malformed recipe header")
+            continue
+        rid = m1.group(1)
+        if len(block) - 2 > RECIPE_MAX_LINES:
+            errors.append(f"{where}: recipe {rid} has {len(block) - 2} code lines, limit is {RECIPE_MAX_LINES}")
+        for key in dict.fromkeys(CFG_KEY_RE.findall("\n".join(block[2:]))):
+            if not key.startswith("_") and key not in registry_keys:
+                errors.append(f"{where}: recipe {rid} reads cfg['{key}'] which is not an AIDA-14 key")
+    return errors
+
+
 def validate(pack_dir: Path) -> list[str]:
     knowledge = pack_dir / "knowledge"
     files = sorted(knowledge.glob("*.md"))
@@ -157,12 +269,17 @@ def validate(pack_dir: Path) -> list[str]:
     else:
         errors.append(f"knowledge/{REGISTRY_NAME} (AIDA-14) is missing")
 
+    registry_keys = registry_key_names(registry_path) if registry_path.exists() else set()
+    if registry_path.exists():
+        errors += check_machine_config(registry_path)
+
     existing = {m.group(1) for f in files if (m := FILE_ID_RE.match(f.name))}
     for f in files:
         errors += check_required_sections(f)
         errors += check_registry_refs(f, registry)
         errors += check_accusatory_terms(f)
         errors += check_cross_refs(f, existing)
+        errors += check_recipes(f, registry_keys)
     errors += check_shared_tables(knowledge)
 
     instructions = pack_dir / INSTRUCTIONS_NAME

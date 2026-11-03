@@ -1,3 +1,5 @@
+import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -183,6 +185,101 @@ class ValidatePackTests(unittest.TestCase):
         write(self.d, "knowledge/AIDA-04-skill-statistical-concentration.md", skeleton())
         write(self.d, "AIDA-agent-instructions.md", "คำสั่ง")
         self.assertTrue(any("AIDA-14" in e for e in vp.validate(self.d)))
+
+    # ---- Machine Config and recipes (B1) ----
+    def _registry(self, config: dict | None = None, extra: str = "") -> Path:
+        body = ("`STAT.MAD.THRESHOLD = 3.5`\n`GATE.SAMPLE.MIN = 30`\n" + extra)
+        if config is not None:
+            body += "\n## Machine Config (สำหรับ recipe)\n```json\n" + json.dumps(config, ensure_ascii=False) + "\n```\n"
+        return write(self.d, "knowledge/AIDA-14-configuration-registry.md", body)
+
+    def test_machine_config_unknown_key(self):
+        p = self._registry({"STAT.MAD.THRESHOLD": 3.5, "NOPE.KEY": 1})
+        errors = vp.check_machine_config(p)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("NOPE.KEY", errors[0])
+
+    def test_machine_config_heading_key_ok(self):
+        p = self._registry({"ASSESS.PRIORITY": {}}, extra="\n### ASSESS.PRIORITY — ลำดับความสำคัญ\n")
+        self.assertEqual(vp.check_machine_config(p), [])
+
+    def test_machine_config_underscore_exempt(self):
+        p = self._registry({"STAT.MAD.THRESHOLD": 3.5, "_comment": "x"})
+        self.assertEqual(vp.check_machine_config(p), [])
+
+    def test_machine_config_bad_json(self):
+        p = write(self.d, "knowledge/AIDA-14-configuration-registry.md",
+                  "## Machine Config (สำหรับ recipe)\n```json\n{not json}\n```\n")
+        self.assertEqual(len(vp.check_machine_config(p)), 1)
+
+    def test_machine_config_required_when_registry_versioned(self):
+        p = self._registry(None, extra="`REGISTRY.VERSION = 1.1`\n")
+        self.assertEqual(len(vp.check_machine_config(p)), 1)
+
+    def test_priority_json_matches_table(self):
+        real = Path(__file__).resolve().parent.parent / "knowledge" / vp.REGISTRY_NAME
+        config, errors = vp.parse_machine_config(real)
+        self.assertEqual(errors, [])
+        table = vp.priority_from_table(real.read_text(encoding="utf-8"))
+        self.assertEqual(config["ASSESS.PRIORITY"], table)
+        self.assertEqual(vp.check_machine_config(real), [])
+
+    def test_priority_json_drift_detected(self):
+        real = Path(__file__).resolve().parent.parent / "knowledge" / vp.REGISTRY_NAME
+        text = real.read_text(encoding="utf-8")
+        config, _ = vp.parse_machine_config(real)
+        config["ASSESS.PRIORITY"]["ต่ำ"]["สูง"] = "สูง"
+        text = re.sub(r"```json\n.*?\n```", lambda m: "```json\n" + json.dumps(config, ensure_ascii=False) + "\n```",
+                      text, count=1, flags=re.S)
+        p = write(self.d, "knowledge/AIDA-14-configuration-registry.md", text)
+        self.assertEqual(len(vp.check_machine_config(p)), 1)
+
+    RECIPE_OK = (
+        "# AIDA-18 · t\n\n```python\n"
+        "# RECIPE NET-FUNNEL v1.0 | Skill: 5.9 Network | Risk: R1\n"
+        "# Registry: NET.FUNNEL | Input: transactions(from_acct, to_acct)\n"
+        "{body}\n```\n")
+
+    def _recipe(self, body: str = "def net_funnel(tables, cfg):\n    return cfg[\"NET.FUNNEL\"]") -> Path:
+        return write(self.d, "r.md", self.RECIPE_OK.format(body=body))
+
+    KEYS = {"NET.FUNNEL", "GATE.SAMPLE.MIN"}
+
+    def test_recipe_ok(self):
+        self.assertEqual(vp.check_recipes(self._recipe(), self.KEYS), [])
+
+    def test_recipe_none_in_file_skipped(self):
+        p = write(self.d, "r.md", skeleton("```python\nprint(cfg[\"ZZ.QQ\"])\n```"))
+        self.assertEqual(vp.check_recipes(p, self.KEYS), [])
+
+    def test_recipe_header_malformed(self):
+        p = write(self.d, "r.md", "```python\n# RECIPE NET-FUNNEL 1.0 Skill 5.9\n# Registry: - | Input: x\ndef f(): pass\n```\n")
+        errors = vp.check_recipes(p, self.KEYS)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("header", errors[0])
+
+    def test_recipe_over_40_lines(self):
+        body = "def net_funnel(tables, cfg):\n" + "\n".join(f"    x{i} = {i}" for i in range(40))
+        errors = vp.check_recipes(self._recipe(body), self.KEYS)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("NET-FUNNEL", errors[0])
+
+    def test_recipe_exactly_40_lines_ok(self):
+        body = "def net_funnel(tables, cfg):\n" + "\n".join(f"    x{i} = {i}" for i in range(39))
+        self.assertEqual(vp.check_recipes(self._recipe(body), self.KEYS), [])
+
+    def test_recipe_cfg_unknown_key(self):
+        errors = vp.check_recipes(self._recipe("def net_funnel(tables, cfg):\n    return cfg['NOPE.KEY']"), self.KEYS)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("NOPE.KEY", errors[0])
+
+    def test_recipe_cfg_run_context_ok(self):
+        body = "def net_funnel(tables, cfg):\n    return cfg[\"_RUN\"], cfg[\"GATE.SAMPLE.MIN\"]"
+        self.assertEqual(vp.check_recipes(self._recipe(body), self.KEYS), [])
+
+    def test_recipe_unclosed_fence(self):
+        p = write(self.d, "r.md", "```python\n# RECIPE A-B v1.0 | Skill: s | Risk: -\n# Registry: - | Input: x\ndef a_b(): pass\n")
+        self.assertEqual(len(vp.check_recipes(p, self.KEYS)), 1)
 
 
 if __name__ == "__main__":
