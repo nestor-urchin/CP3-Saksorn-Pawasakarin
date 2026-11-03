@@ -16,11 +16,11 @@ aida-knowledge/
 ```
 
 ## วิธีติดตั้งใน Agent Builder
-1. **ทดลองก่อน:** อัปโหลด `knowledge/AIDA-00-index-principles.md` 1 ไฟล์ เพื่อเช็กว่า tenant รับไฟล์ .md
-   - ถ้าไม่รับ: เปลี่ยนนามสกุลเป็น `.txt` (เนื้อหาเหมือนเดิม) หรือแปลงเป็น .docx
-2. อัปโหลดไฟล์ทั้งหมดใน `knowledge/` (16 ไฟล์) เป็น Knowledge
-3. คัดลอกเนื้อหา `AIDA-agent-instructions.md` ไปวางในช่อง **Instructions**
-4. ทดสอบด้วย `tests/eval-questions.md` แล้วบันทึกผลในตารางท้ายไฟล์
+Copilot Agent Builder รับไฟล์ .md เป็น Knowledge ได้ (ผู้ใช้ยืนยันแล้ว 2026-11-03)
+
+1. อัปโหลดไฟล์ทั้งหมดใน `knowledge/` (16 ไฟล์) เป็น Knowledge
+2. คัดลอกเนื้อหา `AIDA-agent-instructions.md` ไปวางในช่อง **Instructions**
+3. ทดสอบด้วย `tests/eval-questions.md` แล้วบันทึกผลในตารางท้ายไฟล์
 
 ## ช่องสงวนสำหรับระยะ B (ยังไม่สร้าง)
 | # | ไฟล์ที่วางแผน | เนื้อหา |
