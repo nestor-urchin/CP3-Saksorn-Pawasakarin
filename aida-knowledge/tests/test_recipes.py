@@ -62,6 +62,26 @@ def answer_key():
     return _CACHE["k"]
 
 
+R1_FUNCS = ["stat_mad", "beh_velocity", "beh_spike", "temp_offhours", "net_cycle", "net_funnel",
+            "mule_dwell", "mule_new_acct", "flow_layering"]
+
+
+def sample_evidence(stage):
+    """Evidence the MULE-* aggregators read, built in pipeline order on the sample data:
+    "R1" = all R1 cards, "R2" = + MULE-PATTERN, "R3" = + MULE-CROSS-TX."""
+    key = ("ev", stage)
+    if key not in _CACHE:
+        if stage == "R1":
+            ev = pd.concat([run_card(f) for f in R1_FUNCS], ignore_index=True)
+        else:
+            prev, func = {"R2": ("R1", "mule_pattern"), "R3": ("R2", "mule_cross_tx")}[stage]
+            ev = sample_evidence(prev)
+            ev = pd.concat([ev, run_card(func, {**sample_tables(), "evidence": ev})],
+                           ignore_index=True)
+        _CACHE[key] = ev
+    return _CACHE[key]
+
+
 def run_card(func_name, tables=None, cfg=None):
     t = dict(tables if tables is not None else sample_tables())
     t["_out"] = {}
@@ -69,13 +89,20 @@ def run_card(func_name, tables=None, cfg=None):
 
 
 class CardCase:
-    """Mixin: one subclass per card sets RECIPE_ID and FUNC."""
+    """Mixin: one subclass per card sets RECIPE_ID and FUNC (and RISK / ENTITY_TYPE / STAGE
+    when they differ from an R1 account card that needs no earlier evidence)."""
     RECIPE_ID = ""
     FUNC = ""
+    RISK = "R1"
+    ENTITY_TYPE = "account"
+    STAGE = None  # evidence stage the card reads (see sample_evidence)
 
     @classmethod
     def setUpClass(cls):
-        cls.ev = run_card(cls.FUNC)
+        tables = sample_tables()
+        if cls.STAGE:
+            tables = {**tables, "evidence": sample_evidence(cls.STAGE)}
+        cls.ev = run_card(cls.FUNC, tables)
         cls.found = set(cls.ev["entity_id"])
 
     def test_planted_found(self):
@@ -91,8 +118,8 @@ class CardCase:
     def test_evidence_values(self):
         ev = self.ev
         self.assertTrue((ev["recipe_id"] == self.RECIPE_ID).all())
-        self.assertTrue((ev["risk"] == "R1").all())
-        self.assertTrue((ev["entity_type"] == "account").all())
+        self.assertTrue((ev["risk"] == self.RISK).all())
+        self.assertTrue((ev["entity_type"] == self.ENTITY_TYPE).all())
         self.assertTrue(ev["period"].str.match(r"^\d{4}-\d{2}$").all())
         self.assertTrue((ev["registry_version"] == CFG["REGISTRY.VERSION"]).all())
         self.assertTrue((ev["data_ref"] == CFG["_RUN"]["data_ref"]).all())
