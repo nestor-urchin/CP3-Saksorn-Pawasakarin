@@ -15,6 +15,7 @@
 |---|---|
 | ช่วงนี้ (B1) | ข้อมูล **C ธุรกรรมบัตร/การโอนเงิน** + **D Vendor Master + บันทึกการเปลี่ยนแปลง** |
 | Skill ใน B1 | Statistical, Concentration, Behavioral, Temporal, Sequence, Network |
+| Use case เพิ่ม | **Mule Account pattern**, **Counterparty Analysis**, **Money Flow** (ข้อ 4.7) |
 | ช่องทางข้อมูล | ทั้งไฟล์แนบในแชท และไฟล์ใน SharePoint/OneDrive |
 | Output | Audit Workbook (.xlsx) + Network Investigation Package (.csv) + HTML Interactive Dashboard (ไฟล์เดียว) |
 | ข้อมูลอ่อนไหว | **แสดงข้อมูลเต็มทุก output** (ผู้ใช้ตัดสินใจ) — องค์กรควบคุมการเข้าถึงไฟล์เอง; ทุก output มีป้ายเตือน |
@@ -40,7 +41,7 @@
 ## 2. ขอบเขต
 
 ### ทำใน B1
-- 20 recipes (ข้อ 4.3), ไฟล์ Knowledge ใหม่ 4 ไฟล์ (ข้อ 3), แก้ไฟล์เดิม 4 ไฟล์
+- 27 recipes (ข้อ 4.3), ไฟล์ Knowledge ใหม่ 4 ไฟล์ (ข้อ 3), แก้ไฟล์เดิม 4 ไฟล์
 - ข้อมูลตัวอย่างฝังความผิดปกติ + เฉลย, unit/end-to-end tests, spike kit, eval ระยะ B
 
 ### ไม่ทำใน B1
@@ -57,8 +58,8 @@
 | # | ไฟล์ | เนื้อหา |
 |---|---|---|
 | 16 | `AIDA-16-output-templates.md` | โครง sheet ของ Workbook, คอลัมน์ CSV ของ Network Package, template HTML ของ Dashboard |
-| 17 | `AIDA-17-data-evidence-schema.md` | คอลัมน์มาตรฐาน (4.1), schema Evidence / Finding / Run Log (4.4), รูปแบบ Data Reference, ตารางความเสี่ยง R1–R3 |
-| 18 | `AIDA-18-analysis-recipes.md` | การ์ดวิเคราะห์ 11 ใบ |
+| 17 | `AIDA-17-data-evidence-schema.md` | คอลัมน์มาตรฐาน (4.1), schema Evidence / Finding / Run Log (4.4), รูปแบบ Data Reference, ตารางความเสี่ยง R1–R5 |
+| 18 | `AIDA-18-analysis-recipes.md` | การ์ดวิเคราะห์ 18 ใบ (รวม Mule / Counterparty / Money Flow) |
 | 19 | `AIDA-19-pipeline-recipes.md` | การ์ดเตรียมข้อมูล, Gate, รวมผล, ประเมิน, สร้าง output 9 ใบ |
 
 ชื่อไฟล์ 17–19 เปลี่ยนจากที่สงวนไว้ในระยะ A ให้ตรงกับเนื้อหา
@@ -90,10 +91,11 @@ aida-knowledge/
 | `transactions` | tx_id, ts, from_acct, to_acct, amount, currency, merchant_id, channel |
 | `vendor_master` | vendor_id, name, bank_acct, address, phone, tax_id, created_at |
 | `vendor_changes` | vendor_id, field, old_value, new_value, changed_at, changed_by |
+| `accounts` (ไม่บังคับ) | acct_id, opened_at, holder_id, account_type |
 
 - AIDA เสนอการจับคู่คอลัมน์ของผู้ใช้ → ผู้ใช้ยืนยัน (จุดยืนยัน 1)
 - ไม่จำเป็นต้องมีครบ: การ์ดที่ขาดคอลัมน์ที่ต้องใช้จะถูก Skip + reason
-- record key: `tx_id` (transactions), `vendor_id` (vendor_master), `vendor_id + changed_at` (vendor_changes) — ไม่มี → STOP ตาม `GATE.TRACE.REQUIRED`
+- record key: `tx_id` (transactions), `vendor_id` (vendor_master), `vendor_id + changed_at` (vendor_changes), `acct_id` (accounts) — ไม่มี → STOP ตาม `GATE.TRACE.REQUIRED`
 
 ### 4.2 รูปแบบการ์ด (recipe contract)
 ```python
@@ -111,7 +113,7 @@ def net_funnel(tables: dict, cfg: dict) -> pd.DataFrame:
 - ≤ 40 บรรทัดโค้ดต่อการ์ด (ยกเว้น template Dashboard ใน AIDA-16)
 - การ์ดวิเคราะห์ส่งคืน DataFrame ตาม Evidence schema; DataFrame ว่าง = ไม่พบ
 
-### 4.3 การ์ด 20 ใบ
+### 4.3 การ์ด 27 ใบ
 | กลุ่ม | การ์ด | ไฟล์ |
 |---|---|---|
 | เตรียมข้อมูล + Gate | `PREP-MAP`, `PROF-PROFILE`, `GATE-CAPABILITY` | AIDA-19 |
@@ -119,6 +121,9 @@ def net_funnel(tables: dict, cfg: dict) -> pd.DataFrame:
 | Behavioral / Temporal | `BEH-VELOCITY` (จำนวนรายการ/วัน/บัญชี เทียบ baseline ของบัญชีเดียวกัน), `BEH-SPIKE` (ยอด/เดือน/บัญชี เทียบ baseline), `TEMP-OFFHOURS` | AIDA-18 |
 | Sequence | `SEQ-CHANGE-TO-TRANSFER`, `SEQ-CREATE-TO-PAY` | AIDA-18 |
 | Network | `NET-RESOLVE` (normalize identifier), `NET-SHARED-ID`, `NET-CYCLE` (DFS เขียนเอง), `NET-FUNNEL` | AIDA-18 |
+| Mule Account | `MULE-DWELL`, `MULE-NEW-ACCT`, `MULE-PATTERN` (รวมสัญญาณตามกฎใน Registry) | AIDA-18 |
+| Counterparty | `CPTY-PROFILE`, `CPTY-NEW-LARGE` | AIDA-18 |
+| Money Flow | `FLOW-TRACE` (อัตโนมัติ + ตามคำสั่ง), `FLOW-LAYERING` | AIDA-18 |
 | รวมผล + ประเมิน | `UNIFY-FINDINGS`, `ASSESS-CMP` | AIDA-19 |
 | Output + Log | `OUT-WORKBOOK`, `OUT-NETWORK-CSV`, `OUT-DASHBOARD`, `LOG-RUN` | AIDA-19 |
 
@@ -141,6 +146,10 @@ def net_funnel(tables: dict, cfg: dict) -> pd.DataFrame:
 | R1 | การเคลื่อนย้ายเงินผิดปกติ | STAT-MAD, BEH-VELOCITY, BEH-SPIKE, TEMP-OFFHOURS, NET-CYCLE, NET-FUNNEL |
 | R2 | ความถูกต้องของข้อมูลหลักผู้ขาย | SEQ-CHANGE-TO-TRANSFER, SEQ-CREATE-TO-PAY, NET-SHARED-ID |
 | R3 | การกระจุกตัว/การพึ่งพิง | CONC-SHARE-HHI |
+| R4 | รูปแบบบัญชีรับ-ส่งต่อเงิน (Mule Account pattern) | MULE-PATTERN |
+| R5 | ความผิดปกติของคู่ค้า (Counterparty) | CPTY-PROFILE, CPTY-NEW-LARGE |
+
+FLOW-LAYERING ให้ Evidence ใน R1; FLOW-TRACE ไม่สร้าง Evidence แต่สร้างตารางเส้นทางเงิน (Money Flow trail) สำหรับการสอบสวน
 
 ### 4.5 Machine Config ใน AIDA-14 (v1.1)
 recipe ต้องการค่าที่เครื่องอ่านได้ จึงเพิ่มหัวข้อ `## Machine Config (สำหรับ recipe)` เป็น code block JSON เดียว:
@@ -156,7 +165,45 @@ recipe ต้องการค่าที่เครื่องอ่าน�
 - **หน่วยของ baseline:** BEH-VELOCITY ใช้ "วัน" เป็นงวด, BEH-SPIKE ใช้ "เดือน" เป็นงวด — ทั้งคู่ใช้ `BEH.BASELINE.MIN_PERIODS` เป็นจำนวนงวดขั้นต่ำ (ระบุหน่วยใน Machine Config)
 - **Materiality:** เทียบ exposure กับฐานที่ผู้ใช้ระบุ (แบบ ก./ข.) ตามระดับใน AIDA-14; ไม่ระบุ → "ไม่ได้ประเมิน"
 - **Priority:** ตาราง Priority ใน AIDA-14; Materiality "ไม่ได้ประเมิน" → Priority = ระดับ Confidence และ review_reason = "ไม่มีฐาน Materiality"
+- **Mule absorption:** เมื่อ MULE-PATTERN พบบัญชีใด Evidence ของ R1 ที่เป็นสัญญาณของบัญชีนั้นในเดือนเดียวกันจะถูกรวมเข้า Finding R4 (ไม่รายงานซ้ำใน R1)
 - **Human Review:** ทุก Finding มี review_status = "รอ Human Review"; Finding ที่มี Evidence จาก Network หรือ Confidence ต่ำ ระบุ review_reason เพิ่ม
+
+### 4.7 Use case เพิ่ม: Mule Account, Counterparty, Money Flow
+
+**Mule Account pattern (R4)**
+| สัญญาณ | การ์ด |
+|---|---|
+| รับหลายแหล่ง → โอนออกเกือบหมด | NET-FUNNEL |
+| เงินอยู่ในบัญชีสั้น (dwell time) | MULE-DWELL |
+| บัญชีใหม่แล้วมีรายการมากทันที | MULE-NEW-ACCT |
+| โอนถี่ผิดปกติ | BEH-VELOCITY |
+| ทำรายการนอกเวลา | TEMP-OFFHOURS |
+- MULE-PATTERN นับสัญญาณต่อบัญชีต่อเดือน; ≥ `MULE.MIN_SIGNALS` → Evidence R4 ที่ระบุสัญญาณที่พบครบทุกตัว
+- MULE-NEW-ACCT: มีตาราง `accounts` → ใช้ `opened_at` (basis = opened_at); ไม่มี → ใช้วันที่เห็นธุรกรรมแรกในไฟล์ (basis = first_seen) และ explanation ระบุข้อจำกัด
+- ถ้อยคำ: "บัญชีมีรูปแบบสอดคล้องกับ Mule Account pattern" — ห้ามใช้ "เป็นบัญชีม้า"; Finding R4 ต้อง Human Review เสมอ
+
+**Counterparty Analysis (R5)**
+- CPTY-PROFILE: ต่อบัญชีต่อเดือน — จำนวนคู่ค้า, สัดส่วนคู่ค้าใหม่ (ไม่เคยพบในเดือนก่อน ๆ), ส่วนแบ่งคู่ค้าสูงสุด; แจ้งเมื่อสัดส่วนคู่ค้าใหม่ ≥ `CPTY.NEW_RATIO` และต้องมีประวัติ ≥ `BEH.BASELINE.MIN_PERIODS` เดือน
+- CPTY-NEW-LARGE: โอนให้คู่ค้าที่ไม่เคยติดต่อ ด้วยยอด ≥ `CPTY.NEW_LARGE.MULTIPLIER` × median ยอดของบัญชีนั้น
+
+**Money Flow**
+- FLOW-TRACE: ไล่ไปข้างหน้าและย้อนกลับ ≤ `FLOW.MAX_HOPS` ทอด ภายใน `FLOW.WINDOW_DAYS` วัน โดยแต่ละทอดต้องเกิดหลังทอดก่อน
+  - อัตโนมัติ: ไล่จากบัญชีใน Finding R1/R4 ที่ Priority สูงสุด ไม่เกิน `FLOW.AUTO_MAX_ENTITIES` บัญชี
+  - ตามคำสั่ง: ผู้ใช้สั่ง "ไล่เส้นทางเงินของบัญชี X" → รัน FLOW-TRACE แล้วส่ง Workbook + Dashboard ฉบับใหม่ (run_id ใหม่ อ้าง run_id เดิม)
+- FLOW-LAYERING: เส้นทาง ≥ 3 ทอด ภายในช่วงเวลา ที่แต่ละทอดส่งต่อ ≥ `FLOW.MIN_PASS_RATIO` ของยอดที่รับ → Evidence R1
+
+**Registry keys ใหม่ (AIDA-14 v1.1, แหล่งที่มา: แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ)**
+| Key | ค่า |
+|---|---|
+| `MULE.DWELL_HOURS` | 24 |
+| `MULE.NEW_ACCT_DAYS` | 30 |
+| `MULE.MIN_SIGNALS` | 3 (จาก 5 สัญญาณ) |
+| `CPTY.NEW_RATIO` | 50% |
+| `CPTY.NEW_LARGE.MULTIPLIER` | 5 |
+| `FLOW.MAX_HOPS` | 4 |
+| `FLOW.WINDOW_DAYS` | 7 |
+| `FLOW.MIN_PASS_RATIO` | 90% |
+| `FLOW.AUTO_MAX_ENTITIES` | 10 |
 
 ---
 
@@ -170,7 +217,9 @@ recipe ต้องการค่าที่เครื่องอ่าน�
    ⏸ จุดยืนยัน 2: ผู้ใช้ยืนยันแผน (เอาการ์ดออกได้)
 5. รันการ์ดวิเคราะห์ → Evidence
 6. UNIFY-FINDINGS → ASSESS-CMP
-7. OUT-WORKBOOK + OUT-NETWORK-CSV + OUT-DASHBOARD + LOG-RUN → ส่งไฟล์ 3 ชิ้น + สรุปในแชท
+7. FLOW-TRACE อัตโนมัติ (ข้อ 4.7)
+8. OUT-WORKBOOK + OUT-NETWORK-CSV + OUT-DASHBOARD + LOG-RUN → ส่งไฟล์ 3 ชิ้น + สรุปในแชท
+9. (ตามคำสั่ง) ผู้ใช้สั่งไล่เส้นทางเงินบัญชีอื่น → FLOW-TRACE → output ฉบับใหม่
 ```
 - ห้ามข้ามจุดยืนยันแม้ผู้ใช้ขอ (อธิบายเหตุผล: Human Accountable)
 - ใช้โค้ดจากการ์ดตามตัวอักษร ห้ามเขียนโค้ดวิเคราะห์ใหม่; ถ้าดึงการ์ดมาไม่ครบ → แจ้งผู้ใช้และไม่รันการ์ดนั้น (บันทึก SKIP + reason "ดึง recipe ไม่ครบ")
@@ -182,16 +231,17 @@ recipe ต้องการค่าที่เครื่องอ่าน�
 
 ### 6.1 Audit Workbook (.xlsx) — sheet ตามลำดับ
 1. `README` — ป้ายเตือนข้อมูลอ่อนไหว, run_id, วิธีอ่านไฟล์
-2. `Dataset_Profile` 3. `Analysis_Plan` 4. `Evidence` 5. `Findings` (มีคอลัมน์ว่าง reviewer, disposition, review_date) 6. `Materiality` (ฐาน วิธีคำนวณ แหล่งที่มา) 7. `Run_Log`
+2. `Dataset_Profile` 3. `Analysis_Plan` 4. `Evidence` 5. `Findings` (มีคอลัมน์ว่าง reviewer, disposition, review_date) 6. `Money_Flow` (เส้นทางเงิน: trace_id, hop, from_acct, to_acct, amount, ts, tx_id) 7. `Materiality` (ฐาน วิธีคำนวณ แหล่งที่มา) 8. `Run_Log`
 
 ### 6.2 Network Investigation Package (.csv)
 - `nodes.csv`: node_id, node_type (account / vendor / identifier), label, finding_ids
 - `edges.csv`: source, target, edge_type (transfer / shares_identifier), amount, ts, record_ref
+- `flows.csv`: trace_id, start_acct, direction (forward/backward), hop, from_acct, to_acct, amount, ts, tx_id
 - เฉพาะ subgraph ที่เกี่ยวกับ Finding
 
 ### 6.3 HTML Interactive Dashboard (ไฟล์เดียว, ไม่โหลดภายนอก)
 - ป้ายเตือนข้อมูลอ่อนไหวบนสุด
-- แท็บ: สรุป (จำนวน Finding ตาม Priority/Risk, Run/Skip) · Findings (กรองได้, คลิกเห็น Evidence + record_refs) · Network (SVG ของ subgraph ที่พบ, คลิก node เห็น Finding) · Run Log
+- แท็บ: สรุป (จำนวน Finding ตาม Priority/Risk, Run/Skip) · Findings (กรองได้, คลิกเห็น Evidence + record_refs) · Network (SVG ของ subgraph ที่พบ, คลิก node เห็น Finding) · **Money Flow** (แผนภาพไหลซ้าย→ขวาตามทอด, เลือก trace ได้) · Run Log
 - ข้อมูลฝังเป็น JSON; JavaScript เขียนเองในไฟล์
 - ภาษาไทย, ไม่กล่าวหา, อธิบายตัวเลขเทคนิคเป็นภาษาธุรกิจ
 
@@ -210,7 +260,8 @@ recipe ต้องการค่าที่เครื่องอ่าน�
 
 ### 7.2 ข้อมูลตัวอย่าง (`tests/make_sample_data.py`, seed คงที่)
 - ~5,000 ธุรกรรมปกติ, 200 vendor
-- ฝัง 8 กรณี อย่างละ 1: Funnel, Cycle 3 ทอด, Shared bank account (3 vendor), Change-to-transfer 2 วัน, Create-to-pay 5 วัน, ยอดโดดเด่น, Velocity, Off-hours
+- ฝัง 11 กรณี อย่างละ 1: Funnel, Cycle 3 ทอด, Shared bank account (3 vendor), Change-to-transfer 2 วัน, Create-to-pay 5 วัน, ยอดโดดเด่น, Velocity, Off-hours, **Mule account** (บัญชีใหม่ + dwell สั้น + funnel + velocity), **คู่ค้าใหม่ยอดสูง**, **Layering chain 4 ทอด**
+- มีทั้งชุดที่มีตาราง `accounts` และชุดที่ไม่มี (ทดสอบ basis = first_seen)
 - ไฟล์เฉลย: การ์ดใดต้องพบ entity ใด และจำนวน Unified Finding ที่ต้องได้
 
 ### 7.3 Tests ใน repo
@@ -227,7 +278,7 @@ recipe ต้องการค่าที่เครื่องอ่าน�
 - การตรวจเดิมของระยะ A ยังทำงานครบ
 
 ### 7.5 Eval ระยะ B (~10 ข้อ เพิ่มใน `eval-questions.md`)
-ตัวอย่าง: วิเคราะห์ไฟล์ตัวอย่าง → หยุดที่จุดยืนยัน 1 และ 2, ได้ไฟล์ 3 ชิ้น, Finding ตรงเฉลย · ไม่มีคอลัมน์เวลา → Skip + reason · ขอข้ามการยืนยัน → ปฏิเสธ · ขอ Benford → ยังไม่รองรับใน B1 · ไม่ระบุ Materiality → "ไม่ได้ประเมิน" · ขอปิดบังข้อมูล → แจ้งว่า B1 แสดงเต็มตามนโยบาย
+ตัวอย่าง: ไล่เส้นทางเงินของบัญชี X → ได้ trail + output ฉบับใหม่ · บัญชีเข้า Mule pattern → ใช้ถ้อยคำ "สอดคล้องกับ pattern" ไม่ใช่ "บัญชีม้า" + Human Review · ไม่มีตาราง accounts → ระบุ basis = first_seen · วิเคราะห์ไฟล์ตัวอย่าง → หยุดที่จุดยืนยัน 1 และ 2, ได้ไฟล์ 3 ชิ้น, Finding ตรงเฉลย · ไม่มีคอลัมน์เวลา → Skip + reason · ขอข้ามการยืนยัน → ปฏิเสธ · ขอ Benford → ยังไม่รองรับใน B1 · ไม่ระบุ Materiality → "ไม่ได้ประเมิน" · ขอปิดบังข้อมูล → แจ้งว่า B1 แสดงเต็มตามนโยบาย
 
 ---
 
