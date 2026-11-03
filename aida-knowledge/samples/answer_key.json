@@ -1,0 +1,334 @@
+{
+  "recipes": {
+    "STAT-MAD": [
+      "O01"
+    ],
+    "BEH-VELOCITY": [
+      "M01",
+      "N01",
+      "N02",
+      "N03",
+      "N04",
+      "V01"
+    ],
+    "BEH-SPIKE": [
+      "V01"
+    ],
+    "TEMP-OFFHOURS": [
+      "H01"
+    ],
+    "NET-CYCLE": [
+      "C01",
+      "C02",
+      "C03"
+    ],
+    "NET-FUNNEL": [
+      "F01",
+      "M01"
+    ],
+    "MULE-DWELL": [
+      "M01",
+      "N01",
+      "N02",
+      "N03",
+      "N04"
+    ],
+    "MULE-NEW-ACCT": [
+      "M01",
+      "N01",
+      "N02",
+      "N03",
+      "N04"
+    ],
+    "MULE-PATTERN": [
+      "M01",
+      "N01",
+      "N02",
+      "N03",
+      "N04"
+    ],
+    "MULE-CROSS-TX": [
+      "NC1",
+      "NF1"
+    ],
+    "MULE-NETWORK": [
+      "NET-1"
+    ],
+    "CPTY-PROFILE": [
+      "P01"
+    ],
+    "CPTY-NEW-LARGE": [
+      "P01"
+    ],
+    "FLOW-LAYERING": [
+      "L01",
+      "L02",
+      "L03",
+      "L04",
+      "L05"
+    ]
+  },
+  "mule_accounts": [
+    "M01",
+    "N01",
+    "N02",
+    "N03",
+    "N04"
+  ],
+  "networks": [
+    {
+      "network_id": "NET-1",
+      "members": [
+        "N01",
+        "N02",
+        "N03",
+        "N04",
+        "NF1",
+        "NC1"
+      ],
+      "roles": {
+        "N01": "mule",
+        "N02": "mule",
+        "N03": "mule",
+        "N04": "mule",
+        "NF1": "feeder",
+        "NC1": "collector"
+      }
+    }
+  ],
+  "network_count": 1,
+  "findings": [
+    {
+      "entity_type": "account",
+      "entity_id": "F01",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "C01",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "C02",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "C03",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "O01",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "V01",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "H01",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "L01",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "L02",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "L03",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "L04",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "L05",
+      "risk": "R1",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "M01",
+      "risk": "R2",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "N01",
+      "risk": "R2",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "N02",
+      "risk": "R2",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "N03",
+      "risk": "R2",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "N04",
+      "risk": "R2",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "network",
+      "entity_id": "NET-1",
+      "risk": "R3",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "P01",
+      "risk": "R4",
+      "period": "2026-08"
+    }
+  ],
+  "unified_findings": 19,
+  "no_accounts_basis": "first_seen",
+  "cases": {
+    "funnel": {
+      "accounts": [
+        "F01"
+      ],
+      "intended_recipes": [
+        "NET-FUNNEL"
+      ],
+      "notes": "FS01-FS12 send 12 transfers to F01 on 2026-08-10/11; F01 forwards 90% to FO01 on 2026-08-12, more than 24 h after the last inflow (no dwell). 16 transfers, 3 active days, no history: no velocity, new-account or counterparty-profile signal. Outflows are 2.7x the account median."
+    },
+    "cycle": {
+      "accounts": [
+        "C01",
+        "C02",
+        "C03"
+      ],
+      "intended_recipes": [
+        "NET-CYCLE"
+      ],
+      "notes": "C01->C02 (08-17), C02->C03 (08-19), C03->C01 (08-21), time-ordered within 30 days. Each hop passes 70%, below FLOW.MIN_PASS_RATIO, so it is not layering."
+    },
+    "outlier": {
+      "accounts": [
+        "O01"
+      ],
+      "intended_recipes": [
+        "STAT-MAD"
+      ],
+      "notes": "TX-OUT-1 (480,000 to its regular counterparty OR1) is the only amount with |Modified Z| > 3.5, globally and per channel. O01 starts in April (5 months < spike_months), so BEH-SPIKE has no baseline; OR1 is not a new counterparty."
+    },
+    "velocity": {
+      "accounts": [
+        "V01"
+      ],
+      "intended_recipes": [
+        "BEH-VELOCITY",
+        "BEH-SPIKE"
+      ],
+      "notes": "Regular since January (1-2 transfers per active day to VX01-VX12, stable monthly totals). 2026-08-12: 12 transfers in one day (velocity) which also lifts the August total far above the monthly baseline (spike). All counterparties already known."
+    },
+    "offhours": {
+      "accounts": [
+        "H01"
+      ],
+      "intended_recipes": [
+        "TEMP-OFFHOURS"
+      ],
+      "notes": "5 transfers to HX1 on Saturdays or outside 08:00-18:00. Only 5 transfers, no history."
+    },
+    "single_mule": {
+      "accounts": [
+        "M01"
+      ],
+      "intended_recipes": [
+        "NET-FUNNEL",
+        "MULE-DWELL",
+        "MULE-NEW-ACCT",
+        "BEH-VELOCITY",
+        "MULE-PATTERN"
+      ],
+      "notes": "Opened 2026-08-01. 6 calm days (counts sent 1,2,1,2,1,2) then 12 in/12 out on 2026-08-11. 18 distinct sources MS01-MS18, out/in 0.92, inflows forwarded within 4 h, 21 transfers sent (39 in total) within 30 days of opening: 4 of 5 mule signals. No link to other mules."
+    },
+    "mule_network": {
+      "accounts": [
+        "N01",
+        "N02",
+        "N03",
+        "N04",
+        "NF1",
+        "NC1"
+      ],
+      "intended_recipes": [
+        "MULE-DWELL",
+        "MULE-NEW-ACCT",
+        "BEH-VELOCITY",
+        "MULE-PATTERN",
+        "MULE-CROSS-TX",
+        "MULE-NETWORK"
+      ],
+      "notes": "N01-N04 opened 2026-07-15..22, same shape as M01 but only 3 sources each (NF1, NBk, NSk): dwell + new account + velocity = 3 signals. NF1 pays all four on 2026-08-03 (feeder), all four pay NC1 on 2026-08-05 (collector). Sinks NOk/NZk receive from one mule only."
+    },
+    "new_large_counterparty": {
+      "accounts": [
+        "P01"
+      ],
+      "intended_recipes": [
+        "CPTY-NEW-LARGE",
+        "CPTY-PROFILE"
+      ],
+      "notes": "10 transfers a month to PR1-PR3 since January (median about 700). In August its only transfer is TX-NEWCP-1 to PX1 at 10x the median: new counterparty with large amount, and 100% new counterparties in a month with 7 months of history. August total equals the monthly baseline, so no BEH-SPIKE."
+    },
+    "layering": {
+      "accounts": [
+        "L01",
+        "L02",
+        "L03",
+        "L04",
+        "L05"
+      ],
+      "intended_recipes": [
+        "FLOW-LAYERING"
+      ],
+      "notes": "7,600 -> 7,100 -> 6,650 -> 6,200 on 2026-08-24/25: 4 hops, each forwarding >= 93% within a day."
+    }
+  },
+  "conventions": {
+    "attribution": "STAT-MAD, BEH-VELOCITY, BEH-SPIKE, TEMP-OFFHOURS, CPTY-PROFILE and CPTY-NEW-LARGE flag the sending account (from_acct).",
+    "baselines": "BEH-VELOCITY needs >= velocity_days prior active days; BEH-SPIKE and CPTY-PROFILE need >= spike_months prior active months.",
+    "NET-CYCLE": "every account on the cycle",
+    "FLOW-LAYERING": "every account on a qualifying path",
+    "NET-FUNNEL / MULE-DWELL": "the account that receives and forwards",
+    "MULE-NEW-ACCT": "same result whether transfers are counted on both sides or sent only, and for basis opened_at or first_seen",
+    "MULE-CROSS-TX": "the collector and feeder accounts (no mule-to-mule transfer is planted)",
+    "MULE-NETWORK": "network ids NET-<n>",
+    "period": "every planted finding is in 2026-08"
+  }
+}
