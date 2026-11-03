@@ -3,15 +3,15 @@
 > ไฟล์นี้ตอบคำถาม: การ์ด CORE-EVIDENCE สร้างแถว Evidence อย่างไร, กฎกลางที่ทุกการ์ดวิเคราะห์ใช้ร่วมกันคืออะไร (ตัดรายการโอนเข้าบัญชีตัวเอง / ยอด ≤ 0), ต้องรันการ์ดในไฟล์นี้ก่อนการ์ดใน AIDA-18 หรือไม่
 
 ## สรุปสั้น
-ไฟล์นี้เก็บการ์ด (recipe) ระดับ pipeline ที่ Code Interpreter รันตามลำดับในข้อ 7 ของ Instructions — **ต้องรันการ์ดในไฟล์นี้ก่อนการ์ดวิเคราะห์ใน AIDA-18** เพราะการ์ดวิเคราะห์ทุกใบเรียกใช้ฟังก์ชันจาก `CORE-EVIDENCE`
-ตอนนี้มีเฉพาะ `CORE-EVIDENCE`; การ์ด PREP-MAP, PROF-PROFILE, GATE-CAPABILITY, UNIFY-FINDINGS, ASSESS-CMP, OUT-WORKBOOK, OUT-NETWORK-CSV, OUT-DASHBOARD และ LOG-RUN จะเพิ่มต่อท้ายไฟล์นี้
+ไฟล์นี้เก็บการ์ด (recipe) ระดับ pipeline ที่ Code Interpreter รันตามลำดับในข้อ 7 ของ Instructions — **ต้องรันการ์ดในไฟล์นี้ก่อนการ์ดวิเคราะห์ใน AIDA-18** เพราะการ์ดวิเคราะห์ทุกใบเรียกใช้ฟังก์ชันจาก `CORE-EVIDENCE` และ `CORE-BASELINE`
+ตอนนี้มีเฉพาะ `CORE-EVIDENCE` และ `CORE-BASELINE`; การ์ด PREP-MAP, PROF-PROFILE, GATE-CAPABILITY, UNIFY-FINDINGS, ASSESS-CMP, OUT-WORKBOOK, OUT-NETWORK-CSV, OUT-DASHBOARD และ LOG-RUN จะเพิ่มต่อท้ายไฟล์นี้
 คอลัมน์ Evidence เป็นไปตาม Schema ใน AIDA-17 และทุกแถวบันทึก Registry version จาก AIDA-14
 
 ## การ์ด Evidence builder
 
 ### CORE-EVIDENCE
-ฟังก์ชันกลางที่การ์ดวิเคราะห์ทุกใบใช้: `clean_tx` (ตัดรายการโอนเข้าบัญชีตัวเองและยอด ≤ 0, แปลง ts, เพิ่ม period YYYY-MM), `beyond_baseline` (เทียบกับ baseline ของบัญชีเดียวกัน), `one_per_month` (1 แถวต่อบัญชีต่อเดือน) และ `evidence_rows` (สร้างแถวตาม Evidence schema)
-baseline ที่คงที่ (std = 0) ใช้ค่า √mean เป็นค่าเบี่ยงเบนขั้นต่ำ เพื่อไม่ให้การเพิ่มขึ้นเล็กน้อยกลายเป็นสัญญาณ
+ฟังก์ชันกลางที่การ์ดวิเคราะห์ทุกใบใช้: `clean_tx` (ตัดรายการโอนเข้าบัญชีตัวเอง, ยอด ≤ 0 และรายการที่ไม่มีวันเวลา, แปลง ts, เพิ่ม period YYYY-MM), `one_per_month` (1 แถวต่อบัญชีต่อเดือน) และ `evidence_rows` (สร้างแถวตาม Evidence schema)
+การ์ดนี้ไม่มีเกณฑ์ใด ๆ — อ่านเพียง `REGISTRY.VERSION` และ `cfg["_RUN"]` (run_id, data_ref)
 
 ```python
 # RECIPE CORE-EVIDENCE v1.0 | Skill: - | Risk: -
@@ -24,16 +24,8 @@ def clean_tx(tx: pd.DataFrame) -> pd.DataFrame:
     t["ts"] = pd.to_datetime(t["ts"])
     t["amount"] = pd.to_numeric(t["amount"], errors="coerce")
     t["tx_id"] = t["tx_id"].astype(str)
-    t = t[(t["from_acct"] != t["to_acct"]) & (t["amount"] > 0)]
+    t = t[(t["from_acct"] != t["to_acct"]) & (t["amount"] > 0) & t["ts"].notna()]
     return t.assign(period=t["ts"].dt.strftime("%Y-%m")).sort_values("ts", kind="mergesort")
-def beyond_baseline(d: pd.DataFrame, acct: str, col: str, need: int, k: float):
-    # d sorted by time within acct; baseline = this account's earlier rows only
-    by = d.groupby(acct)[col].shift().groupby(d[acct])
-    n = by.transform(lambda s: s.expanding().count())
-    mu = by.transform(lambda s: s.expanding().mean())
-    sd = by.transform(lambda s: s.expanding().std()).fillna(0)
-    thr = mu + k * np.maximum(sd, np.sqrt(mu))
-    return (n >= need) & (d[col] > thr), thr
 def one_per_month(f: pd.DataFrame) -> pd.DataFrame:
     if f.empty:
         return f
@@ -57,8 +49,34 @@ def core_evidence(tables: dict = None, cfg: dict = None) -> pd.DataFrame:
     return pd.DataFrame(columns=EVIDENCE_COLUMNS)  # empty Evidence frame
 ```
 
+### CORE-BASELINE
+ฟังก์ชันกลางสำหรับการ์ดที่เทียบกับ baseline ของบัญชีเดียวกัน (BEH-VELOCITY, BEH-SPIKE): `beyond_baseline` ใช้เฉพาะงวดก่อนหน้าของบัญชีนั้น และเป็นสัญญาณเมื่อค่า > ค่าเฉลี่ย + k × SD
+`sd_floor = "poisson"` ใช้ max(SD, √ค่าเฉลี่ย) ตาม `BEH.VELOCITY.SD_FLOOR = sqrt(mean) (Poisson)` (เฉพาะข้อมูลนับ); `baseline_formula` เขียนสูตรที่ใช้จริงพร้อมตัวเลขลงใน explanation
+
+```python
+# RECIPE CORE-BASELINE v1.0 | Skill: - | Risk: -
+# Registry: - | Input: d(acct, col) sorted by time within acct
+def beyond_baseline(d: pd.DataFrame, acct: str, col: str, need: int, k: float,
+                    sd_floor: str = "none") -> pd.DataFrame:
+    # baseline = this account's earlier rows only; returns flagged rows with mu, sd, thr
+    by = d.groupby(acct)[col].shift().groupby(d[acct])
+    n = by.transform(lambda s: s.expanding().count())
+    mu = by.transform(lambda s: s.expanding().mean())
+    sd = by.transform(lambda s: s.expanding().std()).fillna(0)
+    sd_used = np.maximum(sd, np.sqrt(mu)) if sd_floor == "poisson" else sd
+    out = d.assign(mu=mu, sd=sd, thr=mu + k * sd_used)
+    return out[(n >= need) & (out[col] > out["thr"])]
+def baseline_formula(mu: float, sd: float, k: float, thr: float, sd_floor: str = "none") -> str:
+    if sd_floor == "poisson":
+        return (f"ค่าเฉลี่ย {mu:,.2f} + {k} × max(SD {sd:,.2f}, √ค่าเฉลี่ย {np.sqrt(mu):,.2f})"
+                f" = {thr:,.2f}")
+    return f"ค่าเฉลี่ย {mu:,.2f} + {k} × SD {sd:,.2f} = {thr:,.2f}"
+def core_baseline(tables: dict = None, cfg: dict = None) -> None:
+    return None  # helper card: defines beyond_baseline and baseline_formula
+```
+
 ## ข้อห้าม (Guardrails)
-- รันการ์ดตามที่เขียนไว้ทุกตัวอักษร (verbatim) ห้ามแก้โค้ด ห้ามเขียนการ์ดขึ้นเอง และต้องรัน CORE-EVIDENCE ก่อนการ์ดใน AIDA-18
+- รันการ์ดตามที่เขียนไว้ทุกตัวอักษร (verbatim) ห้ามแก้โค้ด ห้ามเขียนการ์ดขึ้นเอง และต้องรัน CORE-EVIDENCE และ CORE-BASELINE ก่อนการ์ดใน AIDA-18
 - ถ้าดึงการ์ดมาไม่ครบ (โค้ดถูกตัด, ไม่มีบรรทัดปิด) ห้ามรันส่วนที่ได้มา — Skip การ์ดนั้นพร้อม reason "ดึง recipe ไม่ครบ"
 - ผลของการ์ดเป็นสัญญาณให้ตรวจสอบเพิ่มเติม ไม่ใช่ข้อสรุปว่าบัญชีหรือบุคคลกระทำผิด — ใช้ถ้อยคำตาม AIDA-11
 - ห้ามแต่งค่า `tx_id` หรือ `data_ref` ที่ไม่มีในข้อมูลจริง และห้ามเปลี่ยนคอลัมน์ Evidence นอก Schema ใน AIDA-17

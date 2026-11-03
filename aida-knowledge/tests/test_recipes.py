@@ -6,7 +6,9 @@ least the planted accounts in answer_key["recipes"][ID] and no normal ("A...")
 account.
 """
 import json
+import random
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -60,10 +62,10 @@ def answer_key():
     return _CACHE["k"]
 
 
-def run_card(func_name, tables=None):
+def run_card(func_name, tables=None, cfg=None):
     t = dict(tables if tables is not None else sample_tables())
     t["_out"] = {}
-    return recipes()[func_name](t, CFG)
+    return recipes()[func_name](t, cfg if cfg is not None else CFG)
 
 
 class CardCase:
@@ -165,23 +167,130 @@ class TestEdgeCases(unittest.TestCase):
         self.assertEqual(set(ev["entity_id"]), {"Q1", "Q2"})
         self.assertEqual(sorted(ev["record_refs"].iloc[0]), ["X1", "X2"])
 
-    def test_cycle_out_of_time_order_not_found(self):
+    def test_cycle_time_ordered_from_later_listed_edge_found(self):
         rows = [("X1", "2026-08-05 10:00", "Q1", "Q2", 500.0, "mobile"),
                 ("X2", "2026-08-02 10:00", "Q2", "Q1", 400.0, "mobile")]
-        # X2 -> X1 is time ordered (Q2->Q1->Q2), so a cycle exists starting from X2
+        # X2 then X1 is time ordered (Q2->Q1->Q2), so a cycle exists starting from X2
         self.assertEqual(set(run_card("net_cycle", {"transactions": _tx(rows)})["entity_id"]),
                          {"Q1", "Q2"})
-        rows[0] = ("X1", "2026-09-20 10:00", "Q1", "Q2", 500.0, "mobile")  # beyond NET.CYCLE days
+
+    def test_cycle_beyond_window_not_found(self):
+        rows = [("X1", "2026-09-20 10:00", "Q1", "Q2", 500.0, "mobile"),  # beyond NET.CYCLE days
+                ("X2", "2026-08-02 10:00", "Q2", "Q1", 400.0, "mobile")]
         self.assertTrue(run_card("net_cycle", {"transactions": _tx(rows)}).empty)
 
-    def test_constant_baseline_small_increase_not_flagged(self):
-        # 7 days with 2 transfers each, then 3: a constant baseline must not flag +1
+    def test_cycle_out_of_time_order_not_found(self):
+        rows = [("X1", "2026-08-05 10:00", "Q1", "Q2", 500.0, "mobile"),
+                ("X2", "2026-08-02 10:00", "Q2", "Q3", 400.0, "mobile"),
+                ("X3", "2026-08-06 10:00", "Q3", "Q1", 300.0, "mobile")]
+        self.assertTrue(run_card("net_cycle", {"transactions": _tx(rows)}).empty)
+
+    def test_undated_transfer_does_not_close_cycle(self):
+        rows = [("X1", "2026-08-01 10:00", "Q1", "Q2", 500.0, "mobile"),
+                ("X2", None, "Q2", "Q1", 400.0, "mobile")]
+        self.assertTrue(run_card("net_cycle", {"transactions": _tx(rows)}).empty)
+
+    def test_cycle_refs_describe_reported_cycle_only(self):
+        rows = [("X1", "2026-08-01 10:00", "Q1", "Q2", 500.0, "mobile"),
+                ("X2", "2026-08-02 10:00", "Q2", "Q1", 400.0, "mobile"),
+                ("X3", "2026-08-03 10:00", "Q1", "Q3", 500.0, "mobile"),
+                ("X4", "2026-08-04 10:00", "Q3", "Q4", 400.0, "mobile"),
+                ("X5", "2026-08-05 10:00", "Q4", "Q1", 300.0, "mobile")]
+        ev = run_card("net_cycle", {"transactions": _tx(rows)}).set_index("entity_id")
+        cycles = {("Q1", "Q2"): {"X1", "X2"}, ("Q1", "Q3", "Q4"): {"X3", "X4", "X5"}}
+        q1 = ev.loc["Q1"]
+        named = [c for c in cycles if " → ".join(c + (c[0],)) in q1["explanation"]]
+        self.assertEqual(len(named), 1)
+        self.assertEqual(set(q1["record_refs"]), cycles[named[0]])
+        self.assertEqual(q1["value"], len(named[0]))
+        self.assertEqual(set(ev.loc["Q3", "record_refs"]), {"X3", "X4", "X5"})
+        self.assertEqual(set(ev.loc["Q2", "record_refs"]), {"X1", "X2"})
+
+    def test_parallel_edges_one_cycle(self):
+        rows = [(f"X{i}", f"2026-08-01 1{i % 10}:00", "Q1", "Q2", 100.0, "m") for i in range(10)]
+        rows += [(f"Y{i}", f"2026-08-02 1{i % 10}:00", "Q2", "Q1", 100.0, "m") for i in range(10)]
+        ev = run_card("net_cycle", {"transactions": _tx(rows)})
+        self.assertEqual(sorted(ev["entity_id"]), ["Q1", "Q2"])
+        for refs in ev["record_refs"]:
+            self.assertEqual(len(refs), 2)
+
+    def test_cycle_dense_data_is_fast(self):
+        rng = random.Random(7)
+        accts = [f"Q{i}" for i in range(10)]
+        rows = []
+        for i in range(300):
+            a, b = rng.sample(accts, 2)
+            rows.append((f"X{i}", f"2026-08-{rng.randint(1, 28):02d} {rng.randint(0, 23):02d}:{rng.randint(0, 59):02d}",
+                         a, b, 100.0, "m"))
+        start = time.perf_counter()
+        ev = run_card("net_cycle", {"transactions": _tx(rows)})
+        self.assertLess(time.perf_counter() - start, 5)
+        self.assertFalse(ev.empty)
+
+    def test_cycle_search_cap_reported(self):
+        rows = [("X1", "2026-08-01 10:00", "Q1", "Q2", 500.0, "mobile"),
+                ("X2", "2026-08-02 10:00", "Q2", "Q1", 400.0, "mobile"),
+                ("X3", "2026-08-03 10:00", "Q3", "Q4", 400.0, "mobile"),
+                ("X4", "2026-08-04 10:00", "Q4", "Q5", 400.0, "mobile")]
+        ev = run_card("net_cycle", {"transactions": _tx(rows)}, {**CFG, "NET.CYCLE.MAX_PATHS": 2})
+        self.assertEqual(sorted(ev["entity_id"]), ["Q1", "Q2"])  # found before the cap
+        for text in ev["explanation"]:
+            self.assertIn("NET.CYCLE.MAX_PATHS", text)
+        ev = run_card("net_cycle", {"transactions": _tx(rows)})
+        for text in ev["explanation"]:
+            self.assertNotIn("NET.CYCLE.MAX_PATHS", text)
+
+    # ---- baselines (I-1): BEH-VELOCITY has the registered Poisson SD floor, BEH-SPIKE has none
+    @staticmethod
+    def _daily(counts):
         rows, n = [], 0
-        for d in range(1, 9):
-            for _ in range(3 if d == 8 else 2):
+        for d, c in enumerate(counts, 1):
+            for _ in range(c):
                 n += 1
-                rows.append((f"X{n}", f"2026-08-{d:02d} 10:00", "Q1", f"R{n}", 100.0, "mobile"))
-        self.assertTrue(run_card("beh_velocity", {"transactions": _tx(rows)}).empty)
+                rows.append((f"X{n}", f"2026-08-{d:02d} 10:00", "Q1", f"R{n}", 100.0, "m"))
+        return {"transactions": _tx(rows)}
+
+    @staticmethod
+    def _monthly(totals):
+        rows = [(f"X{i}", f"2026-{i + 1:02d}-10 10:00", "Q1", f"R{i}", float(a), "m")
+                for i, a in enumerate(totals)]
+        return {"transactions": _tx(rows)}
+
+    def test_velocity_poisson_floor_registered(self):
+        self.assertEqual(CFG["BEH.VELOCITY.SD_FLOOR"], "poisson")
+        # constant 2/day: threshold = 2 + 3 * max(0, sqrt 2) = 6.24
+        self.assertTrue(run_card("beh_velocity", self._daily([2] * 7 + [6])).empty)
+        ev = run_card("beh_velocity", self._daily([2] * 7 + [7]))
+        self.assertEqual(list(ev["value"]), [7])
+        self.assertAlmostEqual(ev["threshold"].iloc[0], 6.24, places=2)
+        self.assertIn("ค่าเฉลี่ย 2.00 + 3 × max(SD 0.00, √ค่าเฉลี่ย 1.41) = 6.24",
+                      ev["explanation"].iloc[0])
+
+    def test_velocity_floor_disabled_by_config(self):
+        cfg = {**CFG, "BEH.VELOCITY.SD_FLOOR": "none"}
+        ev = run_card("beh_velocity", self._daily([2] * 7 + [3]), cfg)
+        self.assertEqual(list(ev["value"]), [3])
+        self.assertIn("ค่าเฉลี่ย 2.00 + 3 × SD 0.00 = 2.00", ev["explanation"].iloc[0])
+
+    def test_velocity_std_breach_flagged(self):
+        # baseline 2,6,2,6,2,6: mean 4, SD 2.19 > sqrt(4) -> threshold 10.57
+        self.assertTrue(run_card("beh_velocity", self._daily([2, 6] * 3 + [10])).empty)
+        ev = run_card("beh_velocity", self._daily([2, 6] * 3 + [11]))
+        self.assertEqual(list(ev["value"]), [11])
+        self.assertIn("ค่าเฉลี่ย 4.00 + 3 × max(SD 2.19, √ค่าเฉลี่ย 2.00) = 10.57",
+                      ev["explanation"].iloc[0])
+
+    def test_spike_std_breach_flagged(self):
+        # baseline 1000,3000 x3: mean 2000, SD 1095.45 -> threshold 5286.34
+        self.assertTrue(run_card("beh_spike", self._monthly([1000, 3000] * 3 + [5200])).empty)
+        ev = run_card("beh_spike", self._monthly([1000, 3000] * 3 + [5400]))
+        self.assertEqual(list(ev["period"]), ["2026-07"])
+        self.assertIn("ค่าเฉลี่ย 2,000.00 + 3 × SD 1,095.45 = 5,286.34", ev["explanation"].iloc[0])
+
+    def test_spike_has_no_floor(self):
+        ev = run_card("beh_spike", self._monthly([1000] * 6 + [1001]))
+        self.assertEqual(list(ev["value"]), [1001])
+        self.assertIn("ค่าเฉลี่ย 1,000.00 + 3 × SD 0.00 = 1,000.00", ev["explanation"].iloc[0])
 
     def test_offhours_without_channel_column(self):
         tx = _tx([("X1", "2026-08-01 23:00", "Q1", "Q2", 500.0, "mobile")]).drop(columns="channel")
@@ -214,7 +323,8 @@ class TestCoreEvidence(unittest.TestCase):
 
     def test_clean_tx(self):
         tx = _tx([("X1", "2026-08-02", "Q1", "Q1", 5.0, "m"), ("X2", "2026-08-01", "Q1", "Q2", 0, "m"),
-                  ("X3", "2026-08-03", "Q1", "Q2", 7.0, "m"), ("X4", "2026-08-01", "Q2", "Q1", 1.0, "m")])
+                  ("X3", "2026-08-03", "Q1", "Q2", 7.0, "m"), ("X4", "2026-08-01", "Q2", "Q1", 1.0, "m"),
+                  ("X5", None, "Q1", "Q2", 9.0, "m")])
         out = helper("clean_tx")(tx)
         self.assertEqual(list(out["tx_id"]), ["X4", "X3"])
         self.assertEqual(list(out["period"]), ["2026-08", "2026-08"])

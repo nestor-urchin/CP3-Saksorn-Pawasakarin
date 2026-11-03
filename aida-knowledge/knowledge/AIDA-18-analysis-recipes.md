@@ -4,8 +4,8 @@
 
 ## สรุปสั้น
 ไฟล์นี้เก็บการ์ดวิเคราะห์ (recipe) ที่ Code Interpreter รันตามที่เขียนไว้ทุกตัวอักษร การ์ดทุกใบรับ `(tables, cfg)` และคืน DataFrame ตาม Evidence schema ใน AIDA-17 (DataFrame ว่าง = ไม่พบสัญญาณ)
-**ต้องรันการ์ด CORE-EVIDENCE ใน AIDA-19 ก่อน** เพราะทุกการ์ดเรียก `clean_tx`, `one_per_month` และ `evidence_rows` จากการ์ดนั้น
-ทุกการ์ดตัดรายการโอนเข้าบัญชีตัวเองและยอด ≤ 0 ออกก่อนวิเคราะห์, ใช้ period แบบ YYYY-MM (1 แถวต่อบัญชีต่อเดือน), อ่านเกณฑ์จาก `cfg` (Machine Config ใน AIDA-14) เท่านั้น และการ์ดในไฟล์นี้ทั้งหมดให้ Evidence ความเสี่ยง R1
+**ต้องรันการ์ด CORE-EVIDENCE และ CORE-BASELINE ใน AIDA-19 ก่อน** เพราะทุกการ์ดเรียก `clean_tx`, `one_per_month` และ `evidence_rows` จากการ์ดนั้น (และ BEH-VELOCITY / BEH-SPIKE เรียก `beyond_baseline`, `baseline_formula` จาก `CORE-BASELINE`)
+ทุกการ์ดตัดรายการโอนเข้าบัญชีตัวเอง ยอด ≤ 0 และรายการที่ไม่มีวันเวลาออกก่อนวิเคราะห์, ใช้ period แบบ YYYY-MM (1 แถวต่อบัญชีต่อเดือน), อ่านเกณฑ์จาก `cfg` (Machine Config ใน AIDA-14) เท่านั้น และการ์ดในไฟล์นี้ทั้งหมดให้ Evidence ความเสี่ยง R1
 การ์ด STAT-MAD, BEH-VELOCITY, BEH-SPIKE, TEMP-OFFHOURS ระบุบัญชีผู้โอน (from_acct); NET-CYCLE ระบุทุกบัญชีในวง; NET-FUNNEL ระบุบัญชีที่รับเงินแล้วส่งต่อ
 
 ## การ์ด Statistical (5.1)
@@ -49,28 +49,28 @@ def stat_mad(tables: dict, cfg: dict) -> pd.DataFrame:
 
 ### BEH-VELOCITY
 นับจำนวนรายการโอนออกต่อวันของแต่ละบัญชี แล้วเทียบกับ baseline ของบัญชีเดียวกัน (วันที่มีรายการก่อนหน้าทั้งหมด ต้องมีอย่างน้อย velocity_days วัน)
-เป็นสัญญาณเมื่อจำนวนต่อวัน > mean + BEH.DEVIATION × max(std, √mean) ของ baseline (√mean กันกรณี baseline คงที่); เกณฑ์อ้าง `BEH.DEVIATION = 3σ`
+เป็นสัญญาณเมื่อจำนวนต่อวัน > ค่าเฉลี่ย + BEH.DEVIATION × max(SD, √ค่าเฉลี่ย) ตาม `BEH.VELOCITY.SD_FLOOR = sqrt(mean) (Poisson)` (ตั้ง Machine Config เป็น "none" = ใช้ SD อย่างเดียว); เกณฑ์อ้าง `BEH.DEVIATION = 3σ`
 
 ```python
 # RECIPE BEH-VELOCITY v1.0 | Skill: 5.3 Behavioral | Risk: R1
-# Registry: BEH.BASELINE.MIN_PERIODS, BEH.DEVIATION | Input: transactions(tx_id, ts, from_acct, to_acct, amount)
+# Registry: BEH.BASELINE.MIN_PERIODS, BEH.DEVIATION, BEH.VELOCITY.SD_FLOOR | Input: transactions(tx_id, ts, from_acct, to_acct, amount)
 def beh_velocity(tables: dict, cfg: dict) -> pd.DataFrame:
     t = clean_tx(tables["transactions"])
     need = cfg["BEH.BASELINE.MIN_PERIODS"]["velocity_days"]
-    k = cfg["BEH.DEVIATION"]
+    k, floor = cfg["BEH.DEVIATION"], cfg["BEH.VELOCITY.SD_FLOOR"]
     d = (t.assign(day=t["ts"].dt.strftime("%Y-%m-%d"))
          .groupby(["from_acct", "day", "period"])
          .agg(n=("tx_id", "size"), refs=("tx_id", list)).reset_index())
-    flag, thr = beyond_baseline(d, "from_acct", "n", need, k)
-    hit = d.assign(thr=thr)[flag]
+    hit = beyond_baseline(d, "from_acct", "n", need, k, floor)
     found = pd.DataFrame({
         "entity_id": hit["from_acct"], "period": hit["period"],
         "metric": "tx_per_day", "value": hit["n"], "threshold": hit["thr"].round(2),
         "explanation": [
-            f"วันที่ {dy} มีรายการโอนออก {n} รายการ สูงกว่า baseline ของบัญชีเดียวกัน "
-            f"(mean + {k} × std = {th:.2f}; BEH.DEVIATION และ BEH.BASELINE.MIN_PERIODS "
-            f"ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร) — ควรตรวจสอบเพิ่มเติม"
-            for dy, n, th in zip(hit["day"], hit["n"], hit["thr"])],
+            f"วันที่ {dy} มีรายการโอนออก {n} รายการ สูงกว่าเกณฑ์จาก baseline ของบัญชีเดียวกัน "
+            f"({baseline_formula(mu, sd, k, th, floor)}; BEH.DEVIATION, BEH.VELOCITY.SD_FLOOR "
+            f"และ BEH.BASELINE.MIN_PERIODS ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร) "
+            f"— ควรตรวจสอบเพิ่มเติม"
+            for dy, n, mu, sd, th in zip(hit["day"], hit["n"], hit["mu"], hit["sd"], hit["thr"])],
         "record_refs": hit["refs"]})
     return evidence_rows("BEH-VELOCITY", "1.0", "5.3 Behavioral", "R1",
                          "BEH.DEVIATION", one_per_month(found), cfg)
@@ -78,7 +78,7 @@ def beh_velocity(tables: dict, cfg: dict) -> pd.DataFrame:
 
 ### BEH-SPIKE
 รวมยอดโอนออกต่อเดือนของแต่ละบัญชี แล้วเทียบกับ baseline ของบัญชีเดียวกัน (เดือนที่มีรายการก่อนหน้าทั้งหมด ต้องมีอย่างน้อย spike_months เดือน)
-เป็นสัญญาณเมื่อยอดเดือนนั้น > mean + BEH.DEVIATION × max(std, √mean) ของ baseline; บัญชีที่ประวัติไม่ถึงเกณฑ์ไม่ถูกประเมิน
+เป็นสัญญาณเมื่อยอดเดือนนั้น > ค่าเฉลี่ย + BEH.DEVIATION × SD ของ baseline (ไม่มีค่า SD ขั้นต่ำ); บัญชีที่ประวัติไม่ถึงเกณฑ์ไม่ถูกประเมิน
 
 ```python
 # RECIPE BEH-SPIKE v1.0 | Skill: 5.3 Behavioral | Risk: R1
@@ -89,17 +89,16 @@ def beh_spike(tables: dict, cfg: dict) -> pd.DataFrame:
     k = cfg["BEH.DEVIATION"]
     d = (t.groupby(["from_acct", "period"])
          .agg(amt=("amount", "sum"), refs=("tx_id", list)).reset_index())
-    flag, thr = beyond_baseline(d, "from_acct", "amt", need, k)
-    hit = d.assign(thr=thr)[flag]
+    hit = beyond_baseline(d, "from_acct", "amt", need, k)
     found = pd.DataFrame({
         "entity_id": hit["from_acct"], "period": hit["period"],
         "metric": "amount_per_month", "value": hit["amt"].round(2),
         "threshold": hit["thr"].round(2),
         "explanation": [
-            f"ยอดโอนออกเดือน {p} รวม {a:,.2f} สูงกว่า baseline รายเดือนของบัญชีเดียวกัน "
-            f"(mean + {k} × std = {th:,.2f}; BEH.DEVIATION และ BEH.BASELINE.MIN_PERIODS "
+            f"ยอดโอนออกเดือน {p} รวม {a:,.2f} สูงกว่าเกณฑ์จาก baseline รายเดือนของบัญชีเดียวกัน "
+            f"({baseline_formula(mu, sd, k, th)}; BEH.DEVIATION และ BEH.BASELINE.MIN_PERIODS "
             f"ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร) — ควรตรวจสอบเพิ่มเติม"
-            for p, a, th in zip(hit["period"], hit["amt"], hit["thr"])],
+            for p, a, mu, sd, th in zip(hit["period"], hit["amt"], hit["mu"], hit["sd"], hit["thr"])],
         "record_refs": hit["refs"]})
     return evidence_rows("BEH-SPIKE", "1.0", "5.3 Behavioral", "R1",
                          "BEH.DEVIATION", one_per_month(found), cfg)
@@ -138,37 +137,49 @@ def temp_offhours(tables: dict, cfg: dict) -> pd.DataFrame:
 ## การ์ด Network (5.9)
 
 ### NET-CYCLE
-หาวงเงินหมุนวน (A→B→…→A) ยาว min_len–max_len ทอด ด้วย DFS แบบวนซ้ำ (ไม่ใช้ networkx) โดยแต่ละทอดต้องเกิดไม่ก่อนทอดก่อนหน้า และทุกทอดอยู่ภายใน days วันนับจากทอดแรก
-ทุกบัญชีในวงได้ Evidence 1 แถวต่อเดือน (เดือนของทอดแรก); เกณฑ์อ้าง `NET.CYCLE = 2–5 ทอด ภายใน 30 วัน`
+หาวงเงินหมุนวน (A→B→…→A) ยาว min_len–max_len ทอด ด้วย DFS แบบวนซ้ำ (ไม่ใช้ networkx) ทอดถัดไปต้องเกิดไม่ก่อนทอดก่อนหน้าและอยู่ภายใน days วันนับจากทอดแรก; ใช้รายการแรกต่อคู่บัญชีเท่านั้นและนับวงตามชุดบัญชี (ไม่นับซ้ำ)
+แต่ละบัญชีในวงได้ 1 แถวต่อเดือน (เดือนของทอดแรก) โดย record_refs คือรายการของวงที่ระบุใน explanation เท่านั้น; ค้นหาไม่เกิน `NET.CYCLE.MAX_PATHS = 100,000` เส้นทาง; เกณฑ์อ้าง `NET.CYCLE = 2–5 ทอด ภายใน 30 วัน`
 
 ```python
 # RECIPE NET-CYCLE v1.0 | Skill: 5.9 Network | Risk: R1
-# Registry: NET.CYCLE | Input: transactions(tx_id, ts, from_acct, to_acct, amount)
+# Registry: NET.CYCLE, NET.CYCLE.MAX_PATHS | Input: transactions(tx_id, ts, from_acct, to_acct, amount)
 def net_cycle(tables: dict, cfg: dict) -> pd.DataFrame:
+    from bisect import bisect_left, bisect_right
     t = clean_tx(tables["transactions"])
-    c = cfg["NET.CYCLE"]
+    c, cap = cfg["NET.CYCLE"], cfg["NET.CYCLE.MAX_PATHS"]
     win = pd.Timedelta(days=c["days"])
-    out = {a: list(zip(g["ts"], g["to_acct"], g["tx_id"])) for a, g in t.groupby("from_acct")}
-    rows = []
+    out = {a: (list(g["ts"]), list(g["to_acct"]), list(g["tx_id"])) for a, g in t.groupby("from_acct")}
+    cycles, steps = {}, 0
     for t0, a0, b0, x0, p0 in zip(t["ts"], t["from_acct"], t["to_acct"], t["tx_id"], t["period"]):
-        stack = [(b0, t0, [a0, b0], [x0])]
-        while stack:
+        stack = [(b0, t0, (a0, b0), (x0,))]
+        while stack and steps < cap:
             node, ts, path, refs = stack.pop()
-            for nts, nxt, ntx in out.get(node, []):
-                if nts < ts or nts - t0 > win:
+            steps += 1
+            tss, tos, txs = out.get(node, ([], [], []))
+            seen = set()  # earliest edge per (node, next account) only
+            for j in range(bisect_left(tss, ts), bisect_right(tss, t0 + win)):
+                nxt = tos[j]
+                if nxt in seen:
                     continue
-                if nxt == path[0] and len(path) >= c["min_len"]:
-                    loop = " → ".join(path + [nxt])
-                    rows += [{"entity_id": a, "period": p0, "metric": "cycle_length",
-                              "value": len(path), "threshold": c["max_len"],
-                              "explanation": f"บัญชีอยู่ในวงเงินหมุนวน {loop} ({len(path)} ทอด "
-                              f"ภายใน {c['days']} วัน; NET.CYCLE {c['min_len']}–{c['max_len']} ทอด "
-                              f"ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร) — ควรตรวจสอบเพิ่มเติม",
-                              "record_refs": refs + [ntx]} for a in path]
+                seen.add(nxt)
+                if nxt == a0 and len(path) >= c["min_len"]:
+                    i = path.index(min(path))  # same accounts in rotation = same cycle
+                    cycles.setdefault((path[i:] + path[:i], p0), (path, refs + (txs[j],)))
                 elif nxt not in path and len(path) < c["max_len"]:
-                    stack.append((nxt, nts, path + [nxt], refs + [ntx]))
-    found = one_per_month(pd.DataFrame(rows, columns=["entity_id", "period", "metric", "value",
-                                                      "threshold", "explanation", "record_refs"]))
+                    stack.append((nxt, tss[j], path + (nxt,), refs + (txs[j],)))
+    note = f" — ค้นหาถึงขีดจำกัด NET.CYCLE.MAX_PATHS ({cap:,} เส้นทาง) ผลอาจไม่ครบ" if steps >= cap else ""
+    best = {}  # (account, month) -> [first cycle found, its refs, number of cycles]
+    for (_, p0), (path, refs) in cycles.items():
+        for a in path:
+            best.setdefault((a, p0), [path, refs, 0])[2] += 1
+    found = pd.DataFrame([{
+        "entity_id": a, "period": p0, "metric": "cycle_length", "value": len(path),
+        "threshold": c["max_len"], "record_refs": list(refs),
+        "explanation": f"บัญชีอยู่ในวงเงินหมุนวน {' → '.join(path + (path[0],))} ({len(path)} ทอด "
+        f"ภายใน {c['days']} วัน; พบ {n} วงในเดือนนี้ แสดงวงแรก; NET.CYCLE {c['min_len']}–{c['max_len']} "
+        f"ทอด ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร) — ควรตรวจสอบเพิ่มเติม{note}"}
+        for (a, p0), (path, refs, n) in best.items()],
+        columns=["entity_id", "period", "metric", "value", "threshold", "explanation", "record_refs"])
     return evidence_rows("NET-CYCLE", "1.0", "5.9 Network", "R1", "NET.CYCLE", found, cfg)
 ```
 
