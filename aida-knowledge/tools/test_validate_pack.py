@@ -234,6 +234,41 @@ class ValidatePackTests(unittest.TestCase):
         p = write(self.d, "knowledge/AIDA-14-configuration-registry.md", text)
         self.assertEqual(len(vp.check_machine_config(p)), 1)
 
+    def _real_registry_text(self) -> str:
+        real = Path(__file__).resolve().parent.parent / "knowledge" / vp.REGISTRY_NAME
+        return real.read_text(encoding="utf-8")
+
+    def test_machine_config_values_match_table_real(self):
+        real = Path(__file__).resolve().parent.parent / "knowledge" / vp.REGISTRY_NAME
+        self.assertEqual(vp.check_machine_config_values(real), [])
+
+    def test_machine_config_scalar_drift_detected(self):
+        text = self._real_registry_text()
+        for old, new in (('"MULE.DWELL_HOURS": 24', '"MULE.DWELL_HOURS": 48'),
+                         ('"GATE.COMPLETENESS.MIN": 0.95', '"GATE.COMPLETENESS.MIN": 0.9'),
+                         ('"FLOW.MIN_PASS_RATIO": 0.9,', '"FLOW.MIN_PASS_RATIO": 0.8,')):
+            self.assertIn(old, text)
+            p = write(self.d, "knowledge/AIDA-14-configuration-registry.md", text.replace(old, new))
+            errors = vp.check_machine_config_values(p)
+            self.assertEqual(len(errors), 1, old)
+            self.assertIn(old.split('"')[1], errors[0])
+
+    def test_machine_config_structured_drift_detected(self):
+        text = self._real_registry_text()
+        for old, new in (('"min_sources": 10', '"min_sources": 12'),
+                         ('"max_len": 5', '"max_len": 6'),
+                         ('"velocity_days": 6', '"velocity_days": 7'),
+                         ('"end": "18:00"', '"end": "17:00"')):
+            self.assertIn(old, text)
+            p = write(self.d, "knowledge/AIDA-14-configuration-registry.md", text.replace(old, new))
+            self.assertEqual(len(vp.check_machine_config_values(p)), 1, old)
+            self.assertEqual(len(vp.check_machine_config(p)), 1, old)
+
+    def test_machine_config_table_drift_detected(self):
+        text = self._real_registry_text().replace("`GATE.SAMPLE.MIN = 30`", "`GATE.SAMPLE.MIN = 40`")
+        p = write(self.d, "knowledge/AIDA-14-configuration-registry.md", text)
+        self.assertEqual(len(vp.check_machine_config_values(p)), 1)
+
     RECIPE_OK = (
         "# AIDA-18 · t\n\n```python\n"
         "# RECIPE NET-FUNNEL v1.0 | Skill: 5.9 Network | Risk: R1\n"

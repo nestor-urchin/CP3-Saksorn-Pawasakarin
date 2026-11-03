@@ -199,6 +199,50 @@ def priority_from_table(text: str) -> dict | None:
     return table
 
 
+NUMBER_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)(\s*%)?")
+
+
+def _numbers(text: str) -> list[float]:
+    """Numbers in `text` in order; '95%' becomes 0.95 and thousands separators are dropped."""
+    out = []
+    for num, pct in NUMBER_RE.findall(text):
+        value = float(num.replace(",", ""))
+        out.append(value / 100 if pct else value)
+    return out
+
+
+def _leaves(value) -> list:
+    if isinstance(value, dict):
+        return [leaf for v in value.values() for leaf in _leaves(v)]
+    return [value]
+
+
+def check_machine_config_values(registry_path: Path) -> list[str]:
+    """Machine Config numbers must equal the numbers in the matching `KEY = value` table rows."""
+    config, errors = parse_machine_config(registry_path)
+    registry, _ = parse_registry(registry_path)
+    name = registry_path.name
+    for key, value in config.items():
+        if key.startswith("_") or key == "ASSESS.PRIORITY" or key not in registry or isinstance(value, bool):
+            continue
+        row = registry[key]
+        row_numbers = _numbers(row)
+        if isinstance(value, dict):
+            for leaf in _leaves(value):
+                if isinstance(leaf, bool):
+                    continue
+                if isinstance(leaf, str):
+                    ok = leaf in row
+                else:
+                    ok = any(abs(leaf - n) < 1e-9 for n in row_numbers)
+                if not ok:
+                    errors.append(f"{name}: Machine Config {key} value {leaf!r} not found in table row '{row}'")
+        elif isinstance(value, (int, float)):
+            if not row_numbers or abs(value - row_numbers[0]) > 1e-9:
+                errors.append(f"{name}: Machine Config {key} = {value} but table row says '{row}'")
+    return errors
+
+
 def check_machine_config(registry_path: Path) -> list[str]:
     config, errors = parse_machine_config(registry_path)
     if errors:
@@ -215,6 +259,7 @@ def check_machine_config(registry_path: Path) -> list[str]:
     if "REGISTRY.VERSION" in registry and config.get("REGISTRY.VERSION") != registry["REGISTRY.VERSION"]:
         errors.append(f"{registry_path.name}: Machine Config REGISTRY.VERSION "
                       f"'{config.get('REGISTRY.VERSION')}' != '{registry['REGISTRY.VERSION']}'")
+    errors += check_machine_config_values(registry_path)
     if "ASSESS.PRIORITY" in config:
         table = priority_from_table(_read(registry_path))
         if table is not None and config["ASSESS.PRIORITY"] != table:
