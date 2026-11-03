@@ -1,6 +1,6 @@
 # AIDA-01 · Orchestration Workflow 18 Stage
-> ไฟล์: AIDA-01 | เวอร์ชัน: 1.0 | ส่วนหนึ่งของ AIDA Knowledge Pack
-> ไฟล์นี้ตอบคำถาม: AIDA ทำงานกี่ขั้นตอน, แต่ละ Stage รับอะไร ส่งอะไร, Decision Gate ของแต่ละ Stage คืออะไร, Stage ไหนส่งต่อไปไหน
+> ไฟล์: AIDA-01 | เวอร์ชัน: 1.1 | ส่วนหนึ่งของ AIDA Knowledge Pack
+> ไฟล์นี้ตอบคำถาม: AIDA ทำงานกี่ขั้นตอน, แต่ละ Stage รับอะไร ส่งอะไร, Decision Gate ของแต่ละ Stage คืออะไร, Stage ไหนส่งต่อไปไหน, หลาย skill พบ entity/vendor เดียวกันต้องรายงานกี่ Finding, ลบซ้ำ (Deduplicate) และรวม Evidence เป็น Unified Finding อย่างไร
 
 ## สรุปสั้น
 Workflow มี 18 Stage แบ่ง 3 ช่วง: **I. Intake → Plan (1–6)**, **II. Execute → Unified Findings (7–12)**, **III. Assess → Deliver (13–18)**
@@ -32,6 +32,24 @@ Workflow มี 18 Stage แบ่ง 3 ช่วง: **I. Intake → Plan (1–
 | 11 | Evidence Correlation | entity + risk + time | Evidence groups | — | 12 |
 | 12 | Unified Findings | groups + source links | Unified Findings (Output 05) | — | 13 |
 
+## Unified Findings: กฎการลบซ้ำและรวม Evidence (Stage 10–12)
+**หลักสำคัญ: หลาย skill พบ entity เดียวกัน ในความเสี่ยงเดียวกัน และช่วงเวลาเดียวกัน → รายงานเป็น Unified Finding เดียว ไม่แยกเป็นหลาย Finding**
+
+กฎ:
+1. **Normalize (Stage 10):** แปลง Evidence ทุกชิ้นให้ใช้รหัส entity, ชื่อความเสี่ยง และรูปแบบช่วงเวลาเดียวกัน
+2. **Deduplicate (Stage 10):** Evidence ที่ชี้ record เดียวกันด้วยวิธีซ้ำกัน (เช่น Z-Score และ IQR บนยอดเดียวกัน) เก็บไว้ทั้งคู่ แต่นับเป็นหลักฐานกลุ่มเดียว ไม่นับเป็นการยืนยันซ้ำ
+3. **Correlate (Stage 11):** จัดกลุ่ม Evidence ด้วย key = **entity + risk + time**
+4. **Unify (Stage 12):** 1 กลุ่ม = 1 Unified Finding ที่เชื่อม Evidence ทุกชิ้นในกลุ่ม พร้อม Source Skill และ Data Reference ของแต่ละชิ้น
+5. **แยก Finding เมื่อ:** ความเสี่ยงต่างกัน หรือช่วงเวลาไม่ต่อเนื่องกัน แม้จะเป็น entity เดียวกัน
+6. จำนวน skill ที่พบไม่ได้เพิ่มจำนวน Finding แต่ใช้ประเมิน **Confidence** (Evidence หลายแหล่งที่อิสระต่อกัน → AIDA-09, AIDA-10)
+
+### ตัวอย่าง: Statistical และ Rule พบ vendor เดียวกัน
+- Statistical (MAD) พบยอดจ่าย vendor A เดือนมีนาคมโดดเด่น
+- Rule พบว่ารายการของ vendor A เดือนมีนาคม "จ่ายก่อนรับของ"
+- entity (vendor A) + risk (การจ่ายเงินผู้ขาย) + time (มีนาคม) ตรงกัน → **รายงาน 1 Unified Finding** ที่เชื่อม Evidence 2 ชิ้น (source skill: 5.1 Statistical และ 5.7 Rule-Based)
+- Evidence 2 แหล่งที่อิสระต่อกันยืนยันตรงกัน → ใช้ประเมิน Confidence ที่ Stage 13
+- **ไม่ถูกต้อง:** รายงาน 2 Finding แยกกัน (ซ้ำซ้อน ทำให้ผู้บริหารเห็นประเด็นมากเกินจริง และ Evidence ไม่ถูกนำมายืนยันกัน)
+
 ## Workflow III: Assess → Deliver
 แยกการประเมิน การตีความ การรายงาน และการอนุมัติใช้งานออกจากกัน
 
@@ -53,6 +71,7 @@ Workflow มี 18 Stage แบ่ง 3 ช่วง: **I. Intake → Plan (1–
 ## ข้อห้าม (Guardrails)
 - ห้ามรัน skill ที่ไม่ผ่าน Capability Gate
 - ห้ามรวมผล (Stage 10–12) ก่อนผ่าน Evidence Quality Gate
+- ห้ามรายงาน Finding แยกกันสำหรับ entity + risk + time เดียวกัน เพียงเพราะมาจากคนละ skill
 - ห้ามรวม Confidence, Materiality และ Priority เป็นค่าเดียว
 - ห้ามเผยแพร่ Output ก่อน Human Review
 

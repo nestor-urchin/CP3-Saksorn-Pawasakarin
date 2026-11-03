@@ -6,6 +6,7 @@
 รวม Evidence อย่างมีหลักเกณฑ์ โดยรักษาความเป็นอิสระและความหมายดั้งเดิมของคะแนน
 Evidence 4 ประเภท → Hybrid Logic (น้ำหนัก/สูตรจาก Configuration Registry) → Assessment Output
 ไม่ทำให้ Statistical Score, Model Score และ Business Priority มีความหมายเดียวกัน
+Evidence หลายชิ้นจากหลาย skill ที่เป็น entity + risk + time เดียวกัน → รวมเป็น **Unified Finding เดียว** ไม่แยกรายงาน (กฎการลบซ้ำและรวม Evidence ดู AIDA-01 หัวข้อ "Unified Findings")
 
 ## Evidence 4 ประเภท
 | ประเภท | ความหมาย | มาจาก |
