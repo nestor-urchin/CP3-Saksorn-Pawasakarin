@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-REF_RE = re.compile(r"`([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)+) = ([^`]+)`")
+REF_RE = re.compile(r"`([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)+)\s*=\s*([^`]+)`")
 XREF_RE = re.compile(r"AIDA-(\d{2})")
 FILE_ID_RE = re.compile(r"^AIDA-(\d{2})-")
 
@@ -18,7 +18,9 @@ GUARDRAILS_HEADING = "## ข้อห้าม (Guardrails)"
 REQUIRED_HEADINGS = ["## สรุปสั้น", GUARDRAILS_HEADING, "## ไฟล์ที่เกี่ยวข้อง"]
 QUESTIONS_PREFIX = "> ไฟล์นี้ตอบคำถาม:"
 ACCUSATORY_TERMS = ["ทุจริต", "กระทำผิด", "กระทำความผิด", "โกง", "fraudster"]
-NEGATION_MARKERS = ["≠", "ไม่", "ห้าม", "not"]
+# A negation exempts a term only when it ends within NEGATION_WINDOW characters before it.
+NEGATION_RE = re.compile(r"≠|ไม่(?!ว่า)|ห้าม|\bnot\b", re.IGNORECASE)
+NEGATION_WINDOW = 20
 RESERVED_IDS = {"16", "17", "18", "19"}
 
 
@@ -80,10 +82,12 @@ def check_accusatory_terms(path: Path) -> list[str]:
             continue
         if heading == GUARDRAILS_HEADING:
             continue
-        if any(m in line for m in NEGATION_MARKERS):
-            continue
+        lower = line.lower()
+        negation_ends = [m.end() for m in NEGATION_RE.finditer(line)]
         for term in ACCUSATORY_TERMS:
-            if term in line:
+            for hit in re.finditer(re.escape(term), lower):
+                if any(0 <= hit.start() - end <= NEGATION_WINDOW for end in negation_ends):
+                    continue
                 errors.append(f"{path.name}:{n}: accusatory term '{term}' outside Guardrails")
     return errors
 

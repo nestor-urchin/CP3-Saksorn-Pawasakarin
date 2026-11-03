@@ -94,6 +94,26 @@ class ValidatePackTests(unittest.TestCase):
         p = write(self.d, "a.md", skeleton("Anomaly Score ≠ การทุจริต\nผลนี้ไม่ใช่การกระทำผิด"))
         self.assertEqual(vp.check_accusatory_terms(p), [])
 
+    def test_accusatory_not_exempted_by_note_or_another(self):
+        p = write(self.d, "a.md", skeleton("พนักงาน B ทุจริต ดู note ด้านล่าง\nSee another case: vendor is a fraudster"))
+        self.assertEqual(len(vp.check_accusatory_terms(p)), 2)
+
+    def test_accusatory_not_exempted_by_mai_wa(self):
+        p = write(self.d, "a.md", skeleton("พนักงาน C โกงเงิน ไม่ว่ากรณีใด"))
+        self.assertEqual(len(vp.check_accusatory_terms(p)), 1)
+
+    def test_accusatory_negation_far_from_term_fails(self):
+        p = write(self.d, "a.md", skeleton("รายการนี้ไม่มีเอกสารประกอบครบถ้วนตามระเบียบ และพนักงาน D ทุจริต"))
+        self.assertEqual(len(vp.check_accusatory_terms(p)), 1)
+
+    def test_accusatory_case_insensitive(self):
+        p = write(self.d, "a.md", skeleton("ผู้ขาย A เป็น Fraudster"))
+        self.assertEqual(len(vp.check_accusatory_terms(p)), 1)
+
+    def test_registry_ref_loose_spacing_checked(self):
+        p = write(self.d, "a.md", skeleton("`GATE.SAMPLE.MIN=25` และ `GATE.SAMPLE.MIN  =  20`"))
+        self.assertEqual(len(vp.check_registry_refs(p, {"GATE.SAMPLE.MIN": "30"})), 2)
+
     def test_accusatory_in_guardrails_ok(self):
         p = write(self.d, "a.md", skeleton(guard="| ผู้ขายรายนี้โกง | พบรูปแบบที่ควรตรวจสอบเพิ่มเติม |"))
         self.assertEqual(vp.check_accusatory_terms(p), [])
