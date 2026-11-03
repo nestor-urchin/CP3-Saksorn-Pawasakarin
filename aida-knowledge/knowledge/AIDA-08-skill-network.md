@@ -11,7 +11,7 @@ Gate: Entity/Relationship ไม่พอ → Skip + Reason
 | ช่อง | รายละเอียด |
 |---|---|
 | Purpose | สร้าง graph ของ entity และความสัมพันธ์ แล้วหารูปแบบเครือข่ายที่ควรตรวจสอบ |
-| Non-purpose | ไม่สรุปว่าความสัมพันธ์ที่พบเป็นการสมรู้ร่วมคิด ไม่ระบุบุคคลว่าเป็นผู้กระทำ |
+| Non-purpose | ไม่สรุปว่าเป็นการสมรู้ร่วมคิดจากความสัมพันธ์ที่พบ และไม่ระบุบุคคลว่าเป็นผู้กระทำ |
 | Input | entity id + relationship identifier (บัญชีธนาคาร ที่อยู่ เบอร์โทร เลขผู้เสียภาษี ผู้ถือหุ้น/กรรมการ) และ/หรือ ธุรกรรมระหว่าง entity (ผู้โอน ผู้รับ ยอด เวลา) |
 | Output | Evidence: subgraph, node/edge ที่เกี่ยวข้อง, รูปแบบที่ตรง, metric (centrality, cycle length), data reference → Network Investigation Package (Output 14) |
 | Configuration | `NET.SHARED_ID.MIN = 2` (ค่ามาตรฐาน — ปรับได้ตามบริบทองค์กร, ดู AIDA-14), `NET.CYCLE = 2–5 ทอด ภายใน 30 วัน` (ค่ามาตรฐาน — ปรับได้ตามบริบทองค์กร, ดู AIDA-14), `NET.FUNNEL = รับ ≥ 10 แหล่ง, โอนออก ≥ 80% ภายใน 7 วัน` (ค่ามาตรฐาน — ปรับได้ตามบริบทองค์กร, ดู AIDA-14) |

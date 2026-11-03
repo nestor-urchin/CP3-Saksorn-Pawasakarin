@@ -43,5 +43,11 @@ aida-knowledge/
 python3 aida-knowledge/tools/validate_pack.py aida-knowledge     # ตรวจทั้งชุด
 cd aida-knowledge/tools && python3 -m unittest test_validate_pack # ทดสอบสคริปต์
 ```
-สคริปต์ตรวจ: จำนวนไฟล์ ≤ 20, หัวข้อบังคับ, Registry key ตรงกับ AIDA-14, คำกล่าวหานอกหัวข้อ Guardrails, การอ้างไฟล์ AIDA-XX, ความยาว Instructions ≤ 8,000 ตัวอักษร
+สคริปต์ตรวจ:
+- จำนวนไฟล์ ≤ 20 และหัวข้อบังคับครบ
+- Registry key ตรงกับ AIDA-14 (รวมรูปแบบที่เว้นวรรคต่างกัน เช่น `KEY=ค่า`)
+- คำกล่าวหานอกหัวข้อ Guardrails (ทุจริต, กระทำผิด, กระทำความผิด, โกง, ยักยอก, คอร์รัปชัน, ฉ้อโกง, สมรู้ร่วมคิด, fraudster) — ยกเว้นเมื่อมีคำปฏิเสธ (≠ / ไม่ / ห้าม / not) อยู่ภายใน 20 ตัวอักษรก่อนคำนั้น
+- ตาราง Priority และตาราง Confidence ใน AIDA-10 กับ AIDA-14 ต้องเหมือนกันทุกตัวอักษร
+- การอ้างไฟล์ AIDA-XX ชี้ไปยังไฟล์ที่มีจริง
+- ไฟล์ Instructions: ความยาว ≤ 8,000 ตัวอักษร และตรวจคำกล่าวหา / Registry key / การอ้างไฟล์ เหมือนไฟล์ Knowledge
 ต้องการแค่ Python 3 (ไม่มี dependency)

@@ -114,6 +114,46 @@ class ValidatePackTests(unittest.TestCase):
         p = write(self.d, "a.md", skeleton("`GATE.SAMPLE.MIN=25` และ `GATE.SAMPLE.MIN  =  20`"))
         self.assertEqual(len(vp.check_registry_refs(p, {"GATE.SAMPLE.MIN": "30"})), 2)
 
+    def test_accusatory_extended_terms(self):
+        p = write(self.d, "a.md", skeleton("พนักงาน E ยักยอกเงิน\nบริษัท F คอร์รัปชัน\nผู้ขาย G ฉ้อโกง\nผู้จัดการสมรู้ร่วมคิด"))
+        self.assertEqual(len(vp.check_accusatory_terms(p)), 4)
+
+    def _shared_pack(self, priority10: str, priority14: str, conf10: str = "| สูง | x |", conf14: str = "| สูง | x |"):
+        table = "### ตาราง Priority\n| C | M |\n|---|---|\n{p}\n\n### ตาราง Confidence\n| ระดับ | เกณฑ์ |\n|---|---|\n{c}\n"
+        write(self.d, "knowledge/AIDA-10-assessment-model.md", skeleton(table.format(p=priority10, c=conf10)))
+        write(self.d, "knowledge/AIDA-14-configuration-registry.md", skeleton(table.format(p=priority14, c=conf14)))
+        return self.d / "knowledge"
+
+    def test_shared_tables_match(self):
+        k = self._shared_pack("| สูง | สูง |", "| สูง | สูง |")
+        self.assertEqual(vp.check_shared_tables(k), [])
+
+    def test_shared_priority_table_drift(self):
+        k = self._shared_pack("| สูง | กลาง |", "| สูง | สูง |")
+        errors = vp.check_shared_tables(k)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("ตาราง Priority", errors[0])
+
+    def test_shared_confidence_table_drift(self):
+        k = self._shared_pack("| สูง | สูง |", "| สูง | สูง |", conf10="| สูง | y |")
+        errors = vp.check_shared_tables(k)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("ตาราง Confidence", errors[0])
+
+    def test_shared_table_heading_missing(self):
+        k = self._shared_pack("| สูง | สูง |", "| สูง | สูง |")
+        p = k / "AIDA-10-assessment-model.md"
+        p.write_text(p.read_text(encoding="utf-8").replace("### ตาราง Confidence", "### อื่น"), encoding="utf-8")
+        self.assertEqual(len(vp.check_shared_tables(k)), 1)
+
+    def test_validate_checks_instructions_content(self):
+        reg = skeleton("| `STAT.ZSCORE.THRESHOLD = 3` | x | y |").replace("AIDA-04 ·", "AIDA-14 ·")
+        write(self.d, "knowledge/AIDA-14-configuration-registry.md", reg)
+        write(self.d, "AIDA-agent-instructions.md", "ผู้ขายรายนี้ทุจริต\n`STAT.ZSCORE.THRESHOLD = 2`")
+        errors = vp.validate(self.d)
+        self.assertTrue(any("AIDA-agent-instructions.md" in e and "accusatory" in e for e in errors))
+        self.assertTrue(any("AIDA-agent-instructions.md" in e and "STAT.ZSCORE.THRESHOLD" in e for e in errors))
+
     def test_accusatory_in_guardrails_ok(self):
         p = write(self.d, "a.md", skeleton(guard="| ผู้ขายรายนี้โกง | พบรูปแบบที่ควรตรวจสอบเพิ่มเติม |"))
         self.assertEqual(vp.check_accusatory_terms(p), [])

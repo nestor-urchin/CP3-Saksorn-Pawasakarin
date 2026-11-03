@@ -17,7 +17,11 @@ INSTRUCTIONS_NAME = "AIDA-agent-instructions.md"
 GUARDRAILS_HEADING = "## ข้อห้าม (Guardrails)"
 REQUIRED_HEADINGS = ["## สรุปสั้น", GUARDRAILS_HEADING, "## ไฟล์ที่เกี่ยวข้อง"]
 QUESTIONS_PREFIX = "> ไฟล์นี้ตอบคำถาม:"
-ACCUSATORY_TERMS = ["ทุจริต", "กระทำผิด", "กระทำความผิด", "โกง", "fraudster"]
+ACCUSATORY_TERMS = ["ทุจริต", "กระทำผิด", "กระทำความผิด", "โกง", "ยักยอก", "คอร์รัปชัน",
+                    "ฉ้อโกง", "สมรู้ร่วมคิด", "fraudster"]
+# Tables that must be identical in AIDA-10 and AIDA-14 (heading line marks each table).
+ASSESSMENT_NAME = "AIDA-10-assessment-model.md"
+SHARED_TABLE_HEADINGS = ["### ตาราง Priority", "### ตาราง Confidence"]
 # A negation exempts a term only when it ends within NEGATION_WINDOW characters before it.
 NEGATION_RE = re.compile(r"≠|ไม่(?!ว่า)|ห้าม|\bnot\b", re.IGNORECASE)
 NEGATION_WINDOW = 20
@@ -84,11 +88,12 @@ def check_accusatory_terms(path: Path) -> list[str]:
             continue
         lower = line.lower()
         negation_ends = [m.end() for m in NEGATION_RE.finditer(line)]
-        for term in ACCUSATORY_TERMS:
-            for hit in re.finditer(re.escape(term), lower):
-                if any(0 <= hit.start() - end <= NEGATION_WINDOW for end in negation_ends):
-                    continue
-                errors.append(f"{path.name}:{n}: accusatory term '{term}' outside Guardrails")
+        found = [term for term in ACCUSATORY_TERMS
+                 for hit in re.finditer(re.escape(term), lower)
+                 if not any(0 <= hit.start() - end <= NEGATION_WINDOW for end in negation_ends)]
+        if found:  # one error per line, even when terms overlap (ฉ้อโกง contains โกง)
+            terms = ", ".join(dict.fromkeys(found))
+            errors.append(f"{path.name}:{n}: accusatory term '{terms}' outside Guardrails")
     return errors
 
 
@@ -105,6 +110,38 @@ def check_instructions_length(path: Path, limit: int = 8000) -> list[str]:
     if length > limit:
         return [f"{path.name}: {length} characters, limit is {limit}"]
     return []
+
+
+def _table_after(text: str, heading: str) -> list[str] | None:
+    """Return the table rows that follow `heading`, or None when the heading is absent."""
+    lines = text.splitlines()
+    stripped = [line.strip() for line in lines]
+    if heading not in stripped:
+        return None
+    rows: list[str] = []
+    for line in stripped[stripped.index(heading) + 1:]:
+        if line.startswith("|"):
+            rows.append(line)
+        elif rows or line.startswith("#"):
+            break
+    return rows
+
+
+def check_shared_tables(knowledge_dir: Path) -> list[str]:
+    """AIDA-10 and AIDA-14 must carry identical copies of each shared table."""
+    a10, a14 = knowledge_dir / ASSESSMENT_NAME, knowledge_dir / REGISTRY_NAME
+    if not (a10.exists() and a14.exists()):
+        return []
+    text10, text14 = _read(a10), _read(a14)
+    errors: list[str] = []
+    for heading in SHARED_TABLE_HEADINGS:
+        t10, t14 = _table_after(text10, heading), _table_after(text14, heading)
+        if t10 is None or t14 is None:
+            missing = a10.name if t10 is None else a14.name
+            errors.append(f"{missing}: missing heading '{heading}'")
+        elif t10 != t14:
+            errors.append(f"{a10.name}: '{heading}' differs from the copy in {a14.name}")
+    return errors
 
 
 def validate(pack_dir: Path) -> list[str]:
@@ -126,10 +163,14 @@ def validate(pack_dir: Path) -> list[str]:
         errors += check_registry_refs(f, registry)
         errors += check_accusatory_terms(f)
         errors += check_cross_refs(f, existing)
+    errors += check_shared_tables(knowledge)
 
     instructions = pack_dir / INSTRUCTIONS_NAME
     if instructions.exists():
         errors += check_instructions_length(instructions)
+        errors += check_registry_refs(instructions, registry)
+        errors += check_accusatory_terms(instructions)
+        errors += check_cross_refs(instructions, existing)
     else:
         errors.append(f"{INSTRUCTIONS_NAME} is missing")
     return errors

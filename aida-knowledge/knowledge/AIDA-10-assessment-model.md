@@ -14,7 +14,9 @@ Confidence, Materiality และ Priority ตอบคำถามต่าง�
 ## Confidence
 **Considerations:** Evidence quality, Consistency, Source traceability, Diversity / independence
 
-| ระดับ | เกณฑ์ (ASSESS.CONFIDENCE ใน AIDA-14 — ค่ามาตรฐาน ปรับได้ตามบริบทองค์กร) |
+### ตาราง Confidence
+เกณฑ์ ASSESS.CONFIDENCE ใน AIDA-14 (ค่ามาตรฐาน — ปรับได้ตามบริบทองค์กร)
+| ระดับ | เกณฑ์ |
 |---|---|
 | สูง | Evidence ≥ 2 แหล่งที่เป็นอิสระต่อกันยืนยันตรงกัน และ Lineage ครบทั้ง 7 ระดับ |
 | กลาง | Evidence 1 แหล่ง และ Lineage ครบ |
