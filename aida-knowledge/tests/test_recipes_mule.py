@@ -8,6 +8,7 @@ import random
 import time
 import unittest
 
+import numpy as np
 import pandas as pd
 
 import test_recipes as tr
@@ -314,6 +315,91 @@ class TestMuleEdgeCases(unittest.TestCase):
         trail = tr.recipes()["flow_trace"]({"transactions": _dense()}, CFG, "Q0", "forward")
         self.assertLess(time.perf_counter() - start, 5)
         self.assertTrue(trail["tx_id"].is_unique)
+
+
+class TestFixRound1(unittest.TestCase):
+    """Task 5 fix round 1: bounded pass ratio, scalable FLOW-TRACE, direction check, CPTY family."""
+
+    def test_layering_rising_chain_not_flagged(self):
+        rows = [("X1", "2026-08-01 10:00", "Q1", "Q2", 1000.0, "m"),
+                ("X2", "2026-08-01 12:00", "Q2", "Q3", 1100.0, "m"),   # forwards more than received
+                ("X3", "2026-08-02 12:00", "Q3", "Q4", 1200.0, "m")]
+        self.assertTrue(run_card("flow_layering", {"transactions": _tx(rows)}).empty)
+        rows[1] = ("X2", "2026-08-01 12:00", "Q2", "Q3", 1000.0, "m")  # exactly 100 % is still a pass
+        rows[2] = ("X3", "2026-08-02 12:00", "Q3", "Q4", 950.0, "m")
+        self.assertEqual(sorted(run_card("flow_layering", {"transactions": _tx(rows)})["entity_id"]),
+                         ["Q1", "Q2", "Q3", "Q4"])
+
+    def test_layering_random_lognormal_flags_few(self):
+        rng = np.random.default_rng(5)
+        n, accts = 20000, 2000
+        names = np.array([f"Q{i}" for i in range(accts)])
+        a = rng.integers(0, accts, n)
+        b = (a + rng.integers(1, accts, n)) % accts
+        ts = pd.Timestamp("2026-06-01") + pd.to_timedelta(rng.uniform(0, 90, n), unit="D")
+        tx = pd.DataFrame({"tx_id": [f"X{i}" for i in range(n)], "ts": ts, "from_acct": names[a],
+                           "to_acct": names[b], "amount": np.round(rng.lognormal(8, 1, n), 2),
+                           "channel": "m"})
+        start = time.perf_counter()
+        ev = run_card("flow_layering", {"transactions": tx})
+        self.assertLess(time.perf_counter() - start, 30)
+        self.assertLess(ev["entity_id"].nunique() / accts, 0.02)
+        for text in ev["explanation"]:
+            self.assertIn("ไม่เกินยอดที่รับ", text)
+
+    def test_flow_trace_bad_direction_raises(self):
+        for bad in ["forwards", "back", "", None]:
+            with self.assertRaises(ValueError) as cm:
+                tr.recipes()["flow_trace"](sample_tables(), CFG, "L01", bad)
+            self.assertIn("forward", str(cm.exception))
+            self.assertIn("backward", str(cm.exception))
+
+    def test_flow_trace_period_limits_first_hop(self):
+        rows = [("X1", "2026-07-30 10:00", "Q1", "Q2", 100.0, "m"),
+                ("X2", "2026-08-30 10:00", "Q1", "Q3", 100.0, "m"),
+                ("X3", "2026-09-01 10:00", "Q3", "Q4", 100.0, "m"),   # later hop may leave the month
+                ("X4", "2026-09-03 10:00", "Q1", "Q5", 100.0, "m")]
+        f = tr.recipes()["flow_trace"]
+        self.assertEqual(list(f({"transactions": _tx(rows)}, CFG, "Q1", "forward", "2026-08")["tx_id"]),
+                         ["X2", "X3"])
+        self.assertEqual(list(f({"transactions": _tx(rows)}, CFG, "Q1", "forward")["tx_id"]),
+                         ["X1", "X2", "X4", "X3"])
+
+    def test_flow_trace_cap_disclosed(self):
+        f = tr.recipes()["flow_trace"]
+        self.assertEqual(CFG["FLOW.MAX_TRAIL_ROWS"], 5000)
+        full = f({"transactions": _dense()}, CFG, "Q0", "forward")
+        self.assertFalse(full.attrs["truncated"])
+        self.assertEqual(full.attrs["note"], "")
+        small = f({"transactions": _dense()}, {**CFG, "FLOW.MAX_TRAIL_ROWS": 10}, "Q0", "forward")
+        self.assertEqual(len(small), 10)
+        self.assertTrue(small.attrs["truncated"])
+        self.assertIn("FLOW.MAX_TRAIL_ROWS", small.attrs["note"])
+        self.assertEqual(list(small["tx_id"]), list(full["tx_id"][:10]))
+
+    def test_flow_trace_hub_is_fast_and_capped(self):
+        rng = np.random.default_rng(9)
+        n, accts = 120000, 5000
+        names = np.array([f"Q{i}" for i in range(accts)])
+        a = rng.integers(0, accts, n)
+        b = (a + rng.integers(1, accts, n)) % accts
+        hub = rng.random(n) < 0.05  # 5 % of transfers come from the hub Q0
+        a[hub] = 0
+        b[hub] = rng.integers(1, accts, hub.sum())
+        ts = pd.Timestamp("2026-06-01") + pd.to_timedelta(rng.uniform(0, 90, n), unit="D")
+        tx = pd.DataFrame({"tx_id": [f"X{i}" for i in range(n)], "ts": ts, "from_acct": names[a],
+                           "to_acct": names[b], "amount": 100.0, "channel": "m"})
+        for period in (None, "2026-07"):
+            start = time.perf_counter()
+            trail = tr.recipes()["flow_trace"]({"transactions": tx}, CFG, "Q0", "forward", period)
+            self.assertLess(time.perf_counter() - start, 10)
+            self.assertLessEqual(len(trail), CFG["FLOW.MAX_TRAIL_ROWS"])
+            self.assertTrue(trail["tx_id"].is_unique)
+
+    def test_cpty_cards_share_one_skill_family(self):
+        for func in ("cpty_profile", "cpty_new_large"):
+            ev = run_card(func)
+            self.assertEqual(set(ev["skill_family"]), {"5.3 Behavioral"})
 
 
 def _dense(n=1000, accts=20, seed=11):

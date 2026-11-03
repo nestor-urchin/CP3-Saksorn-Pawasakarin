@@ -117,7 +117,7 @@ Priority = ตาราง Confidence × Materiality แล้ว **ปรับ
 | ต่ำ | กลาง + Human Review | ต่ำ | ต่ำ |
 
 ## 11. Mule Account pattern, Counterparty และ Money Flow (เพิ่มใน v1.1)
-แหล่งที่มาของทุกค่าในหมวดนี้: แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ (ค่าเริ่มต้นสำหรับการตรวจเชิงวิเคราะห์ ไม่ใช่เกณฑ์ที่หน่วยงานกำกับกำหนด)
+แหล่งที่มาของค่าในหมวดนี้: แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ (ค่าเริ่มต้นสำหรับการตรวจเชิงวิเคราะห์ ไม่ใช่เกณฑ์ที่หน่วยงานกำกับกำหนด) ยกเว้น `FLOW.MAX_TRAIL_ROWS` ซึ่งเป็นขีดจำกัดทางเทคนิค
 | ค่า | ความหมาย | ที่มา |
 |---|---|---|
 | `MULE.DWELL_HOURS = 24` | เงินเข้าแล้วออกภายในกี่ชั่วโมง ถือว่า dwell สั้น | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
@@ -133,6 +133,7 @@ Priority = ตาราง Confidence × Materiality แล้ว **ปรับ
 | `FLOW.WINDOW_DAYS = 7` | ช่วงเวลาที่ไล่เส้นทางเงิน | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
 | `FLOW.MIN_PASS_RATIO = 90%` | แต่ละทอดส่งต่อเงินอย่างน้อยเท่าไรจึงนับเป็น layering | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
 | `FLOW.AUTO_MAX_ENTITIES = 10` | จำนวนบัญชีที่ไล่เส้นทางเงินอัตโนมัติ | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `FLOW.MAX_TRAIL_ROWS = 5,000` | จำนวนแถวสูงสุดของ Money Flow trail ต่อการไล่ 1 ครั้ง ถึงขีดนี้แล้วหยุดและแจ้งว่าผลอาจไม่ครบ | ขีดจำกัดทางเทคนิคเพื่อให้ผลอ่านได้และไม่เกินเวลาประมวลผล |
 
 ## Machine Config (สำหรับ recipe)
 JSON ก้อนเดียวนี้คือค่าที่ recipe อ่านเป็น `cfg[<key>]` — key ระดับบนสุดต้องมีในตาราง/หัวข้อของไฟล์นี้ (key ที่ขึ้นต้นด้วย `_` ใช้เป็น runtime context) และ `ASSESS.PRIORITY` เรียง Confidence ก่อน แล้วจึง Materiality ตามตาราง Priority (ไม่รวมหมายเหตุ Human Review)
@@ -162,6 +163,7 @@ JSON ก้อนเดียวนี้คือค่าที่ recipe อ�
   "FLOW.WINDOW_DAYS": 7,
   "FLOW.MIN_PASS_RATIO": 0.9,
   "FLOW.AUTO_MAX_ENTITIES": 10,
+  "FLOW.MAX_TRAIL_ROWS": 5000,
   "ASSESS.CLEARLY_TRIVIAL": 0.05,
   "ASSESS.PRIORITY": {
     "สูง": {"สูง": "สูง", "กลาง": "กลาง", "ต่ำ": "ต่ำ"},
@@ -175,7 +177,7 @@ JSON ก้อนเดียวนี้คือค่าที่ recipe อ�
 | เวอร์ชัน | วันที่ | การเปลี่ยนแปลง |
 |---|---|---|
 | 1.0 | 2026-11-03 | ฉบับแรก: ค่ามาตรฐานทั่วไปทุก skill |
-| 1.1 | 2026-11-03 | เพิ่มหมวด 11 (MULE / CPTY / FLOW รวม `MULE.DWELL_MIN_PAIRS`, `MULE.NEW_ACCT_MIN_TX`), `BEH.VELOCITY.SD_FLOOR`, `NET.CYCLE.MAX_PATHS`, `REGISTRY.VERSION` และ Machine Config JSON สำหรับ recipe (ไม่เปลี่ยนค่าเดิม) |
+| 1.1 | 2026-11-03 | เพิ่มหมวด 11 (MULE / CPTY / FLOW รวม `MULE.DWELL_MIN_PAIRS`, `MULE.NEW_ACCT_MIN_TX`), `BEH.VELOCITY.SD_FLOOR`, `NET.CYCLE.MAX_PATHS`, `FLOW.MAX_TRAIL_ROWS`, `REGISTRY.VERSION` และ Machine Config JSON สำหรับ recipe (ไม่เปลี่ยนค่าเดิม) |
 
 ## ข้อห้าม (Guardrails)
 - ห้ามนำเสนอค่าในไฟล์นี้ว่าเป็นนโยบายที่องค์กรอนุมัติแล้ว — ต้องแจ้งว่าเป็นค่ามาตรฐานทุกครั้ง

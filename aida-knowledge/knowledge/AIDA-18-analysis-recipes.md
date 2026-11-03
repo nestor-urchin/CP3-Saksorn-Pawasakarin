@@ -429,14 +429,14 @@ def mule_network(tables: dict, cfg: dict) -> pd.DataFrame:
                          pd.DataFrame(rows), cfg)
 ```
 
-## การ์ด Counterparty (5.2 / 5.3)
+## การ์ด Counterparty (5.3)
 
 ### CPTY-PROFILE
-ต่อบัญชีผู้โอน (from_acct) ต่อเดือน: จำนวนคู่ค้า, สัดส่วนคู่ค้าใหม่ (คู่ค้าที่บัญชีไม่เคยโอนให้ในเดือนก่อนหน้า) และส่วนแบ่งยอดของคู่ค้าสูงสุด
+ต่อบัญชีผู้โอน (from_acct) ต่อเดือน: จำนวนคู่ค้า, สัดส่วนคู่ค้าใหม่ (คู่ค้าที่บัญชีไม่เคยโอนให้ในเดือนก่อนหน้า) และส่วนแบ่งยอดของคู่ค้าสูงสุด (ใช้ skill family 5.3 Behavioral เดียวกับ CPTY-NEW-LARGE เพราะทั้งสองการ์ดอาจอ้างเหตุการณ์คู่ค้าเดียวกัน จึงไม่นับเป็น 2 skill family ใน Confidence)
 เป็นสัญญาณ R4 เมื่อสัดส่วนคู่ค้าใหม่ ≥ `CPTY.NEW_RATIO = 50%` และบัญชีมีเดือนที่มีรายการก่อนหน้า ≥ spike_months ของ BEH.BASELINE.MIN_PERIODS; record_refs = รายการที่โอนให้คู่ค้าใหม่
 
 ```python
-# RECIPE CPTY-PROFILE v1.0 | Skill: 5.2 Concentration | Risk: R4
+# RECIPE CPTY-PROFILE v1.0 | Skill: 5.3 Behavioral | Risk: R4
 # Registry: CPTY.NEW_RATIO, BEH.BASELINE.MIN_PERIODS | Input: transactions(tx_id, ts, from_acct, to_acct, amount)
 def cpty_profile(tables: dict, cfg: dict) -> pd.DataFrame:
     t = clean_tx(tables["transactions"])
@@ -462,12 +462,12 @@ def cpty_profile(tables: dict, cfg: dict) -> pd.DataFrame:
             for p, n, k, r, top, amt, pr in zip(hit["period"], hit["n"], hit["n_new"], hit["ratio"],
                                                hit["top"], hit["amt"], hit["prior"])],
         "record_refs": [refs[(a, p)] for a, p in zip(hit["from_acct"], hit["period"])]})
-    return evidence_rows("CPTY-PROFILE", "1.0", "5.2 Concentration", "R4", "CPTY.NEW_RATIO",
+    return evidence_rows("CPTY-PROFILE", "1.0", "5.3 Behavioral", "R4", "CPTY.NEW_RATIO",
                          found, cfg)
 ```
 
 ### CPTY-NEW-LARGE
-หารายการโอนครั้งแรกจากบัญชีผู้โอน (from_acct) ไปยังคู่ค้าที่ไม่เคยโอนให้มาก่อน ซึ่งยอด ≥ `CPTY.NEW_LARGE.MULTIPLIER = 5` × median ยอดโอนของบัญชีนั้น
+หารายการโอนครั้งแรกจากบัญชีผู้โอน (from_acct) ไปยังคู่ค้าที่ไม่เคยโอนให้มาก่อน ซึ่งยอด ≥ `CPTY.NEW_LARGE.MULTIPLIER = 5` × median ยอดโอนของบัญชีนั้น (median ของยอดที่บัญชีนั้นโอนออกทั้งไฟล์)
 ไม่นับเดือนแรกที่บัญชีมีรายการในไฟล์ เพราะยังไม่มีประวัติให้รู้ว่าคู่ค้าใดเป็นคู่ค้าใหม่จริง; 1 แถวต่อบัญชีต่อเดือน
 
 ```python
@@ -497,41 +497,54 @@ def cpty_new_large(tables: dict, cfg: dict) -> pd.DataFrame:
 ## การ์ด Money Flow (5.9)
 
 ### FLOW-TRACE
-ไล่เส้นทางเงินจากบัญชีที่ระบุ ไปข้างหน้า (`direction="forward"` = เงินไปที่ใด) หรือย้อนกลับ (`"backward"` = เงินมาจากที่ใด) แบบ BFS ตามลำดับเวลา ไม่เกิน `FLOW.MAX_HOPS = 4` ทอด และอยู่ภายใน `FLOW.WINDOW_DAYS = 7` วันนับจากทอดแรกของเส้นทาง; แต่ละรายการถูกไล่ต่อเพียงครั้งเดียว
-ไม่ใช่การ์ดวิเคราะห์และไม่สร้าง Evidence — signature `flow_trace(tables, cfg, start_acct, direction)` คืน Money Flow trail ตาม AIDA-17 (ใช้อัตโนมัติกับบัญชี Priority สูงสุดไม่เกิน `FLOW.AUTO_MAX_ENTITIES = 10` บัญชี หรือเมื่อผู้ใช้สั่ง)
+ไล่เส้นทางเงินจากบัญชีที่ระบุ ไปข้างหน้า (`direction="forward"` = เงินไปที่ใด) หรือย้อนกลับ (`"backward"` = เงินมาจากที่ใด; ค่าอื่น → ValueError) แบบ BFS ตามลำดับเวลา ไม่เกิน `FLOW.MAX_HOPS = 4` ทอด ภายใน `FLOW.WINDOW_DAYS = 7` วันนับจากทอดแรกของเส้นทาง; แต่ละรายการถูกไล่ต่อเพียงครั้งเดียว และ `period="YYYY-MM"` (ถ้าระบุ) จำกัดทอดแรกให้อยู่ในเดือนนั้น (การไล่อัตโนมัติส่งเดือนของ Finding; ไม่ระบุ = ทั้งไฟล์)
+ไม่สร้าง Evidence — signature `flow_trace(tables, cfg, start_acct, direction, period=None)` คืน Money Flow trail ตาม AIDA-17 ไม่เกิน `FLOW.MAX_TRAIL_ROWS = 5,000` แถว; ถึงขีดนี้แล้วหยุดและ `trail.attrs["truncated"] = True` พร้อม `trail.attrs["note"]` (ข้อความไทยที่ต้องแจ้งผู้ใช้ว่าผลอาจไม่ครบ); ใช้อัตโนมัติกับบัญชี Priority สูงสุดไม่เกิน `FLOW.AUTO_MAX_ENTITIES = 10` บัญชี หรือเมื่อผู้ใช้สั่ง
 
 ```python
 # RECIPE FLOW-TRACE v1.0 | Skill: 5.9 Network | Risk: -
-# Registry: FLOW.MAX_HOPS, FLOW.WINDOW_DAYS | Input: transactions(tx_id, ts, from_acct, to_acct, amount)
+# Registry: FLOW.MAX_HOPS, FLOW.WINDOW_DAYS, FLOW.MAX_TRAIL_ROWS | Input: transactions(tx_id, ts, from_acct, to_acct, amount)
 TRAIL_COLUMNS = ["trace_id", "start_acct", "direction", "hop", "from_acct", "to_acct", "amount",
                  "ts", "tx_id"]
-def flow_trace(tables: dict, cfg: dict, start_acct: str, direction: str) -> pd.DataFrame:
-    t = clean_tx(tables["transactions"])
-    fwd = direction == "forward"  # "backward" = where the money came from
-    side, nxt = ("from_acct", "to_acct") if fwd else ("to_acct", "from_acct")
-    win, by = pd.Timedelta(days=cfg["FLOW.WINDOW_DAYS"]), {a: g for a, g in t.groupby(side)}
-    rows, seen, frontier = [], set(), [(start_acct, None, None)]
+def flow_trace(tables: dict, cfg: dict, start_acct: str, direction: str,
+               period: str = None) -> pd.DataFrame:
+    if direction not in ("forward", "backward"):
+        raise ValueError(f'direction ต้องเป็น "forward" หรือ "backward" เท่านั้น (ได้รับ {direction!r})')
+    t = clean_tx(tables["transactions"]).reset_index(drop=True)
+    fwd, cap = direction == "forward", cfg["FLOW.MAX_TRAIL_ROWS"]
+    ts, per = t["ts"].to_numpy(), t["period"].to_numpy()
+    other = t["to_acct" if fwd else "from_acct"].to_numpy()
+    by = t.groupby("from_acct" if fwd else "to_acct").indices  # account -> positions, time-sorted
+    win = pd.Timedelta(days=cfg["FLOW.WINDOW_DAYS"]).to_timedelta64()
+    seen, pos, hops, cut = np.zeros(len(t), dtype=bool), [], [], False
+    frontier = [(start_acct, None, None)]
     for hop in range(1, cfg["FLOW.MAX_HOPS"] + 1):
         later = []
         for acct, last, first in frontier:
-            g = by.get(acct)
-            if g is None:
-                continue
-            if last is not None:  # keep time order, within FLOW.WINDOW_DAYS of the first hop
-                g = (g[(g["ts"] >= last) & (g["ts"] <= first + win)] if fwd
-                     else g[(g["ts"] <= last) & (g["ts"] >= first - win)])
-            for r in g[~g["tx_id"].isin(seen)].itertuples(index=False):
-                seen.add(r.tx_id)  # each transfer is followed once
-                rows.append((hop, r.from_acct, r.to_acct, r.amount, r.ts, r.tx_id))
-                later.append((getattr(r, nxt), r.ts, r.ts if first is None else first))
-        frontier = later
-    trail = pd.DataFrame(rows, columns=["hop", "from_acct", "to_acct", "amount", "ts", "tx_id"])
-    return trail.assign(trace_id=f"TRACE-{cfg['_RUN']['run_id']}-{start_acct}-{direction}",
-                        start_acct=start_acct, direction=direction)[TRAIL_COLUMNS]
+            idx = by.get(acct, np.empty(0, dtype=int))
+            if last is None:
+                idx = idx if period is None else idx[per[idx] == period]
+            else:  # keep time order, within FLOW.WINDOW_DAYS of the first hop
+                lo, hi = (last, first + win) if fwd else (first - win, last)
+                idx = idx[np.searchsorted(ts[idx], lo, "left"):np.searchsorted(ts[idx], hi, "right")]
+            idx = idx[~seen[idx]]
+            cut = cut or len(idx) > cap - len(pos)
+            idx = idx[:cap - len(pos)]
+            seen[idx] = True  # each transfer is followed once
+            pos += list(idx)
+            hops += [hop] * len(idx)
+            later += [(o, s, s if first is None else first) for o, s in zip(other[idx], ts[idx])]
+        frontier = [] if cut else later
+    trail = t.iloc[pos][["from_acct", "to_acct", "amount", "ts", "tx_id"]].reset_index(drop=True)
+    trail = trail.assign(hop=hops, trace_id=f"TRACE-{cfg['_RUN']['run_id']}-{start_acct}-{direction}",
+                         start_acct=start_acct, direction=direction)[TRAIL_COLUMNS]
+    trail.attrs["truncated"] = cut
+    trail.attrs["note"] = (f"ไล่เส้นทางถึงขีดจำกัด FLOW.MAX_TRAIL_ROWS ({cap:,} แถว) แล้วหยุด "
+                           f"— เส้นทางเงินอาจไม่ครบ ควรระบุเดือนหรือบัญชีให้แคบลง") if cut else ""
+    return trail
 ```
 
 ### FLOW-LAYERING
-หาเส้นทางเงินต่อเนื่อง ≥ 3 ทอด (A → B → C → D) ที่แต่ละทอดเกิดไม่ก่อนทอดก่อนหน้า อยู่ภายใน `FLOW.WINDOW_DAYS = 7` วันนับจากทอดแรก และส่งต่อ ≥ `FLOW.MIN_PASS_RATIO = 90%` ของยอดที่รับในทอดก่อนหน้า; บัญชีในเส้นทางต้องไม่ซ้ำกัน
+หาเส้นทางเงินต่อเนื่อง ≥ 3 ทอด (A → B → C → D) ที่แต่ละทอดเกิดไม่ก่อนทอดก่อนหน้า อยู่ภายใน `FLOW.WINDOW_DAYS = 7` วันนับจากทอดแรก และส่งต่อ ≥ `FLOW.MIN_PASS_RATIO = 90%` แต่ไม่เกิน 100% ของยอดที่รับในทอดก่อนหน้า (เส้นทางที่ยอดเพิ่มขึ้นไม่ใช่การส่งต่อเงิน); บัญชีในเส้นทางต้องไม่ซ้ำกัน
 ทุกบัญชีบนเส้นทางได้ Evidence R1 (1 แถวต่อบัญชีต่อเดือนของทอดแรก แสดงเส้นทางแรกที่พบ) — ค้นหาด้วยทอดกลางของเส้นทาง 3 ทอด (เส้นทางที่ยาวกว่าประกอบด้วยเส้นทาง 3 ทอดเสมอ) จึงไม่ต้องไล่ทุกเส้นทางและรันเร็วแม้ข้อมูลหนาแน่น
 
 ```python
@@ -549,8 +562,10 @@ def flow_layering(tables: dict, cfg: dict) -> pd.DataFrame:
         p, s = ins.get(src[m]), outs.get(dst[m])
         if p is None or s is None:
             continue
-        p = p[(day[p] <= day[m]) & (day[p] >= day[m] - w) & (amt[m] >= r * amt[p]) & (src[p] != dst[m])]
-        s = s[(day[s] >= day[m]) & (day[s] <= day[m] + w) & (amt[s] >= r * amt[m]) & (dst[s] != src[m])]
+        p = p[(day[p] <= day[m]) & (day[p] >= day[m] - w) & (amt[m] >= r * amt[p]) & (amt[m] <= amt[p])
+              & (src[p] != dst[m])]  # each hop forwards >= MIN_PASS_RATIO and <= 100 % of what it got
+        s = s[(day[s] >= day[m]) & (day[s] <= day[m] + w) & (amt[s] >= r * amt[m]) & (amt[s] <= amt[m])
+              & (dst[s] != src[m])]
         if len(p) == 0 or len(s) == 0:
             continue
         ok = (day[s][None, :] <= day[p][:, None] + w) & (dst[s][None, :] != src[p][:, None])
@@ -563,7 +578,8 @@ def flow_layering(tables: dict, cfg: dict) -> pd.DataFrame:
         "entity_id": a, "period": p0, "metric": "min_pass_ratio",
         "value": round(min(amt[e2] / amt[e1], amt[e3] / amt[e2]), 4), "threshold": r,
         "explanation": f"บัญชีอยู่บนเส้นทางเงิน {src[e1]} → {src[e2]} → {dst[e2]} → {dst[e3]} (3 ทอด "
-        f"ภายใน {w} วัน แต่ละทอดส่งต่อ {amt[e2] / amt[e1]:.0%} และ {amt[e3] / amt[e2]:.0%} ของยอดที่รับ; "
+        f"ภายใน {w} วัน แต่ละทอดส่งต่อ {amt[e2] / amt[e1]:.0%} และ {amt[e3] / amt[e2]:.0%} ของยอดที่รับ "
+        f"คือส่งต่ออย่างน้อย {r:.0%} และไม่เกินยอดที่รับ; "
         f"FLOW.MIN_PASS_RATIO ≥ {r:.0%} และ FLOW.WINDOW_DAYS ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร; "
         f"แสดงเส้นทางแรกที่พบ) — ควรตรวจสอบเพิ่มเติม", "record_refs": [txid[e1], txid[e2], txid[e3]]}
         for (a, p0), (e1, e2, e3) in best.items()])
