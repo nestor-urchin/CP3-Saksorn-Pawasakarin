@@ -257,8 +257,8 @@ class TestEdgeCases(unittest.TestCase):
     def test_cycle_search_cap_reported(self):
         rows = [("X1", "2026-08-01 10:00", "Q1", "Q2", 500.0, "mobile"),
                 ("X2", "2026-08-02 10:00", "Q2", "Q1", 400.0, "mobile"),
-                ("X3", "2026-08-03 10:00", "Q3", "Q4", 400.0, "mobile"),
-                ("X4", "2026-08-04 10:00", "Q4", "Q5", 400.0, "mobile")]
+                ("X3", "2026-08-03 10:00", "Q1", "Q3", 400.0, "mobile"),
+                ("X4", "2026-07-01 10:00", "Q3", "Q1", 400.0, "mobile")]  # Q1->Q3->Q1 not time ordered
         ev = run_card("net_cycle", {"transactions": _tx(rows)}, {**CFG, "NET.CYCLE.MAX_PATHS": 2})
         self.assertEqual(sorted(ev["entity_id"]), ["Q1", "Q2"])  # found before the cap
         for text in ev["explanation"]:

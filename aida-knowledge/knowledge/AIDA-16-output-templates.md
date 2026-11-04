@@ -11,7 +11,7 @@
 ## 1. Audit Workbook (.xlsx) — sheet ตามลำดับ
 | # | Sheet | เนื้อหา |
 |---|---|---|
-| 1 | README | ป้ายเตือนข้อมูลอ่อนไหว, run_id + Registry version, ข้อจำกัดของการหาเครือข่าย, รูปแบบวันที่ที่ใช้แปลง, หมายเหตุ trace ที่ไม่ครบ, วิธีอ่านแต่ละ sheet |
+| 1 | README | ป้ายเตือนข้อมูลอ่อนไหว, run_id + Registry version, ข้อจำกัดของการหาเครือข่าย, รูปแบบวันที่ที่ใช้แปลง, หมายเหตุข้อจำกัดของการ์ด (card_notes เช่น NET-CYCLE ค้นหาถึงขีดจำกัด), หมายเหตุ trace ที่ไม่ครบ, วิธีอ่านแต่ละ sheet |
 | 2 | Dataset_Profile | ผล PROF-PROFILE (item, value, detail) |
 | 3 | Analysis_Plan | ผล GATE-CAPABILITY (recipe_id, decision Run/Skip, reason, missing) |
 | 4 | Evidence | Evidence schema (AIDA-17) ครบทุกคอลัมน์ รวม record_refs (tx_id คั่นด้วย ", ") และ data_ref |
@@ -139,7 +139,7 @@ function summary() {
   h += "<h3>Finding ตามความเสี่ยง</h3><div id='sR'></div>";
   h += '<p class="note">ทุก Finding มีสถานะ "รอ Human Review" — Priority มาจาก Confidence (จำนวนกลุ่มวิธีวิเคราะห์ที่ให้สัญญาณตรงกัน' +
     " และความครบของแหล่งข้อมูล) ร่วมกับ Materiality (ยอดเงินที่เกี่ยวข้องเทียบกับฐานที่ผู้ใช้ยืนยัน) ตาม AIDA-14</p>";
-  h += '<p class="warn">' + esc(D.limits) + "</p>" + D.flow_notes.map(n => '<p class="warn">' + esc(n) + "</p>").join("");
+  h += '<p class="warn">' + esc(D.limits) + "</p>" + (D.card_notes || []).concat(D.flow_notes).map(n => '<p class="warn">' + esc(n) + "</p>").join("");
   h += "<h3>Analysis Plan (Run / Skip พร้อมเหตุผล)</h3><div id='sP'></div><h3>Materiality</h3><div id='sM'></div>";
   $("sum").innerHTML = h;
   tbl($("sR"), Object.keys(RISK).map(r => ({risk: r, name: RISK[r], findings: Rk[r] || 0})), ["risk", "name", "findings"]);

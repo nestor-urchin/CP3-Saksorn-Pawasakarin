@@ -10,11 +10,11 @@
 ## การ์ด Evidence builder
 
 ### CORE-EVIDENCE
-ฟังก์ชันกลางที่การ์ดวิเคราะห์ทุกใบใช้: `clean_tx` (ตัดรายการโอนเข้าบัญชีตัวเอง, ยอด ≤ 0 และรายการที่ไม่มีวันเวลา, แปลง ts, เพิ่ม period YYYY-MM), `one_per_month` (1 แถวต่อบัญชีต่อเดือน) และ `evidence_rows` (สร้างแถวตาม Evidence schema)
+ฟังก์ชันกลางที่การ์ดวิเคราะห์ทุกใบใช้: `clean_tx` (ตัดรายการโอนเข้าบัญชีตัวเอง, ยอด ≤ 0 และรายการที่ไม่มีวันเวลา, แปลง ts, เพิ่ม period YYYY-MM), `one_per_month` (1 แถวต่อบัญชีต่อเดือน), `evidence_rows` (สร้างแถวตาม Evidence schema), `card_note` (หมายเหตุข้อจำกัดของการ์ดใน `tables["_out"]["notes"]` เช่น ค้นหาถึงขีดจำกัด — แจ้งได้แม้ไม่มีแถว Evidence; OUT-BUNDLE บันทึกเป็น REVIEW ใน Run Log และแสดงใน README / Dashboard) และ `core_evidence` (Evidence ว่าง ใช้เมื่อไม่มีการ์ดใดรัน)
 การ์ดนี้ไม่มีเกณฑ์ใด ๆ — อ่านเพียง `REGISTRY.VERSION` และ `cfg["_RUN"]` (run_id, data_ref)
 
 ```python
-# RECIPE CORE-EVIDENCE v1.0 | Skill: - | Risk: -
+# RECIPE CORE-EVIDENCE v1.1 | Skill: - | Risk: -
 # Registry: REGISTRY.VERSION | Input: found(entity_id, period, metric, value, threshold, explanation, record_refs)
 EVIDENCE_COLUMNS = ["evidence_id", "run_id", "recipe_id", "recipe_version", "skill_family",
                     "entity_type", "entity_id", "risk", "period", "metric", "value", "threshold",
@@ -45,6 +45,11 @@ def evidence_rows(recipe_id: str, version: str, skill_family: str, risk: str,
         skill_family=skill_family, entity_type=etype, risk=risk, registry_key=registry_key,
         registry_version=cfg["REGISTRY.VERSION"], data_ref=run["data_ref"],
         record_refs=[[str(x) for x in r] for r in f["record_refs"]])[EVIDENCE_COLUMNS]
+def card_note(tables: dict, recipe_id: str, version: str, detail: str) -> str:
+    # a limit a card hit (e.g. a search cap) even with 0 rows: OUT-BUNDLE logs REVIEW and shows it
+    tables.setdefault("_out", {}).setdefault("notes", []).append(
+        {"recipe_id": recipe_id, "recipe_version": version, "detail": detail})
+    return detail
 def core_evidence(tables: dict = None, cfg: dict = None) -> pd.DataFrame:
     return pd.DataFrame(columns=EVIDENCE_COLUMNS)  # empty Evidence frame
 ```
@@ -529,11 +534,11 @@ def log_run(events: list, cfg: dict) -> pd.DataFrame:
 ทุก output แสดงข้อมูลเต็มตามที่ผู้ใช้/องค์กรกำหนด พร้อมป้ายเตือนข้อมูลอ่อนไหวข้อความเดียวกัน (`OUT_BANNER`) และข้อจำกัดของการหาเครือข่าย (`OUT_LIMITS`) — ถ้าองค์กรต้องการปิดบังข้อมูล แก้ที่การ์ด OUT-* จุดเดียว
 
 ### OUT-BUNDLE
-รวมผลทุกขั้นเป็น `bundle` (dict) ที่การ์ด Output ทั้ง 3 ใบใช้: profile, plan, evidence, findings (ASSESS-CMP), mule_networks (`tables["_out"]`), flows (Money Flow trail ทุก trace ต่อกัน), materiality (ตาราง item / value / detail), run_log, run_id และเพิ่ม 3 key: `prep` (info วันที่จาก PREP-MAP), `flow_notes` (ข้อความ trace ที่ถึง `FLOW.MAX_TRAIL_ROWS` — **อ่าน `trail.attrs` ของแต่ละ trail ก่อนต่อกัน** เพราะ attrs หายเมื่อ `pd.concat`) และ `edges` (รายการใน record_refs ของ Finding = subgraph ที่เกี่ยวกับ Finding; network_id เมื่อผู้โอนและผู้รับอยู่ในเครือข่ายเดียวกัน)
+รวมผลทุกขั้นเป็น `bundle` (dict) ที่การ์ด Output ทั้ง 3 ใบใช้: profile, plan, evidence, findings (ASSESS-CMP), mule_networks (`tables["_out"]`), flows (Money Flow trail ทุก trace ต่อกัน), materiality (ตาราง item / value / detail), run_log, run_id และเพิ่ม 4 key: `card_notes` (หมายเหตุข้อจำกัดของการ์ดจาก `tables["_out"]["notes"]` เช่น NET-CYCLE ค้นหาถึงขีดจำกัดในเดือนใด — ต่อท้าย Run Log เป็นแถว REVIEW stage 9 ให้เองถ้ายังไม่มี และแสดงใน README / Dashboard), `prep` (info วันที่จาก PREP-MAP), `flow_notes` (ข้อความ trace ที่ถึง `FLOW.MAX_TRAIL_ROWS` — **อ่าน `trail.attrs` ของแต่ละ trail ก่อนต่อกัน** เพราะ attrs หายเมื่อ `pd.concat`) และ `edges` (รายการใน record_refs ของ Finding = subgraph ที่เกี่ยวกับ Finding; network_id เมื่อผู้โอนและผู้รับอยู่ในเครือข่ายเดียวกัน)
 `trails` = list ของผล `flow_trace` ทุกครั้ง (อัตโนมัติ + ตามคำสั่ง); `materiality_amount` = ฐานที่ผู้ใช้ยืนยันที่จุดยืนยัน 1 (None = ไม่ได้ระบุ → "ไม่ได้ประเมิน") และ `materiality_basis` = ข้อความอธิบายฐาน (แบบ ก. / ข.)
 
 ```python
-# RECIPE OUT-BUNDLE v1.0 | Skill: - | Risk: -
+# RECIPE OUT-BUNDLE v1.1 | Skill: - | Risk: -
 # Registry: ASSESS.CLEARLY_TRIVIAL | Input: tables(transactions, _prep, _out), profile, plan, evidence, findings(ASSESS-CMP), trails(FLOW-TRACE), run_log, materiality_amount
 OUT_BANNER = ("ไฟล์นี้มีข้อมูลส่วนบุคคล/ข้อมูลบัญชีและธุรกรรมแบบเต็ม — จำกัดการเข้าถึงตามนโยบายองค์กร "
               "ผลลัพธ์เป็นสัญญาณที่ต้องตรวจสอบเพิ่มเติม ไม่ใช่ข้อสรุป")
@@ -547,6 +552,9 @@ def out_bundle(tables: dict, profile, plan, evidence, findings, trails: list, ru
     nets = tables.get("_out", {}).get("mule_networks")
     nets = nets if nets is not None else pd.DataFrame(columns=NETWORK_COLUMNS)
     notes = [f"{t['trace_id'].iloc[0]}: {t.attrs['note']}" for t in trails if t.attrs.get("truncated")]
+    cn = [n for n in tables.get("_out", {}).get("notes", []) if n["detail"] not in set(run_log["detail"])]
+    run_log = pd.concat([run_log, log_run([{"stage": 9, "status": "REVIEW", **n} for n in cn], cfg)],
+                        ignore_index=True) if cn else run_log  # card limits (card_note) -> REVIEW
     full = [t for t in trails if len(t)]  # read attrs above: pd.concat drops them
     flows = pd.concat(full, ignore_index=True) if full else pd.DataFrame(columns=TRAIL_COLUMNS)
     t = clean_tx(tables["transactions"])
@@ -567,7 +575,8 @@ def out_bundle(tables: dict, profile, plan, evidence, findings, trails: list, ru
     return {"profile": profile, "plan": plan, "evidence": evidence, "findings": findings,
             "mule_networks": nets, "flows": flows, "run_log": run_log, "run_id": cfg["_RUN"]["run_id"],
             "materiality": pd.DataFrame(rows, columns=["item", "value", "detail"]),
-            "prep": tables.get("_prep", {}), "flow_notes": notes, "edges": edges}
+            "prep": tables.get("_prep", {}), "flow_notes": notes, "edges": edges,
+            "card_notes": [f"{n['recipe_id']}: {n['detail']}" for n in tables.get("_out", {}).get("notes", [])]}
 ```
 
 ### OUT-CELL
@@ -595,7 +604,7 @@ def out_cell(tables: dict = None, cfg: dict = None) -> None:
 Findings แสดง 14 คอลัมน์ตาม Schema + member_accts + คอลัมน์ว่าง reviewer, disposition, review_date ให้ผู้ตรวจกรอก (record_refs ดูได้ใน sheet Evidence); list / dict เขียนเป็นข้อความคั่นด้วย ", "; ตัดอักขระควบคุมที่ Excel เก็บไม่ได้ (เช่น \x0b) และกันสูตรด้วย `no_formula` (OUT-CELL); ข้อความยาวเกินที่ Excel เก็บได้ใน 1 ช่องถูกตัดและลงท้าย "…" (ดูฉบับเต็มใน CSV); Money_Flow แสดงหมายเหตุการไล่เส้นทาง (flow_notes) เหนือตาราง
 
 ```python
-# RECIPE OUT-WORKBOOK v1.0 | Skill: - | Risk: -
+# RECIPE OUT-WORKBOOK v1.1 | Skill: - | Risk: -
 # Registry: REGISTRY.VERSION | Input: bundle from OUT-BUNDLE, path of the .xlsx
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE  # control characters a worksheet cannot hold
 EXCEL_CELL_MAX = 32767  # characters Excel can store in one cell (technical limit, not an audit threshold)
@@ -616,7 +625,7 @@ def out_workbook(bundle: dict, path: str, cfg: dict) -> str:
     b, p = bundle, bundle.get("prep") or {}
     readme = [OUT_BANNER, f"run_id: {b['run_id']} | Registry version: {cfg['REGISTRY.VERSION']}", OUT_LIMITS,
               f"รูปแบบวันที่ที่ใช้แปลง: {p.get('date_format', '-')} | แปลงปี พ.ศ.: {'ใช่' if p.get('be_converted') else 'ไม่'}"
-              f" | วันและเดือน ≤ 12 ทั้งคู่ {p.get('ambiguous_dates', 0)} รายการ", *b["flow_notes"],
+              f" | วันและเดือน ≤ 12 ทั้งคู่ {p.get('ambiguous_dates', 0)} รายการ", *b.get("card_notes", []), *b["flow_notes"],
               "วิธีอ่านไฟล์ (sheet ตามลำดับ):"] + [f"{k}: {v}" for k, v in OUT_SHEETS.items()]
     f = b["findings"]
     fnd = f[FINDING_COLUMNS].assign(member_accts=f["member_accts"], reviewer=None, disposition=None, review_date=None)
@@ -667,7 +676,7 @@ def out_network_csv(bundle: dict, folder: str, cfg: dict) -> list:
 template ไม่ครบ (ไม่มี placeholder 1 จุด หรือไม่มีบรรทัด `<!-- END-OF-TEMPLATE -->`) → ValueError — ห้ามเขียน template เอง ให้ดึง AIDA-16 ใหม่
 
 ```python
-# RECIPE OUT-DASHBOARD v1.0 | Skill: - | Risk: -
+# RECIPE OUT-DASHBOARD v1.1 | Skill: - | Risk: -
 # Registry: REGISTRY.VERSION | Input: bundle from OUT-BUNDLE, template (```html block of AIDA-16), path of the .html
 DASH_PLACEHOLDER, DASH_END = "/*__AIDA_DATA__*/", "<!-- END-OF-TEMPLATE -->"
 def out_dashboard(bundle: dict, template: str, path: str, cfg: dict) -> str:
@@ -681,7 +690,8 @@ def out_dashboard(bundle: dict, template: str, path: str, cfg: dict) -> str:
     ui = {k: rows(bundle[k]) for k in ("profile", "plan", "evidence", "mule_networks", "flows",
                                        "materiality", "run_log")}
     ui.update(findings=rows(f[keep]), edges=rows(e[e["network_id"].notna()]), run_id=bundle["run_id"],
-              flow_notes=bundle["flow_notes"], prep=bundle.get("prep", {}), limits=OUT_LIMITS,
+              flow_notes=bundle["flow_notes"], card_notes=bundle.get("card_notes", []),
+              prep=bundle.get("prep", {}), limits=OUT_LIMITS,
               registry_version=cfg["REGISTRY.VERSION"])
     data = json.dumps(ui, ensure_ascii=False, default=str).replace("<", "\\u003c")
     with open(path, "w", encoding="utf-8") as fh:

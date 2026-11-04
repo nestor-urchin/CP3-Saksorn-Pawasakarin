@@ -140,49 +140,52 @@ def temp_offhours(tables: dict, cfg: dict) -> pd.DataFrame:
 
 ### NET-CYCLE
 หาวงเงินหมุนวน (A→B→…→A) ยาว min_len–max_len ทอด ด้วย DFS แบบวนซ้ำ (ไม่ใช้ networkx) ทอดถัดไปต้องเกิดไม่ก่อนทอดก่อนหน้าและอยู่ภายใน days วันนับจากทอดแรก; ใช้รายการแรกต่อคู่บัญชีเท่านั้นและนับวงตามชุดบัญชี (ไม่นับซ้ำ)
-แต่ละบัญชีในวงได้ 1 แถวต่อเดือน (เดือนของทอดแรก) โดย record_refs คือรายการของวงที่ระบุใน explanation เท่านั้น; ค้นหาไม่เกิน `NET.CYCLE.MAX_PATHS = 100,000` เส้นทาง; เกณฑ์อ้าง `NET.CYCLE = 2–5 ทอด ภายใน 30 วัน`
+แต่ละบัญชีในวงได้ 1 แถวต่อเดือน (เดือนของทอดแรก) โดย record_refs คือรายการของวงที่ระบุใน explanation เท่านั้น; เกณฑ์อ้าง `NET.CYCLE = 2–5 ทอด ภายใน 30 วัน`
+ก่อนค้นหาตัดรายการที่อยู่บนวงไม่ได้แน่นอนออกซ้ำจนคงที่ (ผู้โอนไม่มีเงินเข้า หรือผู้รับไม่มีเงินออก) แล้วค้นหาไม่เกิน `NET.CYCLE.MAX_PATHS = 100,000` เส้นทาง **ต่อเดือนของทอดแรก** (เดือนหนึ่งใช้ครบไม่ทำให้เดือนอื่นไม่ถูกค้น); เดือนที่ถึงขีดนี้ → หมายเหตุ "ผลอาจไม่ครบ" ผ่าน `card_note` (CORE-EVIDENCE) แม้ไม่พบวงเลย ซึ่ง OUT-BUNDLE บันทึกเป็น REVIEW ใน Run Log และแสดงใน README / Dashboard
 
 ```python
-# RECIPE NET-CYCLE v1.0 | Skill: 5.9 Network | Risk: R1
+# RECIPE NET-CYCLE v1.1 | Skill: 5.9 Network | Risk: R1
 # Registry: NET.CYCLE, NET.CYCLE.MAX_PATHS | Input: transactions(tx_id, ts, from_acct, to_acct, amount)
 def net_cycle(tables: dict, cfg: dict) -> pd.DataFrame:
     from bisect import bisect_left, bisect_right
-    t = clean_tx(tables["transactions"])
-    c, cap = cfg["NET.CYCLE"], cfg["NET.CYCLE.MAX_PATHS"]
+    t, c, cap = clean_tx(tables["transactions"]), cfg["NET.CYCLE"], cfg["NET.CYCLE.MAX_PATHS"]
     win = pd.Timedelta(days=c["days"])
+    while not (keep := t["from_acct"].isin(t["to_acct"]) & t["to_acct"].isin(t["from_acct"])).all():
+        t = t[keep]  # a transfer on a cycle needs an inflow to its sender and an outflow from its receiver
     out = {a: (list(g["ts"]), list(g["to_acct"]), list(g["tx_id"])) for a, g in t.groupby("from_acct")}
-    cycles, steps = {}, 0
+    cycles, steps, capped = {}, {}, set()  # budget: NET.CYCLE.MAX_PATHS per month of the first hop
     for t0, a0, b0, x0, p0 in zip(t["ts"], t["from_acct"], t["to_acct"], t["tx_id"], t["period"]):
         stack = [(b0, t0, (a0, b0), (x0,))]
-        while stack and steps < cap:
+        while stack and steps.get(p0, 0) < cap:
             node, ts, path, refs = stack.pop()
-            steps += 1
+            steps[p0] = steps.get(p0, 0) + 1
             tss, tos, txs = out.get(node, ([], [], []))
             seen = set()  # earliest edge per (node, next account) only
             for j in range(bisect_left(tss, ts), bisect_right(tss, t0 + win)):
-                nxt = tos[j]
-                if nxt in seen:
+                if tos[j] in seen:
                     continue
-                seen.add(nxt)
-                if nxt == a0 and len(path) >= c["min_len"]:
+                seen.add(tos[j])
+                if tos[j] == a0 and len(path) >= c["min_len"]:
                     i = path.index(min(path))  # same accounts in rotation = same cycle
                     cycles.setdefault((path[i:] + path[:i], p0), (path, refs + (txs[j],)))
-                elif nxt not in path and len(path) < c["max_len"]:
-                    stack.append((nxt, tss[j], path + (nxt,), refs + (txs[j],)))
-    note = f" — ค้นหาถึงขีดจำกัด NET.CYCLE.MAX_PATHS ({cap:,} เส้นทาง) ผลอาจไม่ครบ" if steps >= cap else ""
+                elif tos[j] not in path and len(path) < c["max_len"]:
+                    stack.append((tos[j], tss[j], path + (tos[j],), refs + (txs[j],)))
+        if stack:  # budget of this month used up with paths left unsearched
+            capped.add(p0)
+    note = {p: card_note(tables, "NET-CYCLE", "1.1", f"เดือน {p}: ค้นหาถึงขีดจำกัด NET.CYCLE.MAX_PATHS ({cap:,} "
+            "เส้นทางต่อเดือน) แล้วหยุด ผลของเดือนนี้อาจไม่ครบ (ไม่พบวงไม่ได้แปลว่าไม่มีวงเงินหมุนวน) — ควรแบ่งไฟล์"
+            "หรือจำกัดบัญชีให้แคบลง") for p in sorted(capped)}  # shown even when no cycle is found
     best = {}  # (account, month) -> [first cycle found, its refs, number of cycles]
     for (_, p0), (path, refs) in cycles.items():
         for a in path:
             best.setdefault((a, p0), [path, refs, 0])[2] += 1
     found = pd.DataFrame([{
-        "entity_id": a, "period": p0, "metric": "cycle_length", "value": len(path),
-        "threshold": c["max_len"], "record_refs": list(refs),
-        "explanation": f"บัญชีอยู่ในวงเงินหมุนวน {' → '.join(path + (path[0],))} ({len(path)} ทอด "
-        f"ภายใน {c['days']} วัน; พบ {n} วงในเดือนนี้ แสดงวงแรก; NET.CYCLE {c['min_len']}–{c['max_len']} "
-        f"ทอด ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร) — ควรตรวจสอบเพิ่มเติม{note}"}
-        for (a, p0), (path, refs, n) in best.items()],
-        columns=["entity_id", "period", "metric", "value", "threshold", "explanation", "record_refs"])
-    return evidence_rows("NET-CYCLE", "1.0", "5.9 Network", "R1", "NET.CYCLE", found, cfg)
+        "entity_id": a, "period": p0, "metric": "cycle_length", "value": len(path), "threshold": c["max_len"],
+        "record_refs": list(refs), "explanation": f"บัญชีอยู่ในวงเงินหมุนวน {' → '.join(path + (path[0],))} "
+        f"({len(path)} ทอด ภายใน {c['days']} วัน; พบ {n} วงในเดือนนี้ แสดงวงแรก; NET.CYCLE {c['min_len']}–"
+        f"{c['max_len']} ทอด ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร) — ควรตรวจสอบเพิ่มเติม"
+        + (f" — {note[p0]}" if p0 in note else "")} for (a, p0), (path, refs, n) in best.items()])
+    return evidence_rows("NET-CYCLE", "1.1", "5.9 Network", "R1", "NET.CYCLE", found, cfg)
 ```
 
 ### NET-FUNNEL
