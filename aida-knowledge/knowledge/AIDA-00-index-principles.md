@@ -1,11 +1,12 @@
 # AIDA-00 · สารบัญ หลักการ และอภิธานศัพท์
-> ไฟล์: AIDA-00 | เวอร์ชัน: 1.0 | ส่วนหนึ่งของ AIDA Knowledge Pack
+> ไฟล์: AIDA-00 | เวอร์ชัน: 1.1 | ส่วนหนึ่งของ AIDA Knowledge Pack
 > ไฟล์นี้ตอบคำถาม: AIDA คืออะไร, หลักการออกแบบ 6 ข้อมีอะไรบ้าง, Layer 1–10 คืออะไร, ควรเปิดไฟล์ไหนเพื่อตอบเรื่องใด, ศัพท์แต่ละคำหมายถึงอะไร
 
 ## สรุปสั้น
 **AIDA (Audit Intelligence Architecture)** คือสถาปัตยกรรมที่เชื่อม Business Risk, Data, Evidence, Audit Judgment และ Management Action อย่างมีวินัย
 เป้าหมาย: **"จาก เครื่องมือตรวจจับ สู่ ระบบปฏิบัติการด้านหลักฐานและข้อมูลเชิงลึกสำหรับงานตรวจสอบ"**
 AIDA ระยะ A ทำหน้าที่ **ที่ปรึกษาด้านวิธีการ** — แนะนำ skill, gate, การตีความ และ output ตามกรอบนี้ โดยผู้ตรวจสอบเป็นผู้ตัดสินใจ
+ระยะ B1 เพิ่มการ **วิเคราะห์ข้อมูลธุรกรรมจริง** ด้วย Code Interpreter (use case Potential Unusual Transactions across Mule Accounts) จากการ์ดสูตรใน AIDA-18/19 — ผลเป็นสัญญาณให้ Human Review ไม่ใช่ข้อสรุป
 
 ## Target State: หลักการออกแบบ 6 ข้อ
 | หลักการ | ความหมาย | ผลต่อการทำงาน |
@@ -36,10 +37,10 @@ AIDA ระยะ A ทำหน้าที่ **ที่ปรึกษาด
 | AIDA-13 | Traceability และ Governance | Evidence Lineage, Audit Trail, Version |
 | AIDA-14 | Configuration Registry | ค่ามาตรฐาน / Threshold |
 | AIDA-15 | Acceptance Checklist และ FAQ | เกณฑ์ตรวจรับ, ตัวอย่างคำถาม |
-| AIDA-16 | Output Templates | สงวนไว้ระยะ B |
-| AIDA-17 | Evidence Schema | สงวนไว้ระยะ B |
-| AIDA-18 | Calculation Recipes | สงวนไว้ระยะ B |
-| AIDA-19 | Run Log Template | สงวนไว้ระยะ B |
+| AIDA-16 | Output Templates (ระยะ B1) | sheet ของ Audit Workbook, คอลัมน์ nodes/edges/flows.csv, template HTML Dashboard, ป้ายเตือนข้อมูลอ่อนไหว |
+| AIDA-17 | Data & Evidence Schema (ระยะ B1) | คอลัมน์มาตรฐานของ transactions/accounts, Schema Evidence / Finding / Mule Network / Money Flow trail / Run Log, Data Reference, ความเสี่ยง R1–R4 |
+| AIDA-18 | Analysis Recipes (ระยะ B1) | การ์ดวิเคราะห์ 15 ใบ: STAT, BEH, TEMP, NET, MULE (Mule Account pattern / เครือข่าย), CPTY, FLOW (ไล่เส้นทางเงิน) |
+| AIDA-19 | Pipeline Recipes (ระยะ B1) | การ์ด 19 ใบ: Evidence builder, เตรียมข้อมูล, Dataset Profile, Gate (Run/Skip), รวมผล, ประเมิน C/M/P, Run Log, Output |
 
 ## Layer 1–10 โดยย่อ
 Layer 7–10 มาจากสไลด์โดยตรง ส่วน Layer 1–6 จัดกลุ่มตามโครงสร้าง workflow (AIDA-01) และกลุ่ม skill

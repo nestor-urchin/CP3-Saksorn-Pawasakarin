@@ -49,7 +49,7 @@
 ## 2. ขอบเขต
 
 ### ทำใน B1
-- 24 recipes (ข้อ 4.3), ไฟล์ Knowledge ใหม่ 4 ไฟล์ (ข้อ 3), แก้ไฟล์เดิม 4 ไฟล์
+- 34 recipes (ข้อ 4.3: การ์ดวิเคราะห์ 15 ใบใน AIDA-18 + การ์ด pipeline/ช่วย/output 19 ใบใน AIDA-19), ไฟล์ Knowledge ใหม่ 4 ไฟล์ (ข้อ 3), แก้ไฟล์เดิม 4 ไฟล์
 - ข้อมูลตัวอย่างฝังความผิดปกติ + เฉลย, unit/end-to-end tests, spike kit, eval ระยะ B
 
 ### ไม่ทำใน B1
@@ -68,7 +68,7 @@
 | 16 | `AIDA-16-output-templates.md` | โครง sheet ของ Workbook, คอลัมน์ CSV ของ Network Package, template HTML ของ Dashboard |
 | 17 | `AIDA-17-data-evidence-schema.md` | คอลัมน์มาตรฐาน (4.1), schema Evidence / Finding / Mule Network / Run Log (4.4), รูปแบบ Data Reference, ตารางความเสี่ยง R1–R4 |
 | 18 | `AIDA-18-analysis-recipes.md` | การ์ดวิเคราะห์ 15 ใบ |
-| 19 | `AIDA-19-pipeline-recipes.md` | การ์ดเตรียมข้อมูล, Gate, รวมผล, ประเมิน, สร้าง output 9 ใบ |
+| 19 | `AIDA-19-pipeline-recipes.md` | การ์ด Evidence builder, เตรียมข้อมูล, Gate, รวมผล, ประเมิน, Run Log, สร้าง output 19 ใบ (รวมการ์ดช่วย) |
 
 ชื่อไฟล์ 17–19 เปลี่ยนจากที่สงวนไว้ในระยะ A ให้ตรงกับเนื้อหา
 
@@ -120,7 +120,8 @@ def net_funnel(tables: dict, cfg: dict) -> pd.DataFrame:
 - ≤ 40 บรรทัดโค้ดต่อการ์ด (ยกเว้น template Dashboard ใน AIDA-16)
 - การ์ดวิเคราะห์ส่งคืน DataFrame ตาม Evidence schema; DataFrame ว่าง = ไม่พบ
 
-### 4.3 การ์ด 25 ใบ
+### 4.3 การ์ด 34 ใบ
+เดิมวางแผน 25 ใบ ระหว่างพัฒนาแยกฟังก์ชันช่วยออกเป็นการ์ดของตัวเองเพื่อให้แต่ละใบ ≤ 40 บรรทัด จึงเป็น 34 ใบ (AIDA-18: 15 ใบ, AIDA-19: 19 ใบ)
 | กลุ่ม | การ์ด | วิธี | ไฟล์ |
 |---|---|---|---|
 | เตรียมข้อมูล + Gate | `PREP-MAP`, `PROF-PROFILE`, `GATE-CAPABILITY` | จับคู่คอลัมน์, Dataset Profile + Gate, Run/Skip ทุกการ์ด | AIDA-19 |
@@ -142,6 +143,14 @@ def net_funnel(tables: dict, cfg: dict) -> pd.DataFrame:
 | Evidence builder (ใช้ร่วม) | `CORE-EVIDENCE` | ฟังก์ชันสร้างแถว Evidence ตาม schema 4.4 ให้ทุกการ์ดวิเคราะห์ใช้ร่วมกัน (โหลดก่อนการ์ดอื่น) | AIDA-19 |
 | รวมผล + ประเมิน | `UNIFY-FINDINGS`, `ASSESS-CMP` | จัดกลุ่ม entity + risk + เดือน; ตาราง Priority | AIDA-19 |
 | Output + Log | `OUT-WORKBOOK`, `OUT-NETWORK-CSV`, `OUT-DASHBOARD`, `LOG-RUN` | | AIDA-19 |
+| การ์ดช่วย (เพิ่มระหว่างพัฒนา) | `CORE-BASELINE` | ฟังก์ชัน baseline ร่วมของ BEH-VELOCITY / BEH-SPIKE | AIDA-19 |
+| | `PREP-DATE`, `PREP-TS` | แยกและแปลงวันที่ (พ.ศ., เดือนไทย, dd/mm/yyyy, Excel serial) ตัดสินรูปแบบครั้งเดียวต่อคอลัมน์ ให้ PREP-MAP ใช้ | AIDA-19 |
+| | `PROF-CHECKS` | เงื่อนไข STOP ของ PROF-PROFILE | AIDA-19 |
+| | `GATE-VOLUME` | ตรวจปริมาณข้อมูลที่ทำให้การ์ดไม่มีผลแน่นอน → Skip + reason ให้ GATE-CAPABILITY | AIDA-19 |
+| | `UNIFY-REFS` | ทำให้ record_refs เป็น list ของ tx_id เสมอ ให้ UNIFY-FINDINGS / ASSESS-CMP / OUT-BUNDLE | AIDA-19 |
+| | `SELECT-AUTO-TRACE` | เลือกบัญชี (R2/R3 Priority สูงสุด ≤ `FLOW.AUTO_MAX_ENTITIES`) สำหรับ FLOW-TRACE อัตโนมัติ | AIDA-19 |
+| | `OUT-BUNDLE` | รวมผลทุกขั้นเป็น bundle + ป้ายเตือน/ข้อจำกัด ให้การ์ด OUT-* | AIDA-19 |
+| | `OUT-CELL` | กันข้อความที่ Excel อ่านเป็นสูตร (formula injection) ใน Workbook และ CSV | AIDA-19 |
 
 ### 4.4 Schema (AIDA-17)
 | Schema | คอลัมน์ |
@@ -189,6 +198,14 @@ FLOW-TRACE ไม่สร้าง Evidence — สร้าง Money Flow trai
 | `FLOW.WINDOW_DAYS` | 7 | ช่วงเวลาที่ไล่เส้นทางเงิน |
 | `FLOW.MIN_PASS_RATIO` | 90% | แต่ละทอดส่งต่อเงินอย่างน้อยเท่าไรจึงนับเป็น layering |
 | `FLOW.AUTO_MAX_ENTITIES` | 10 | จำนวนบัญชีที่ไล่เส้นทางเงินอัตโนมัติ |
+
+key ที่เพิ่มระหว่างพัฒนา (คัดลอกจาก AIDA-14 v1.1):
+
+| Key | ค่า | ความหมาย |
+|---|---|---|
+| `NET.CYCLE.MAX_PATHS` | 100,000 | จำนวนเส้นทางสูงสุดที่ NET-CYCLE ค้นหา ถึงขีดนี้แล้วหยุดและแจ้งว่าผลอาจไม่ครบ — ที่มา: ขีดจำกัดทางเทคนิคเพื่อป้องกันหน่วยความจำเต็ม |
+| `BEH.VELOCITY.SD_FLOOR` | sqrt(mean) (Poisson) | ค่า SD ขั้นต่ำของ baseline จำนวนรายการต่อวัน (BEH-VELOCITY): ใช้ max(SD, √ค่าเฉลี่ย) — ที่มา: ความแปรปรวนของข้อมูลนับแบบ Poisson; Machine Config "none" = ไม่ใช้ค่าขั้นต่ำ |
+| `FLOW.MAX_TRAIL_ROWS` | 5,000 | จำนวนแถวสูงสุดของ Money Flow trail ต่อการไล่ 1 ครั้ง ถึงขีดนี้แล้วหยุดและแจ้งว่าผลอาจไม่ครบ — ที่มา: ขีดจำกัดทางเทคนิคเพื่อให้ผลอ่านได้และไม่เกินเวลาประมวลผล |
 
 ### 4.7 Use case logic: Mule Accounts
 
