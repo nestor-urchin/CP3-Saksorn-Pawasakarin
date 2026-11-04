@@ -158,5 +158,75 @@ class TestOffHoursMinimum(unittest.TestCase):
         self.assertEqual(list(self.run_off(_off_rows("S7", 1, 5), cfg)["entity_id"]), ["S7"])
 
 
+IDENTITY = {"transactions": {}, "accounts": {}}
+
+
+def raw_with_accounts(opened_values):
+    """Raw (text) sample transactions + an accounts table whose opened_at values are given."""
+    tx, acc = tp.raw_samples()
+    acc = acc.head(len(opened_values)).assign(opened_at=list(opened_values))
+    return tx, acc
+
+
+class TestOpenedAtReadable(unittest.TestCase):
+    def test_mostly_unreadable_opened_at_stops(self):
+        vals = ["1 มกราคม 2569"] * 20 + ["2026-01-01 00:00:00"]  # full Thai month names
+        tables = R()["prep_map"](dict(zip(("transactions", "accounts"), raw_with_accounts(vals))), IDENTITY, CFG)
+        self.assertEqual(tables["_prep"]["unparsed_opened_at"], 20)
+        self.assertEqual(tables["_prep"]["opened_at_rows"], 21)
+        profile, status = R()["prof_profile"](tables, CFG)
+        self.assertTrue(status.startswith("STOP"), status)
+        self.assertIn("opened_at", status)
+        self.assertIn("GATE.COMPLETENESS.MIN", status)
+        self.assertIn("1 มกราคม 2569", status)  # names an example
+        row = profile[profile["item"].str.contains("opened_at")]
+        self.assertEqual(len(row), 1)
+        self.assertEqual(row["value"].iloc[0], 20)
+
+    def test_readable_opened_at_ok_with_profile_row(self):
+        c = tp.sample_chain()
+        self.assertEqual(c["status"], "OK")
+        row = c["profile"][c["profile"]["item"].str.contains("opened_at")]
+        self.assertEqual(row["value"].iloc[0], 0)
+        self.assertEqual(c["tables"]["_prep"]["unparsed_opened_at"], 0)
+
+    def test_no_accounts_no_opened_at_check(self):
+        tables = R()["prep_map"]({"transactions": tp.raw_samples()[0]}, IDENTITY, CFG)
+        self.assertEqual(tables["_prep"]["opened_at_rows"], 0)
+        self.assertEqual(R()["prof_profile"](tables, CFG)[1], "OK")
+
+
+class TestAmountReadable(unittest.TestCase):
+    def test_mostly_unreadable_amount_stops_with_examples(self):
+        tx = tp.raw_samples()[0].copy()
+        tx.loc[tx.index[:600], "amount"] = "1,000 บาท"
+        tables = R()["prep_map"]({"transactions": tx}, IDENTITY, CFG)
+        self.assertIn("1,000 บาท", tables["_prep"]["amount_samples"])
+        profile, status = R()["prof_profile"](tables, CFG)
+        self.assertTrue(status.startswith("STOP"), status)
+        self.assertIn("amount", status)
+        self.assertIn("1,000 บาท", status)
+        self.assertIn("GATE.COMPLETENESS.MIN", status)
+
+    def test_few_unreadable_amounts_ok(self):
+        tx = tp.raw_samples()[0].copy()
+        tx.loc[tx.index[:10], "amount"] = "(1,000.00)"
+        tables = R()["prep_map"]({"transactions": tx}, IDENTITY, CFG)
+        self.assertEqual(tables["_prep"]["unparsed_amount"], 10)
+        self.assertEqual(R()["prof_profile"](tables, CFG)[1], "OK")
+
+
+class TestFirstSeenNotAssessed(unittest.TestCase):
+    def test_gate_states_accounts_not_assessed(self):
+        c = tp.sample_chain()
+        tables = {k: v for k, v in c["tables"].items() if k != "accounts"}
+        reason = R()["gate_capability"](tables, CFG).set_index("recipe_id").loc["MULE-NEW-ACCT", "reason"]
+        t = tr.helper("clean_tx")(tables["transactions"])
+        seen = pd.concat([t.groupby(s)["ts"].min() for s in ("from_acct", "to_acct")]).groupby(level=0).min()
+        n = int((seen <= t["ts"].min() + pd.Timedelta(days=CFG["MULE.NEW_ACCT_DAYS"])).sum())
+        self.assertGreater(n, 0)
+        self.assertIn(f"ไม่ได้ประเมิน {n:,} บัญชี", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

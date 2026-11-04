@@ -175,45 +175,53 @@ def prep_ts(tables: dict = None, cfg: dict = None) -> None:
 
 ### PREP-MAP
 เปลี่ยนชื่อคอลัมน์ตาม mapping ที่ผู้ใช้ยืนยันแล้ว (จุดยืนยัน 1) เช่น `{"transactions": {"เลขที่รายการ": "tx_id"}, "accounts": {...}}`, แปลง `ts` / `opened_at` ด้วย `to_naive_ts`, `amount` เป็นตัวเลข (ตัด , ฿ และช่องว่าง) และรหัสรายการ/บัญชีเป็นข้อความ
-ไม่ลบแถวใด — `tables["_prep"]` นับ ts ที่ไม่มีหรือแปลงไม่ได้, รายการโอนเข้าบัญชีตัวเอง, ยอด ≤ 0, amount ที่แปลงไม่ได้ และเก็บ info ของ ts (date_format, be_converted, ambiguous_dates, date_samples — แสดงให้ผู้ใช้ยืนยันที่จุดยืนยัน 1) กับ `opened_at_info` (การ์ดวิเคราะห์ตัดรายการที่ไม่ใช้เองผ่าน `clean_tx`)
+ไม่ลบแถวใด — `tables["_prep"]` นับ ts ที่ไม่มีหรือแปลงไม่ได้, รายการโอนเข้าบัญชีตัวเอง, ยอด ≤ 0, amount ที่แปลงไม่ได้ (พร้อมตัวอย่างค่าเดิม `amount_samples` เช่น "1,000 บาท"), opened_at ของ accounts ที่ไม่มีหรือแปลงไม่ได้ (`unparsed_opened_at` จาก `opened_at_rows` บัญชี + `opened_at_samples`) และเก็บ info ของ ts (date_format, be_converted, ambiguous_dates, date_samples — แสดงให้ผู้ใช้ยืนยันที่จุดยืนยัน 1) กับ `opened_at_info` (การ์ดวิเคราะห์ตัดรายการที่ไม่ใช้เองผ่าน `clean_tx`)
 
 ```python
-# RECIPE PREP-MAP v1.1 | Skill: - | Risk: -
+# RECIPE PREP-MAP v1.2 | Skill: - | Risk: -
 # Registry: - | Input: raw {table: DataFrame}, mapping {table: {user column: standard column}}
 def prep_map(raw: dict, mapping: dict, cfg: dict) -> dict:
-    tables, dates = {}, {}
+    tables, dates, bad = {}, {}, {}  # bad: up to 3 unreadable raw values per column (for STOP reasons)
+    def unread(raw_col, conv):
+        return [str(x) for x in pd.unique(raw_col[conv.isna() & raw_col.notna()])[:3]]
     for name, df in raw.items():
         t = df.rename(columns=(mapping or {}).get(name, {})).copy()
         for c in ("ts", "opened_at"):
             if c in t.columns:
-                t[c], dates[c] = to_naive_ts(t[c])
+                r = t[c]
+                t[c], dates[c] = to_naive_ts(r)
+                bad[c] = unread(r, t[c])
         for c in ("tx_id", "from_acct", "to_acct", "acct_id"):
             if c in t.columns:
                 t[c] = t[c].map(lambda x: x if pd.isna(x) else str(x).strip())
         if "amount" in t.columns:
             a = t["amount"].map(lambda x: x.replace(",", "").replace("฿", "").strip()
                                 if isinstance(x, str) else x)
-            t["amount"] = pd.to_numeric(a, errors="coerce").astype(float)
+            r, t["amount"] = t["amount"], pd.to_numeric(a, errors="coerce").astype(float)
+            bad["amount"] = unread(r, t["amount"])
         tables[name] = t
     tx = tables.get("transactions", pd.DataFrame())
     def has(*cols):
         return all(c in tx.columns for c in cols)
     no_ts = {"date_format": "-", "be_converted": False, "ambiguous_dates": 0, "date_samples": []}
+    acc = tables.get("accounts")
+    oa = acc["opened_at"] if acc is not None and "opened_at" in acc.columns else pd.Series(dtype="datetime64[ns]")
     tables["_prep"] = {
         "unparsed_ts": int(tx["ts"].isna().sum()) if has("ts") else 0,
         "excluded_self": int((tx["from_acct"] == tx["to_acct"]).sum()) if has("from_acct", "to_acct") else 0,
         "excluded_nonpositive": int((tx["amount"] <= 0).sum()) if has("amount") else 0,
         "unparsed_amount": int(tx["amount"].isna().sum()) if has("amount") else 0,
-        **dates.get("ts", no_ts), "opened_at_info": dates.get("opened_at")}
+        "amount_samples": bad.get("amount", []), "opened_at_rows": len(oa), "opened_at_samples": bad.get("opened_at", []),
+        "unparsed_opened_at": int(oa.isna().sum()), **dates.get("ts", no_ts), "opened_at_info": dates.get("opened_at")}
     return tables
 ```
 
 ### PROF-PROFILE
-สร้าง Dataset Profile (คอลัมน์ item, value, detail): จำนวนรายการ, ความครบถ้วนของคอลัมน์มาตรฐาน, ช่วงเวลา, รูปแบบวันที่ที่ใช้แปลง, จำนวนบัญชี, ts ที่แปลงไม่ได้, รายการที่ไม่นำไปวิเคราะห์ (โอนเข้าบัญชีตัวเอง / ยอด ≤ 0), tx_id ซ้ำ และมีตาราง accounts หรือไม่
+สร้าง Dataset Profile (คอลัมน์ item, value, detail): จำนวนรายการ, ความครบถ้วนของคอลัมน์มาตรฐาน, ช่วงเวลา, รูปแบบวันที่ที่ใช้แปลง, จำนวนบัญชี, ts ที่แปลงไม่ได้, รายการที่ไม่นำไปวิเคราะห์ (โอนเข้าบัญชีตัวเอง / ยอด ≤ 0), tx_id ซ้ำ, มีตาราง accounts หรือไม่ และ opened_at ที่แปลงไม่ได้ (เมื่อมี accounts.opened_at)
 คืน status `"OK"` หรือ `"STOP: <เหตุผล>"` ตามเงื่อนไขในการ์ด PROF-CHECKS; STOP แล้วต้องแจ้งผู้ใช้และไม่รันขั้นต่อไป
 
 ```python
-# RECIPE PROF-PROFILE v1.1 | Skill: - | Risk: -
+# RECIPE PROF-PROFILE v1.2 | Skill: - | Risk: -
 # Registry: GATE.COMPLETENESS.MIN | Input: tables from PREP-MAP (transactions, accounts, _prep)
 PROFILE_TX_COLUMNS = ["tx_id", "ts", "from_acct", "to_acct", "amount", "currency", "channel"]
 def prof_profile(tables: dict, cfg: dict) -> tuple:
@@ -236,11 +244,17 @@ def prof_profile(tables: dict, cfg: dict) -> tuple:
     if "from_acct" in tx.columns and "to_acct" in tx.columns:
         add("จำนวนบัญชี", int(pd.concat([tx["from_acct"], tx["to_acct"]]).nunique()))
     add("ts ที่ไม่มีหรือแปลงเป็นวันเวลาไม่ได้", prep.get("unparsed_ts", 0))
-    add("amount ที่ไม่มีหรือแปลงเป็นตัวเลขไม่ได้ (ไม่นำไปวิเคราะห์)", prep.get("unparsed_amount", 0))
+    add("amount ที่ไม่มีหรือแปลงเป็นตัวเลขไม่ได้ (ไม่นำไปวิเคราะห์)", prep.get("unparsed_amount", 0),
+        "ตัวอย่างที่แปลงไม่ได้: " + (", ".join(prep.get("amount_samples", [])) or "-"))
     add("รายการโอนเข้าบัญชีตัวเอง (ไม่นำไปวิเคราะห์)", prep.get("excluded_self", 0))
     add("รายการยอด ≤ 0 (ไม่นำไปวิเคราะห์)", prep.get("excluded_nonpositive", 0))
     acc = tables.get("accounts")
     add("ตาราง accounts", "มี" if acc is not None else "ไม่มี", "" if acc is not None else "MULE-NEW-ACCT ใช้ basis=first_seen")
+    if prep.get("opened_at_rows"):
+        oi = prep.get("opened_at_info") or {}
+        add("opened_at ที่ไม่มีหรือแปลงเป็นวันที่ไม่ได้ (accounts)", prep.get("unparsed_opened_at", 0),
+            f"จาก {prep['opened_at_rows']} บัญชี; รูปแบบ {oi.get('date_format', '-')}; ตัวอย่างที่แปลงไม่ได้: "
+            + (", ".join(prep.get("opened_at_samples", [])) or "-"))
     if "tx_id" in tx.columns:
         ids = tx["tx_id"]
         dup = sorted(str(x) for x in ids[ids.duplicated(keep=False) & ids.notna()].unique())
@@ -250,10 +264,10 @@ def prof_profile(tables: dict, cfg: dict) -> tuple:
 ```
 
 ### PROF-CHECKS
-ฟังก์ชันช่วยของ PROF-PROFILE: `prof_checks` คืนรายการเหตุผล STOP — ไม่มีคอลัมน์ tx_id, tx_id ว่างหรือซ้ำ (`GATE.TRACE.REQUIRED`), ts ที่แปลงไม่ได้เกิน 1 − `GATE.COMPLETENESS.MIN = 95%` และช่วงวันที่ไม่สมเหตุสมผล: มีวันที่ก่อนปี 1990 (`PLAUSIBLE_MIN_YEAR` ใน PREP-DATE) หรือหลังวันที่รัน (`cfg["_RUN"]["run_date"]` ถ้ามี มิฉะนั้นวันนี้) ซึ่งมักเกิดจากปี พ.ศ. หรือรูปแบบวัน/เดือนสลับกัน
+ฟังก์ชันช่วยของ PROF-PROFILE: `prof_checks` คืนรายการเหตุผล STOP — ไม่มีคอลัมน์ tx_id, tx_id ว่างหรือซ้ำ (`GATE.TRACE.REQUIRED`), ts / amount / accounts.opened_at ที่ไม่มีหรือแปลงไม่ได้เกิน 1 − `GATE.COMPLETENESS.MIN = 95%` (amount และ opened_at ระบุตัวอย่างค่าที่แปลงไม่ได้ เช่น "1,000 บาท"; opened_at ตรวจเมื่อผู้ใช้จับคู่ opened_at ไว้ที่จุดยืนยัน 1 เท่านั้น — ถ้าไม่ต้องการใช้ ให้เอาออกจาก mapping แล้ว MULE-NEW-ACCT ใช้ basis=first_seen) และช่วงวันที่ไม่สมเหตุสมผล: มีวันที่ก่อนปี 1990 (`PLAUSIBLE_MIN_YEAR` ใน PREP-DATE) หรือหลังวันที่รัน (`cfg["_RUN"]["run_date"]` ถ้ามี มิฉะนั้นวันนี้) ซึ่งมักเกิดจากปี พ.ศ. หรือรูปแบบวัน/เดือนสลับกัน
 
 ```python
-# RECIPE PROF-CHECKS v1.0 | Skill: - | Risk: -
+# RECIPE PROF-CHECKS v1.1 | Skill: - | Risk: -
 # Registry: GATE.COMPLETENESS.MIN, GATE.TRACE.REQUIRED | Input: transactions(tx_id, ts), _prep from PREP-MAP
 def prof_checks(tx: pd.DataFrame, prep: dict, cfg: dict) -> list:
     stop, n, lim = [], len(tx), cfg["GATE.COMPLETENESS.MIN"]
@@ -266,6 +280,14 @@ def prof_checks(tx: pd.DataFrame, prep: dict, cfg: dict) -> list:
             stop.append(f"tx_id ว่าง {int(ids.isna().sum())} รายการ — record key ไม่ครบตาม GATE.TRACE.REQUIRED")
         if dup:
             stop.append(f"tx_id ซ้ำ {len(dup)} ค่า (เช่น {', '.join(dup[:5])}) — record key ไม่ unique ตาม GATE.TRACE.REQUIRED")
+    cols = [("amount", n, prep.get("unparsed_amount", 0), "ตัดหน่วย/ข้อความ เช่น บาท หรือวงเล็บออกจากจำนวนเงิน"),
+            ("accounts.opened_at", prep.get("opened_at_rows", 0), prep.get("unparsed_opened_at", 0),
+             "ตรวจรูปแบบวันที่ หรือเอา opened_at ออกจาก mapping เพื่อใช้ basis=first_seen")]
+    for col, rows, k, fix in cols:  # same 1 - GATE.COMPLETENESS.MIN rule as ts
+        if rows and k / rows > 1 - lim:
+            ex = ", ".join(f'"{x}"' for x in prep.get(col.split(".")[-1] + "_samples", []))
+            stop.append(f"{col} ไม่มีหรือแปลงไม่ได้ {k / rows:.1%} มากกว่า {1 - lim:.0%} (1 − GATE.COMPLETENESS.MIN)"
+                        f"{' เช่น ' + ex if ex else ''} — {fix} ที่จุดยืนยัน 1 แล้วรันใหม่")
     if "ts" not in tx.columns or not n:
         return stop
     bad = prep.get("unparsed_ts", 0) / n
@@ -284,10 +306,10 @@ def prof_checks(tx: pd.DataFrame, prep: dict, cfg: dict) -> list:
 
 ### GATE-CAPABILITY
 Analysis Plan: 1 แถวต่อการ์ดวิเคราะห์ 15 ใบ (คอลัมน์ recipe_id, decision = Run / Skip, reason, missing) ตาม Template Selection / Skip Reason ใน AIDA-03 — ไม่มีการ Skip โดยไม่มีเหตุผลและข้อมูลที่ขาด
-ทุกการ์ดเรียก `clean_tx` จึงต้องมี tx_id, ts, from_acct, to_acct และ amount (ไม่มี ts → Skip ทุกการ์ด เพราะกำหนด period ของ Evidence ไม่ได้); ปริมาณข้อมูลที่ทำให้การ์ดไม่มีผลแน่นอนตรวจด้วย `gate_volume` (การ์ด GATE-VOLUME); ไม่มี accounts.opened_at → MULE-NEW-ACCT Run ด้วย reason "basis=first_seen"; การ์ดสัญญาณที่ Run น้อยกว่า `MULE.MIN_SIGNALS` → MULE-PATTERN, MULE-CROSS-TX และ MULE-NETWORK Skip
+ทุกการ์ดเรียก `clean_tx` จึงต้องมี tx_id, ts, from_acct, to_acct และ amount (ไม่มี ts → Skip ทุกการ์ด เพราะกำหนด period ของ Evidence ไม่ได้); ปริมาณข้อมูลที่ทำให้การ์ดไม่มีผลแน่นอนตรวจด้วย `gate_volume` (การ์ด GATE-VOLUME); ไม่มี accounts.opened_at → MULE-NEW-ACCT Run ด้วย reason "basis=first_seen" พร้อมจำนวนบัญชีที่ไม่ได้ประเมิน (พบในช่วง MULE.NEW_ACCT_DAYS แรกของไฟล์); การ์ดสัญญาณที่ Run น้อยกว่า `MULE.MIN_SIGNALS` → MULE-PATTERN, MULE-CROSS-TX และ MULE-NETWORK Skip
 
 ```python
-# RECIPE GATE-CAPABILITY v1.1 | Skill: - | Risk: -
+# RECIPE GATE-CAPABILITY v1.2 | Skill: - | Risk: -
 # Registry: MULE.MIN_SIGNALS | Input: tables from PREP-MAP (transactions, accounts ถ้ามี)
 GATE_CARDS = ["STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE", "TEMP-OFFHOURS", "NET-CYCLE", "NET-FUNNEL",
               "MULE-DWELL", "MULE-NEW-ACCT", "MULE-PATTERN", "MULE-CROSS-TX", "MULE-NETWORK",
@@ -317,13 +339,13 @@ def gate_capability(tables: dict, cfg: dict) -> pd.DataFrame:
         if plan["MULE-NEW-ACCT"][0] == "Run" and basis == "opened_at":
             plan["MULE-NEW-ACCT"] = ("Run", "basis=opened_at (มี accounts.opened_at)", "-")
         elif plan["MULE-NEW-ACCT"][0] == "Run":
-            plan["MULE-NEW-ACCT"] = ("Run", "basis=first_seen (ไม่มี accounts.opened_at จึงใช้วันที่พบรายการแรก"
-                                     "ในไฟล์ ซึ่งอาจไม่ใช่วันเปิดบัญชีจริง)", "accounts.opened_at")
+            plan["MULE-NEW-ACCT"] = ("Run", "basis=first_seen (ไม่มี accounts.opened_at จึงใช้วันที่พบรายการแรกในไฟล์ ซึ่ง"
+                                     f"อาจไม่ใช่วันเปิดบัญชีจริง; ไม่ได้ประเมิน {vol['_not_assessed']:,} บัญชีที่พบใน "
+                                     "MULE.NEW_ACCT_DAYS วันแรกของไฟล์ เพราะอาจเปิดก่อนช่วงข้อมูล)", "accounts.opened_at")
         n_sig, need = sum(plan[r][0] == "Run" for r in GATE_SIGNALS), cfg["MULE.MIN_SIGNALS"]
         if n_sig < need:
             plan["MULE-PATTERN"] = ("Skip", f"การ์ดสัญญาณที่รันได้มี {n_sig} จาก {len(GATE_SIGNALS)} ใบ น้อยกว่า "
-                                    f"MULE.MIN_SIGNALS ({need} สัญญาณ ค่ามาตรฐานจาก AIDA-14) จึงไม่มีบัญชีใดเข้ารูปแบบได้",
-                                    "ปริมาณข้อมูลไม่พอ")
+                                    f"MULE.MIN_SIGNALS ({need} สัญญาณ AIDA-14) จึงไม่มีบัญชีใดเข้ารูปแบบได้", "ปริมาณข้อมูลไม่พอ")
         if plan["MULE-PATTERN"][0] == "Skip":
             for r in ("MULE-CROSS-TX", "MULE-NETWORK"):
                 plan[r] = ("Skip", "MULE-PATTERN ถูก Skip จึงไม่มีชุดบัญชีที่สอดคล้องกับ Mule Account pattern "
@@ -333,10 +355,10 @@ def gate_capability(tables: dict, cfg: dict) -> pd.DataFrame:
 
 ### GATE-VOLUME
 ฟังก์ชันช่วยของ GATE-CAPABILITY: `gate_volume` ตรวจปริมาณข้อมูลที่คำนวณได้ถูก ๆ จากรายการที่วิเคราะห์ได้ (หลัง `clean_tx`) และคืน `{recipe_id: เหตุผล Skip}` สำหรับการ์ดที่จะไม่มีผลแน่นอน แทนการรันแล้วได้ผลว่างโดยไม่บอกเหตุผล
-ตรวจ: วันที่มีรายการก่อนหน้า (velocity_days) และเดือนก่อนหน้า (spike_months) ตาม `BEH.BASELINE.MIN_PERIODS`, จำนวนรายการต่อ channel ตาม `GATE.SAMPLE.MIN`, จำนวนแหล่งเงินเข้าตาม `NET.FUNNEL`, ข้อมูลเพียง 1 เดือน (CPTY-NEW-LARGE) และช่วงข้อมูลไม่เกิน `MULE.NEW_ACCT_DAYS` เมื่อใช้ basis=first_seen
+ตรวจ: วันที่มีรายการก่อนหน้า (velocity_days) และเดือนก่อนหน้า (spike_months) ตาม `BEH.BASELINE.MIN_PERIODS`, จำนวนรายการต่อ channel ตาม `GATE.SAMPLE.MIN`, จำนวนแหล่งเงินเข้าตาม `NET.FUNNEL`, ข้อมูลเพียง 1 เดือน (CPTY-NEW-LARGE) และช่วงข้อมูลไม่เกิน `MULE.NEW_ACCT_DAYS` เมื่อใช้ basis=first_seen; key `_not_assessed` = จำนวนบัญชีที่พบใน MULE.NEW_ACCT_DAYS วันแรกของไฟล์ (MULE-NEW-ACCT แบบ first_seen ไม่ประเมิน) ให้ GATE-CAPABILITY แสดงใน reason
 
 ```python
-# RECIPE GATE-VOLUME v1.0 | Skill: - | Risk: -
+# RECIPE GATE-VOLUME v1.1 | Skill: - | Risk: -
 # Registry: BEH.BASELINE.MIN_PERIODS, GATE.SAMPLE.MIN, NET.FUNNEL, MULE.NEW_ACCT_DAYS | Input: transactions(tx_id, ts, from_acct, to_acct, amount, channel), accounts(opened_at) ถ้ามี
 def gate_volume(tables: dict, cfg: dict) -> dict:
     t = clean_tx(tables["transactions"])
@@ -363,6 +385,8 @@ def gate_volume(tables: dict, cfg: dict) -> dict:
     if src < fmin:
         out["NET-FUNNEL"] = f"ไม่มีบัญชีใดรับเงินจากแหล่งครบ {fmin} แหล่ง (สูงสุด {src} แหล่ง) ตาม NET.FUNNEL{k}"
     acc, span, nd = tables.get("accounts"), (t["ts"].max() - t["ts"].min()).days, cfg["MULE.NEW_ACCT_DAYS"]
+    seen = pd.concat([t.groupby(c)["ts"].min() for c in ("from_acct", "to_acct")]).groupby(level=0).min()
+    out["_not_assessed"] = int((seen <= t["ts"].min() + pd.Timedelta(days=nd)).sum())  # MULE-NEW-ACCT first_seen
     if (acc is None or "opened_at" not in acc.columns) and span <= nd:
         out["MULE-NEW-ACCT"] = (f"ไม่มี opened_at (basis=first_seen) และข้อมูลครอบคลุม {span} วัน ไม่เกิน "
                                 f"MULE.NEW_ACCT_DAYS ({nd} วัน{k}) จึงแยกบัญชีใหม่จากบัญชีที่มีอยู่ก่อนช่วงข้อมูลไม่ได้")
