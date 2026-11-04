@@ -21,6 +21,7 @@
 | 8 | Materiality | ฐานที่ผู้ใช้ยืนยัน (หรือ "ไม่ได้ประเมิน"), เกณฑ์สูง/กลาง/ต่ำ ตาม `ASSESS.CLEARLY_TRIVIAL = < 5% ของ Materiality` และจำนวน Finding ต่อระดับ |
 | 9 | Run_Log | Run Log schema (AIDA-17) |
 
+- ข้อความที่ขึ้นต้นด้วย = + - @ แท็บ หรือ carriage return ถูกเติม `'` ข้างหน้าทั้งใน Workbook และ CSV (กันไม่ให้ข้อมูลกลายเป็นสูตร — การ์ด OUT-CELL) และตัดอักขระควบคุมที่ Excel เก็บไม่ได้
 - list / dict เขียนเป็นข้อความ (คั่นด้วย ", ") — ข้อความที่ยาวเกินที่ Excel เก็บได้ใน 1 ช่องถูกตัดและลงท้าย "…" (ฉบับเต็มอยู่ใน CSV / Dashboard)
 
 ## 2. Network Investigation Package (.csv, UTF-8)
@@ -34,6 +35,7 @@
 
 ## 3. HTML Interactive Dashboard (ไฟล์เดียว ไม่โหลดสิ่งใดจากภายนอก)
 - ป้ายเตือนข้อมูลอ่อนไหวบนสุด; แท็บ **สรุป** (จำนวน Finding ตาม Priority / Risk, จำนวนเครือข่าย, Run / Skip, ข้อจำกัด) · **Findings** (กรองตาม Priority และ Risk, คลิกแถวเห็น Evidence + record_refs) · **Mule Networks** (SVG วงกลม 1 ภาพต่อเครือข่าย สีตามบทบาท พร้อมคำอธิบายสี, คลิก node เห็น Finding) · **Money Flow** (เลือก trace, ทอดเรียงเป็นคอลัมน์ซ้าย → ขวา) · **Run Log**
+- หัวตารางเป็นภาษาไทย (ชื่อคอลัมน์ Schema อยู่ใน tooltip); เครือข่ายที่มีสมาชิกเกิน 40 บัญชี (`NET_DRAW_MAX` ใน template) แสดงเป็นตารางสมาชิก (บัญชี, บทบาท, Finding) แทนภาพวงกลม และชี้ไปที่ nodes.csv / edges.csv
 - ตารางแบ่งหน้า หน้าละ 50 แถว และแต่ละทอดของ Money Flow แสดงไม่เกิน 200 รายการ (ที่เหลือดูใน flows.csv / sheet Money_Flow) เพื่อให้ไฟล์ใหญ่ยังใช้งานได้
 - วิธีสร้าง: คัดลอก block ```html ด้านล่าง **ทั้งหมดตามตัวอักษร** เป็นข้อความ `template` แล้วเรียก `out_dashboard(bundle, template, path, cfg)` (AIDA-19) — ไม่มีบรรทัด `<!-- END-OF-TEMPLATE -->` = ดึงมาไม่ครบ ให้ดึงใหม่ ห้ามเขียนส่วนที่ขาดเอง
 
@@ -58,7 +60,7 @@ main{padding:16px;max-width:1280px}section{display:none}section.on{display:block
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px}.card b{display:block;font-size:24px}
 .wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;background:var(--card);font-size:13px}
 th,td{border:1px solid var(--line);padding:5px 7px;text-align:left;vertical-align:top}th{background:var(--head)}
-td{max-width:520px;overflow-wrap:anywhere}tr.click{cursor:pointer}tr.click:hover{background:#eaf3ff}
+td{max-width:520px;overflow-wrap:break-word}tr.click{cursor:pointer}tr.click:hover{background:#eaf3ff}
 .note{color:var(--mute);font-size:13px}.warn{color:var(--warn);background:var(--warnbg);padding:6px 10px;border-radius:6px}
 select,.pager button{font:inherit;margin:4px 6px 8px 0}.refs{font-family:monospace;font-size:12px;overflow-wrap:anywhere}
 .legend span{display:inline-flex;align-items:center;margin:0 14px 6px 0}.dot{width:12px;height:12px;border-radius:50%;margin-right:5px}
@@ -75,17 +77,26 @@ svg{background:var(--card);border:1px solid var(--line);border-radius:8px}svg ci
 <section id="sum" class="on"></section>
 <section id="fnd"><label>Priority <select id="fP"></select></label> <label>ความเสี่ยง <select id="fR"></select></label><div id="fT"></div><div id="fD"></div></section>
 <section id="net"><div class="legend" id="legend"></div><div id="netV"></div><div id="netD"></div></section>
-<section id="flow"><label>เลือก trace <select id="tS"></select></label><div id="tN"></div><div class="flow" id="tV"></div></section>
+<section id="flow"><label id="tL">เลือก trace <select id="tS"></select></label><div id="tN"></div><div class="flow" id="tV"></div></section>
 <section id="log"></section>
 </main>
 <script id="aida-data" type="application/json">/*__AIDA_DATA__*/</script>
 <script>
 "use strict";
 const D = JSON.parse(document.getElementById("aida-data").textContent);
-const PAGE = 50, HOP_CAP = 200; // rows per table page / transfers shown per hop column
+const PAGE = 50, HOP_CAP = 200, NET_DRAW_MAX = 40; // rows per page / transfers per hop column / members drawn as a circle
+const LABEL = {finding_id: "รหัส Finding", entity_type: "ประเภท", entity_id: "บัญชี / เครือข่าย", risk: "ความเสี่ยง", period: "เดือน",
+  exposure: "ยอดเงินที่เกี่ยวข้อง (Exposure)", confidence: "ความมั่นใจ (Confidence)", materiality: "สาระสำคัญ (Materiality)",
+  priority: "ลำดับความสำคัญ (Priority)", network_id: "เครือข่าย", review_reason: "เหตุผลที่ต้องทบทวน", evidence_id: "รหัส Evidence",
+  recipe_id: "การ์ดวิเคราะห์", skill_family: "กลุ่มวิธีวิเคราะห์", metric: "ตัวชี้วัด", value: "ค่าที่พบ", threshold: "เกณฑ์",
+  explanation: "คำอธิบาย", record_refs: "รายการอ้างอิง (tx_id)", decision: "รัน / ข้าม (Run / Skip)", reason: "เหตุผล",
+  missing: "ข้อมูลที่ขาด", item: "รายการ", detail: "รายละเอียด", name: "ชื่อความเสี่ยง", findings: "จำนวน Finding",
+  run_id: "รหัสการรัน", timestamp: "เวลา", stage: "ขั้นตอน", status: "สถานะ", recipe_version: "เวอร์ชันการ์ด",
+  registry_version: "เวอร์ชัน Registry", pack_version: "เวอร์ชัน Pack", input_sha256: "ค่า hash ของไฟล์ (sha256)",
+  account: "บัญชี", role: "บทบาทในเครือข่าย", finding_ids: "Finding ที่เกี่ยวข้อง"};
 const RISK = {R1: "การเคลื่อนย้ายเงินผิดปกติ", R2: "รูปแบบบัญชีรับ-ส่งต่อเงิน (สอดคล้องกับ Mule Account pattern)",
   R3: "กลุ่มบัญชีที่มีธุรกรรมเชื่อมโยงกัน (Mule network)", R4: "ความผิดปกติของคู่ค้า (Counterparty)"};
-const ROLE = {mule: ["สอดคล้องกับ Mule Account pattern", "#c2410c"],
+const ROLE = {mule: ["mule — สอดคล้องกับ Mule Account pattern", "#c2410c"],
   collector: ["collector — รับเงินจากหลายบัญชีในกลุ่ม", "#6d28d9"],
   feeder: ["feeder — ส่งเงินให้หลายบัญชีในกลุ่ม", "#0f766e"], other: ["บทบาทอื่น", "#64748b"]};
 const $ = id => document.getElementById(id);
@@ -99,7 +110,7 @@ const opts = a => a.map(o => "<option>" + esc(o) + "</option>").join("");
 function tbl(el, rows, cols, click, page) {
   page = page || 0;
   const n = Math.max(1, Math.ceil(rows.length / PAGE));
-  let h = '<div class="wrap"><table><tr>' + cols.map(c => "<th>" + esc(c) + "</th>").join("") + "</tr>";
+  let h = '<div class="wrap"><table><tr>' + cols.map(c => '<th title="' + esc(c) + '">' + esc(LABEL[c] || c) + "</th>").join("") + "</tr>";
   rows.slice(page * PAGE, (page + 1) * PAGE).forEach((r, i) => {
     h += "<tr" + (click ? ' class="click" data-i="' + (page * PAGE + i) + '"' : "") + ">" +
       cols.map(c => "<td>" + esc(fmt(r[c])) + "</td>").join("") + "</tr>";
@@ -142,7 +153,7 @@ function findings() {
   const go = () => {
     const p = $("fP").value, r = $("fR").value;
     const rows = D.findings.filter(f => (p === "ทั้งหมด" || f.priority === p) && (r === "ทั้งหมด" || f.risk === r));
-    tbl($("fT"), rows, ["finding_id", "entity_type", "entity_id", "risk", "period", "exposure", "confidence", "materiality", "priority", "network_id"], showFinding);
+    tbl($("fT"), rows, ["finding_id", "entity_type", "entity_id", "risk", "period", "exposure", "confidence", "materiality", "priority", "network_id", "review_reason"], showFinding);
     $("fD").innerHTML = '<p class="note">คลิกแถวเพื่อดู Evidence และ record_refs</p>';
   };
   $("fP").onchange = go; $("fR").onchange = go; go();
@@ -162,7 +173,11 @@ function networks() {
     '<span class="note">บทบาทเป็นข้อสังเกตจากธุรกรรม ไม่ใช่ข้อสรุป · คลิก node เพื่อดู Finding</span>';
   $("netV").innerHTML = D.mule_networks.length ? D.mule_networks.map((n, k) => "<h3>" + esc(n.network_id) + " · สมาชิก " + n.member_accts.length +
     " บัญชี · ธุรกรรมภายใน " + esc(fmt(n.internal_tx_count)) + " รายการ รวม " + esc(fmt(n.internal_amount)) + " · " +
-    esc(n.period_start) + " ถึง " + esc(n.period_end) + "</h3>" + netSvg(n, k)).join("") : '<p class="note">ไม่พบเครือข่าย</p>';
+    esc(n.period_start) + " ถึง " + esc(n.period_end) + "</h3>" + (n.member_accts.length > NET_DRAW_MAX ? '<p class="warn">สมาชิก ' +
+    n.member_accts.length + " บัญชี มากกว่า " + NET_DRAW_MAX + " บัญชี จึงแสดงเป็นตารางแทนภาพ — ดูความเชื่อมโยงทั้งหมดใน nodes.csv / edges.csv" +
+    ' (นำเข้าเครื่องมือ graph ได้)</p><div class="members" id="nm' + k + '"></div>' : netSvg(n, k))).join("") : '<p class="note">ไม่พบเครือข่าย</p>';
+  D.mule_networks.forEach((n, k) => { if (n.member_accts.length > NET_DRAW_MAX) tbl($("nm" + k), n.member_accts.map(a => ({account: a,
+    role: n.roles[a] || "other", finding_ids: findingsOf(a).map(f => f.finding_id)})), ["account", "role", "finding_ids"], r => showNode(n, r.account)); });
   document.querySelectorAll("circle[data-k]").forEach(c => c.onclick = () => {
     const n = D.mule_networks[+c.dataset.k]; showNode(n, n.member_accts[+c.dataset.m]);
   });
@@ -187,8 +202,9 @@ function netSvg(n, k) {
   });
   return s + "</svg>";
 }
+const findingsOf = a => D.findings.filter(f => f.entity_id === a || (f.entity_type === "network" && (f.member_accts || []).includes(a)));
 function showNode(n, a) {
-  const F = D.findings.filter(f => f.entity_id === a || (f.entity_type === "network" && (f.member_accts || []).includes(a)));
+  const F = findingsOf(a);
   const role = n.roles[a] || "other";
   $("netD").innerHTML = "<h3>บัญชี " + esc(a) + " · " + esc(n.network_id) + " · บทบาท " + esc(role) + " (" +
     esc((ROLE[roleOf(role)] || ROLE.other)[0]) + ")</h3><p class='note'>คลิก Finding เพื่อดู Evidence</p><div id='nF'></div>";
@@ -197,7 +213,7 @@ function showNode(n, a) {
 
 function flows() {
   const ids = [...new Set(D.flows.map(r => r.trace_id))];
-  if (!ids.length) { $("tV").innerHTML = '<p class="note">ไม่มีการไล่เส้นทางเงินในรอบนี้</p>'; return; }
+  if (!ids.length) { $("tL").style.display = "none"; $("tV").innerHTML = '<p class="note">ไม่มีการไล่เส้นทางเงินในรอบนี้</p>'; return; }
   $("tS").innerHTML = opts(ids);
   const go = () => {
     const id = $("tS").value, rows = D.flows.filter(r => r.trace_id === id), f = rows[0];
@@ -207,7 +223,7 @@ function flows() {
       D.flow_notes.filter(n => n.indexOf(id + ":") === 0).map(n => '<p class="warn">' + esc(n) + "</p>").join("");
     $("tV").innerHTML = hops.map(h => {
       const hr = rows.filter(r => r.hop === h);
-      return '<div class="hop"><h3>ทอดที่ ' + h + " (" + hr.length + " รายการ)</h3>" + hr.slice(0, HOP_CAP).map(r => '<div class="tx"><b>' +
+      return '<div class="hop"><h3>ทอดที่ ' + esc(h) + " (" + hr.length + " รายการ)</h3>" + hr.slice(0, HOP_CAP).map(r => '<div class="tx"><b>' +
         esc(r.from_acct) + " → " + esc(r.to_acct) + "</b><br>" + esc(fmt(r.amount)) + " · " + esc(fmt(r.ts)) + "<br>tx_id " + esc(r.tx_id) + "</div>").join("") +
         (hr.length > HOP_CAP ? '<p class="note">แสดง ' + HOP_CAP + " รายการแรกจาก " + hr.length + " — ดูทั้งหมดใน flows.csv หรือ sheet Money_Flow</p>" : "") + "</div>";
     }).join("");

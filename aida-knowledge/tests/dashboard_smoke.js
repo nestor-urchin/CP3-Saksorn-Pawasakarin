@@ -23,11 +23,14 @@ const fs = require("fs");
     await page.click(`nav button[data-tab="${ids[i]}"]`);
     if (ids[i] === "net") {
       res.nodes = await page.locator("#netV circle").count();
+      res.member_rows = await page.locator("#netV .members tr[data-i]").count();
       if (res.nodes) await page.locator("#netV circle").first().click();
+      else if (res.member_rows) await page.locator("#netV .members tr[data-i]").first().click();
       res.node_findings = await page.locator("#nF tr[data-i]").count() > 0;
     }
     if (ids[i] === "fnd") {
       if (await page.locator("#fT tr[data-i]").count()) await page.locator("#fT tr[data-i]").first().click();
+      res.finding_headers = await page.$$eval("#fT th", ths => ths.map(t => [t.textContent, t.title]));
       res.finding_evidence = await page.locator("#fE tr").count() > 1;
     }
     if (ids[i] === "flow") {  // show the trace with the most hops (columns left to right)

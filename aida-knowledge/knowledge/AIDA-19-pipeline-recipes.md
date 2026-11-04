@@ -4,7 +4,7 @@
 
 ## สรุปสั้น
 ไฟล์นี้เก็บการ์ด (recipe) ระดับ pipeline ที่ Code Interpreter รันตามลำดับในข้อ 7 ของ Instructions — **ต้องรันการ์ดในไฟล์นี้ก่อนการ์ดวิเคราะห์ใน AIDA-18** เพราะการ์ดวิเคราะห์ทุกใบเรียกใช้ฟังก์ชันจาก `CORE-EVIDENCE` และ `CORE-BASELINE`
-ลำดับ: CORE-EVIDENCE, CORE-BASELINE → PREP-DATE, PREP-TS, PREP-MAP → PROF-CHECKS, PROF-PROFILE (STOP แล้วหยุด) → GATE-CAPABILITY, GATE-VOLUME → การ์ดใน AIDA-18 ตาม Analysis Plan → UNIFY-REFS, UNIFY-FINDINGS → ASSESS-CMP → SELECT-AUTO-TRACE + FLOW-TRACE → LOG-RUN → OUT-BUNDLE → OUT-WORKBOOK, OUT-NETWORK-CSV, OUT-DASHBOARD (template ใน AIDA-16)
+ลำดับ: CORE-EVIDENCE, CORE-BASELINE → PREP-DATE, PREP-TS, PREP-MAP → PROF-CHECKS, PROF-PROFILE (STOP แล้วหยุด) → GATE-CAPABILITY, GATE-VOLUME → การ์ดใน AIDA-18 ตาม Analysis Plan → UNIFY-REFS, UNIFY-FINDINGS → ASSESS-CMP → SELECT-AUTO-TRACE + FLOW-TRACE → LOG-RUN → OUT-BUNDLE, OUT-CELL → OUT-WORKBOOK, OUT-NETWORK-CSV, OUT-DASHBOARD (template ใน AIDA-16)
 คอลัมน์ Evidence เป็นไปตาม Schema ใน AIDA-17 และทุกแถวบันทึก Registry version จาก AIDA-14
 
 ## การ์ด Evidence builder
@@ -525,7 +525,7 @@ def log_run(events: list, cfg: dict) -> pd.DataFrame:
 ```
 
 ## การ์ด Output (ข้อ 8 ของขั้นตอน)
-รันหลัง LOG-RUN ตามลำดับ OUT-BUNDLE → OUT-WORKBOOK, OUT-NETWORK-CSV, OUT-DASHBOARD — โครง sheet, คอลัมน์ CSV และ template Dashboard อยู่ใน AIDA-16
+รันหลัง LOG-RUN ตามลำดับ OUT-BUNDLE, OUT-CELL → OUT-WORKBOOK, OUT-NETWORK-CSV, OUT-DASHBOARD — โครง sheet, คอลัมน์ CSV และ template Dashboard อยู่ใน AIDA-16
 ทุก output แสดงข้อมูลเต็มตามที่ผู้ใช้/องค์กรกำหนด พร้อมป้ายเตือนข้อมูลอ่อนไหวข้อความเดียวกัน (`OUT_BANNER`) และข้อจำกัดของการหาเครือข่าย (`OUT_LIMITS`) — ถ้าองค์กรต้องการปิดบังข้อมูล แก้ที่การ์ด OUT-* จุดเดียว
 
 ### OUT-BUNDLE
@@ -570,14 +570,34 @@ def out_bundle(tables: dict, profile, plan, evidence, findings, trails: list, ru
             "prep": tables.get("_prep", {}), "flow_notes": notes, "edges": edges}
 ```
 
+### OUT-CELL
+กฎกลางของค่าในไฟล์ที่เปิดด้วยโปรแกรมตารางคำนวณ (ใช้ร่วมใน OUT-WORKBOOK และ OUT-NETWORK-CSV): ข้อความที่ขึ้นต้นด้วย `=` `+` `-` `@` แท็บ หรือ carriage return ถูกเติม `'` ข้างหน้า เพื่อไม่ให้ Excel อ่านข้อมูลจากไฟล์ผู้ใช้เป็นสูตร (เช่น `=HYPERLINK(...)`) — ยกเว้นค่า `-` ตัวเดียวซึ่งเป็นค่าว่างของตาราง ไม่ใช่สูตร
+`text_cols(df, fn)` ใช้ `fn` กับทุกคอลัมน์ที่ไม่ใช่ตัวเลขหรือวันเวลา
+
+```python
+# RECIPE OUT-CELL v1.0 | Skill: - | Risk: -
+# Registry: - | Input: one output cell value / a DataFrame to write
+FORMULA_START = ("=", "+", "-", "@", "\t", "\r")  # spreadsheet apps read these as the start of a formula
+def no_formula(v):
+    return "'" + v if isinstance(v, str) and v.startswith(FORMULA_START) and v != "-" else v
+def text_cols(df: pd.DataFrame, fn) -> pd.DataFrame:
+    out = df.copy()
+    for c in out.columns:
+        if not (pd.api.types.is_numeric_dtype(out[c]) or pd.api.types.is_datetime64_any_dtype(out[c])):
+            out[c] = out[c].map(fn)
+    return out
+def out_cell(tables: dict = None, cfg: dict = None) -> None:
+    return None  # helper card: no_formula and text_cols for OUT-WORKBOOK and OUT-NETWORK-CSV
+```
+
 ### OUT-WORKBOOK
 เขียน Audit Workbook (.xlsx) ด้วย openpyxl ตามโครง sheet ใน AIDA-16 ตามลำดับ: README, Dataset_Profile, Analysis_Plan, Evidence, Findings, Mule_Networks, Money_Flow, Materiality, Run_Log
-Findings แสดง 14 คอลัมน์ตาม Schema + member_accts + คอลัมน์ว่าง reviewer, disposition, review_date ให้ผู้ตรวจกรอก (record_refs ดูได้ใน sheet Evidence); list / dict เขียนเป็นข้อความคั่นด้วย ", "; ข้อความยาวเกินที่ Excel เก็บได้ใน 1 ช่องถูกตัดและลงท้าย "…" (ดูฉบับเต็มใน CSV); Money_Flow แสดงหมายเหตุการไล่เส้นทาง (flow_notes) เหนือตาราง
+Findings แสดง 14 คอลัมน์ตาม Schema + member_accts + คอลัมน์ว่าง reviewer, disposition, review_date ให้ผู้ตรวจกรอก (record_refs ดูได้ใน sheet Evidence); list / dict เขียนเป็นข้อความคั่นด้วย ", "; ตัดอักขระควบคุมที่ Excel เก็บไม่ได้ (เช่น \x0b) และกันสูตรด้วย `no_formula` (OUT-CELL); ข้อความยาวเกินที่ Excel เก็บได้ใน 1 ช่องถูกตัดและลงท้าย "…" (ดูฉบับเต็มใน CSV); Money_Flow แสดงหมายเหตุการไล่เส้นทาง (flow_notes) เหนือตาราง
 
 ```python
 # RECIPE OUT-WORKBOOK v1.0 | Skill: - | Risk: -
 # Registry: REGISTRY.VERSION | Input: bundle from OUT-BUNDLE, path of the .xlsx
-import openpyxl  # noqa: F401 — engine of pd.ExcelWriter
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE  # control characters a worksheet cannot hold
 EXCEL_CELL_MAX = 32767  # characters Excel can store in one cell (technical limit, not an audit threshold)
 OUT_SHEETS = {"Dataset_Profile": "ภาพรวมข้อมูลและการตรวจคุณภาพ", "Analysis_Plan": "การ์ดที่รัน / Skip พร้อมเหตุผล",
               "Evidence": "สัญญาณรายการต่อการ์ด + record_refs (tx_id) และ data_ref สำหรับย้อนกลับไปยังรายการต้นทาง",
@@ -590,8 +610,7 @@ def cell_text(v):
         v = ", ".join(f"{k}: {x}" for k, x in v.items())
     elif isinstance(v, (list, tuple, set, np.ndarray)):
         v = ", ".join(str(x) for x in v)
-    if isinstance(v, str) and v.startswith("="):
-        v = "'" + v  # keep user text from becoming an Excel formula
+    v = no_formula(ILLEGAL_CHARACTERS_RE.sub("", v)) if isinstance(v, str) else v
     return v[:EXCEL_CELL_MAX - 1] + "…" if isinstance(v, str) and len(v) > EXCEL_CELL_MAX else v
 def out_workbook(bundle: dict, path: str, cfg: dict) -> str:
     b, p = bundle, bundle.get("prep") or {}
@@ -607,19 +626,15 @@ def out_workbook(bundle: dict, path: str, cfg: dict) -> str:
               "Money_Flow": b["flows"], "Materiality": b["materiality"], "Run_Log": b["run_log"]}
     with pd.ExcelWriter(path, engine="openpyxl") as xw:
         for name, df in sheets.items():
-            out = df.copy()
-            for c in out.columns:
-                if not (pd.api.types.is_numeric_dtype(out[c]) or pd.api.types.is_datetime64_any_dtype(out[c])):
-                    out[c] = out[c].map(cell_text)
             top = len(notes) + 1 if name == "Money_Flow" else 0
-            out.to_excel(xw, sheet_name=name, index=False, startrow=top)
+            text_cols(df, cell_text).to_excel(xw, sheet_name=name, index=False, startrow=top)
             for i, n in enumerate(notes if top else [], 1):
-                xw.sheets[name].cell(row=i, column=1, value=n)
+                xw.sheets[name].cell(row=i, column=1, value=cell_text(n))
     return path
 ```
 
 ### OUT-NETWORK-CSV
-เขียน Network Investigation Package ลงโฟลเดอร์ `folder` (UTF-8 with BOM ให้ Excel อ่านภาษาไทยได้): `nodes.csv` (node_id, role, network_id, finding_ids), `edges.csv` (source, target, amount, ts, tx_id, network_id) และ `flows.csv` (Money Flow trail) — คอลัมน์ตาม AIDA-16
+เขียน Network Investigation Package ลงโฟลเดอร์ `folder` (UTF-8 with BOM ให้ Excel อ่านภาษาไทยได้; ข้อความกันสูตรด้วย `no_formula` ของ OUT-CELL): `nodes.csv` (node_id, role, network_id, finding_ids), `edges.csv` (source, target, amount, ts, tx_id, network_id) และ `flows.csv` (Money Flow trail) — คอลัมน์ตาม AIDA-16
 เฉพาะ subgraph ที่เกี่ยวกับ Finding: node = บัญชีที่มี Finding หรืออยู่บน edge; role จาก mule_networks.roles (สมาชิกเครือข่าย), "mule" สำหรับบัญชีที่มี Finding R2 นอกเครือข่าย และ "other" สำหรับบัญชีอื่น; finding_ids คั่นด้วย "; " (สมาชิกเครือข่ายมี Finding R3 ของเครือข่ายด้วย)
 
 ```python
@@ -643,7 +658,7 @@ def out_network_csv(bundle: dict, folder: str, cfg: dict) -> list:
                           "finding_ids": ["; ".join(fids.get(a, [])) for a in accts]})
     paths = [os.path.join(folder, n) for n in ("nodes.csv", "edges.csv", "flows.csv")]
     for path, df in zip(paths, (nodes, e, bundle["flows"])):
-        df.to_csv(path, index=False, encoding="utf-8-sig")
+        text_cols(df, no_formula).to_csv(path, index=False, encoding="utf-8-sig")
     return paths
 ```
 

@@ -150,6 +150,28 @@ class TestWorkbook(OutputCase):
         self.assertEqual(ev["record_refs"].iloc[0], ", ".join(first))
         self.assertEqual(R()["unify_refs"].__globals__["ref_list"](ev["record_refs"].iloc[0]), first)
 
+    def test_workbook_formula_guard(self):
+        b = dict(sample_bundle())
+        f = b["findings"].copy()
+        f.loc[f.index[0], "entity_id"] = '=HYPERLINK("http://e","c")'
+        f.loc[f.index[1], "entity_id"] = "+cmd|x"
+        b["findings"] = f
+        wb, _, _ = write_all(b, self.dir)
+        ws = openpyxl.load_workbook(wb)["Findings"]
+        self.assertEqual(ws["C2"].value, '\'=HYPERLINK("http://e","c")')
+        self.assertEqual(ws["C3"].value, "'+cmd|x")
+        self.assertEqual({ws["C2"].data_type, ws["C3"].data_type}, {"s"})
+        plan = openpyxl.load_workbook(wb)["Analysis_Plan"]
+        self.assertEqual(plan["D2"].value, "-")  # a bare "-" placeholder is not a formula
+
+    def test_workbook_control_character(self):
+        b = dict(sample_bundle())
+        ev = b["evidence"].copy()
+        ev.loc[ev.index[0], "explanation"] = "a\x0bb"
+        b["evidence"] = ev
+        wb, _, _ = write_all(b, self.dir)
+        self.assertEqual(openpyxl.load_workbook(wb)["Evidence"]["O2"].value, "ab")
+
     def test_long_cell_capped_for_excel(self):
         b = dict(sample_bundle())
         ev = b["evidence"].copy()
@@ -180,6 +202,30 @@ class TestNetworkCsv(OutputCase):
         self.assertEqual(m01["role"], "mule")
         self.assertTrue(pd.isna(m01["network_id"]))
         self.assertTrue(m01["finding_ids"].startswith("FND-"))
+
+    def test_csv_formula_guard(self):
+        b = dict(sample_bundle())
+        e = b["edges"].copy()
+        e.loc[e.index[0], "source"] = "=1+1"
+        e.loc[e.index[1], "target"] = "@SUM(A1)"
+        b["edges"] = e
+        fl = b["flows"].copy()
+        fl.loc[fl.index[0], "tx_id"] = "+cmd|x"
+        fl.loc[fl.index[1], "from_acct"] = "\t-2"
+        b["flows"] = fl
+        f = b["findings"].copy()
+        f.loc[f.index[0], "entity_id"] = "-1+2"
+        b["findings"] = f
+        _, csvs, _ = write_all(b, self.dir)
+        nodes, edges, flows = (pd.read_csv(p, dtype=str, keep_default_na=False) for p in csvs)
+        self.assertEqual(edges["source"].iloc[0], "'=1+1")
+        self.assertEqual(edges["target"].iloc[1], "'@SUM(A1)")
+        self.assertEqual(flows["tx_id"].iloc[0], "'+cmd|x")
+        self.assertEqual(flows["from_acct"].iloc[1], "'\t-2")
+        self.assertIn("'-1+2", set(nodes["node_id"]))
+        for df in (nodes, edges, flows):
+            for col in df.columns:
+                self.assertFalse(df[col].str.match(r"^[=+@\t\r]").any(), col)
 
     def test_network_members_list_network_finding(self):
         _, csvs, _ = write_all(sample_bundle(), self.dir)
@@ -232,18 +278,21 @@ class TestDashboard(OutputCase):
             R()["out_dashboard"](sample_bundle(), t.replace("/*__AIDA_DATA__*/", ""),
                                  str(Path(self.dir) / "x.html"), CFG)
 
-    def test_dashboard_in_browser(self):
-        """Open the dashboard in Chromium, click every tab, a node and a finding; no console
-        errors and no network requests. Screenshots go to AIDA_SHOTS_DIR when set."""
+    def _browser(self, bundle):
         node = shutil.which("node")
         if not node or subprocess.run([node, "-e", "require('playwright')"], capture_output=True).returncode:
             self.skipTest("node + playwright not available")
-        _, _, html = write_all(sample_bundle(), self.dir)
-        shots = os.environ.get("AIDA_SHOTS_DIR") or self.dir
-        out = subprocess.run([node, str(HERE / "dashboard_smoke.js"), html, shots],
+        _, _, html = write_all(bundle, self.dir)
+        shots = Path(os.environ.get("AIDA_SHOTS_DIR") or self.dir) / self._testMethodName
+        out = subprocess.run([node, str(HERE / "dashboard_smoke.js"), html, str(shots)],
                              capture_output=True, text=True, timeout=120)
         self.assertEqual(out.returncode, 0, out.stderr)
-        res = json.loads(out.stdout)
+        return json.loads(out.stdout)
+
+    def test_dashboard_in_browser(self):
+        """Open the dashboard in Chromium, click every tab, a node and a finding; no console
+        errors and no network requests. Screenshots go to AIDA_SHOTS_DIR when set."""
+        res = self._browser(sample_bundle())
         self.assertEqual(res["errors"], [])
         self.assertEqual(res["requests"], [])
         self.assertEqual(res["tabs"], TABS)
@@ -251,6 +300,23 @@ class TestDashboard(OutputCase):
         self.assertTrue(res["node_findings"])
         self.assertTrue(res["finding_evidence"])
         self.assertGreater(res["flow_columns"], 0)
+        heads = dict((title, text) for text, title in res["finding_headers"])
+        for col in ("finding_id", "entity_id", "risk", "exposure", "priority", "review_reason"):
+            self.assertRegex(heads[col], "[ก-๙]", col)  # Thai label, schema name in title
+
+    def test_dashboard_large_network_as_table(self):
+        """A network above NET_DRAW_MAX members is shown as a members table, not a circle."""
+        b = dict(sample_bundle())
+        n = b["mule_networks"].copy()
+        mem = ["N01"] + [f"A{i:05d}" for i in range(399)]  # N01 (first row) has its own R2 finding
+        n.at[n.index[0], "member_accts"] = mem
+        n.at[n.index[0], "roles"] = {a: "mule" for a in mem}
+        b["mule_networks"] = n
+        res = self._browser(b)
+        self.assertEqual(res["errors"], [])
+        self.assertEqual(res["nodes"], 0)
+        self.assertEqual(res["member_rows"], 50)  # first page of 400 members
+        self.assertTrue(res["node_findings"])
 
 
 # ---------------------------------------------------------------- end to end
