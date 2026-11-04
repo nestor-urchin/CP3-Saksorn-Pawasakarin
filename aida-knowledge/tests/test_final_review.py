@@ -107,6 +107,19 @@ class TestNetCycleBudget(unittest.TestCase):
         self.assertTrue(any("ทดสอบหมายเหตุ" in n for n in data["card_notes"]))
         self.assertIn("D.card_notes", to.template())
 
+    def test_dashboard_with_card_notes_opens_in_browser(self):
+        b = dict(to.sample_bundle())
+        b["card_notes"] = ["NET-CYCLE: เดือน 2026-01: ทดสอบหมายเหตุ <b>อาจไม่ครบ</b>"]
+        case = to.TestDashboard("test_dashboard_in_browser")
+        case.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, case.dir, True)
+        try:
+            res = to.TestDashboard._browser(case, b)
+        except unittest.SkipTest as e:
+            self.skipTest(str(e))
+        self.assertEqual(res["errors"], [])
+        self.assertEqual(res["requests"], [])
+
     def test_no_note_no_review_row(self):
         b = to.sample_bundle()
         self.assertEqual(b["card_notes"], [])

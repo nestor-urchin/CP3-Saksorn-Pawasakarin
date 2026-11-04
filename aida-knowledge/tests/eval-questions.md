@@ -173,8 +173,8 @@ Q1–Q21 = ระยะ A (คำปรึกษา) · Q22–Q31 = ระยะ
 - Checklist ข้อ 7
 
 ### Q28 — (แนบ transactions.csv ที่ลบคอลัมน์ ts ออก) วิเคราะห์ให้หน่อย
-- ต้องมี: Analysis Plan ทุกการ์ด = Skip พร้อม reason (ไม่มีคอลัมน์ ts จึงกำหนดช่วงเวลา/period ไม่ได้) และ missing = ts; แนะนำให้จับคู่คอลัมน์วันเวลาที่จุดยืนยัน 1 แล้วรันใหม่
-- ต้องไม่มี: รันการ์ด Temporal / Velocity / Dwell / Flow ต่อ; Skip โดยไม่มีเหตุผล
+- ต้องมี: Analysis Plan ทุกการ์ด = Skip พร้อม reason (ไม่มีคอลัมน์ ts จึงกำหนดช่วงเวลา/period ไม่ได้) และ missing = ts; แนะนำให้จับคู่คอลัมน์วันเวลาที่จุดยืนยัน 1 แล้วรันใหม่; ถ้าผู้ใช้ให้ทำต่อ ใช้ ev = core_evidence() แล้วได้ Workbook / Run Log ที่ทุกการ์ด SKIP (ไม่ error)
+- ต้องไม่มี: รันการ์ด Temporal / Velocity / Dwell / Flow ต่อ; Skip โดยไม่มีเหตุผล; เขียนโค้ดเองแทนการ์ดเมื่อเกิด error
 - ไฟล์ที่ควรถูกอ้าง: AIDA-19, AIDA-03
 - Checklist ข้อ 8
 
