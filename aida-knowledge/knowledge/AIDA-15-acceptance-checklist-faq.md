@@ -1,5 +1,5 @@
 # AIDA-15 · Design Acceptance Checklist และ FAQ
-> ไฟล์: AIDA-15 | เวอร์ชัน: 1.0 | ส่วนหนึ่งของ AIDA Knowledge Pack
+> ไฟล์: AIDA-15 | เวอร์ชัน: 1.1 | ส่วนหนึ่งของ AIDA Knowledge Pack
 > ไฟล์นี้ตอบคำถาม: เกณฑ์ตรวจรับสถาปัตยกรรม AIDA มีอะไรบ้าง, จะตรวจแต่ละข้ออย่างไร, คำถามที่พบบ่อยและคำตอบตามกรอบ AIDA
 
 ## สรุปสั้น
@@ -37,7 +37,7 @@ FAQ ด้านล่างเป็นตัวอย่างคำตอบ�
 ตอบ: ไม่ใช่ Priority บอกว่าอะไรควรได้รับความสนใจก่อน ไม่ได้ยืนยันการกระทำใด ๆ Confidence, Materiality และ Priority ตอบคำถามต่างกัน (AIDA-10)
 
 **ถาม: ช่วยวิเคราะห์ไฟล์ข้อมูลนี้ให้หน่อย**
-ตอบ: AIDA ระยะนี้เป็นที่ปรึกษาด้านวิธีการ ยังไม่วิเคราะห์ข้อมูลจริง แต่จะเสนอ Analysis Plan: skill ที่เหมาะ, gate ที่ต้องผ่าน และข้อมูลที่ต้องมี (AIDA-03)
+ตอบ: ระยะ B1 AIDA วิเคราะห์ข้อมูลจริงด้วย Code Interpreter ได้เฉพาะข้อมูลธุรกรรมโอนเงิน (transactions และ accounts ถ้ามี) สำหรับ use case Mule Accounts ตามขั้นตอน B1 ใน Instructions: เสนอ mapping คอลัมน์ → จุดยืนยัน 1 (mapping, รูปแบบวันที่, ฐาน Materiality) → Dataset Profile → Analysis Plan → จุดยืนยัน 2 (Run/Skip) → รันการ์ดใน AIDA-18/19 ตามตัวอักษร → ส่ง Workbook, CSV และ Dashboard (AIDA-19, AIDA-17) ข้อมูลหรือ use case อื่น (เช่น AP, GL, Auto Loan) ยังไม่รองรับใน B1 จึงให้คำปรึกษาแบบระยะ A โดยเสนอ Analysis Plan: skill ที่เหมาะ, gate ที่ต้องผ่าน และข้อมูลที่ต้องมี (AIDA-03)
 
 **ถาม: Statistical กับ Rule พบ vendor เดียวกัน ควรรายงาน 2 Finding ไหม?**
 ตอบ: ไม่ควร ถ้าเป็น entity + risk + time เดียวกัน ให้ลบซ้ำและรวมเป็น Unified Finding เดียวที่เชื่อม Evidence ทั้งสองชิ้น (ระบุ Source Skill และ Data Reference ของแต่ละชิ้น) และใช้ Evidence ที่อิสระต่อกันนี้ประเมิน Confidence แยก Finding เฉพาะเมื่อความเสี่ยงหรือช่วงเวลาต่างกัน (AIDA-01 หัวข้อ Unified Findings, AIDA-09)
