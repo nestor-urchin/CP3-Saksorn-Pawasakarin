@@ -344,18 +344,19 @@ def mule_pattern(tables: dict, cfg: dict) -> pd.DataFrame:
 ```
 
 ### MULE-CROSS-TX
-ใช้บัญชีที่มี Evidence R2 (MULE-PATTERN) ใน `tables["evidence"]` เป็นชุดบัญชีที่สอดคล้องกับ Mule Account pattern แล้วหาธุรกรรมข้ามบัญชี 3 บทบาท: mule_to_mule (ผู้โอนและผู้รับอยู่ในชุดทั้งคู่ — ระบุทั้ง 2 บัญชี), collector (บัญชีนอกชุดที่รับเงินจากบัญชีในชุด) และ feeder (บัญชีนอกชุดที่โอนเงินให้บัญชีในชุด)
+ใช้บัญชีที่มี Evidence R2 (MULE-PATTERN) ใน `tables["evidence"]` เป็นชุดบัญชีที่สอดคล้องกับ Mule Account pattern **เฉพาะในเดือนที่มี Evidence R2** (ธุรกรรมของบัญชีเดียวกันในเดือนอื่นไม่นับเป็นธุรกรรมของบัญชีในชุด) แล้วหาธุรกรรมข้ามบัญชี 3 บทบาท: mule_to_mule (ผู้โอนและผู้รับอยู่ในชุดทั้งคู่ — ระบุทั้ง 2 บัญชี), collector (บัญชีนอกชุดที่รับเงินจากบัญชีในชุด) และ feeder (บัญชีนอกชุดที่โอนเงินให้บัญชีในชุด)
 collector / feeder ต้องเชื่อมกับบัญชีในชุด ≥ `MULE.CROSS.MIN_LINKS = 2` บัญชี ภายใน `FLOW.WINDOW_DAYS = 7` วัน; metric = role, value = บทบาท — บทบาทอธิบายตำแหน่งในเครือข่าย ไม่ใช่ข้อสรุป
 
 ```python
-# RECIPE MULE-CROSS-TX v1.0 | Skill: 5.9 Network | Risk: R3
+# RECIPE MULE-CROSS-TX v1.1 | Skill: 5.9 Network | Risk: R3
 # Registry: MULE.CROSS.MIN_LINKS, FLOW.WINDOW_DAYS | Input: transactions(tx_id, ts, from_acct, to_acct, amount), evidence(MULE-PATTERN)
 def mule_cross_tx(tables: dict, cfg: dict) -> pd.DataFrame:
     t, ev = clean_tx(tables["transactions"]), tables.get("evidence")
     has = ev is not None and len(ev) > 0
-    mules = set(ev.loc[ev["recipe_id"] == "MULE-PATTERN", "entity_id"]) if has else set()
+    r2 = ev[ev["recipe_id"] == "MULE-PATTERN"] if has else pd.DataFrame(columns=["entity_id", "period"])
+    mules = set(r2["entity_id"] + "|" + r2["period"])  # a mule only in the months of its R2 evidence
     need, days = cfg["MULE.CROSS.MIN_LINKS"], cfg["FLOW.WINDOW_DAYS"]
-    fm, tm = t["from_acct"].isin(mules), t["to_acct"].isin(mules)
+    fm, tm = (t["from_acct"] + "|" + t["period"]).isin(mules), (t["to_acct"] + "|" + t["period"]).isin(mules)
     roles = [("mule_to_mule", t[fm & tm], "from_acct", "to_acct"),
              ("mule_to_mule", t[fm & tm], "to_acct", "from_acct"),
              ("collector", t[fm & ~tm], "to_acct", "from_acct"),
@@ -368,7 +369,7 @@ def mule_cross_tx(tables: dict, cfg: dict) -> pd.DataFrame:
                 if role == "mule_to_mule" or w[other].nunique() >= need:
                     rows.append((acct, p0, role, w[other].nunique(), list(w["tx_id"])))
     if not rows:
-        return evidence_rows("MULE-CROSS-TX", "1.0", "5.9 Network", "R3", "MULE.CROSS.MIN_LINKS",
+        return evidence_rows("MULE-CROSS-TX", "1.1", "5.9 Network", "R3", "MULE.CROSS.MIN_LINKS",
                              pd.DataFrame(), cfg)
     f = (pd.DataFrame(rows, columns=["entity_id", "period", "value", "n", "refs"])
          .groupby(["entity_id", "period", "value"], as_index=False)
@@ -383,7 +384,7 @@ def mule_cross_tx(tables: dict, cfg: dict) -> pd.DataFrame:
         f"เดือน {p} " + text[v].format(n=n, d=days) + " — บทบาทอธิบายตำแหน่งในเครือข่าย ไม่ใช่ข้อสรุป "
         f"(MULE.CROSS.MIN_LINKS ≥ {need} บัญชี และ FLOW.WINDOW_DAYS ค่ามาตรฐานจาก AIDA-14 "
         "ปรับได้ตามบริบทองค์กร) — ควรตรวจสอบเพิ่มเติม" for p, v, n in zip(f["period"], f["value"], f["n"])])
-    return evidence_rows("MULE-CROSS-TX", "1.0", "5.9 Network", "R3", "MULE.CROSS.MIN_LINKS", found, cfg)
+    return evidence_rows("MULE-CROSS-TX", "1.1", "5.9 Network", "R3", "MULE.CROSS.MIN_LINKS", found, cfg)
 ```
 
 ### MULE-NETWORK

@@ -464,13 +464,14 @@ def unify_findings(evidence: pd.DataFrame, cfg: dict, networks) -> pd.DataFrame:
 **Materiality** เทียบ exposure กับฐานที่ผู้ใช้ยืนยัน (`materiality_amount`): สูง ≥ ฐาน, กลาง ≥ `ASSESS.CLEARLY_TRIVIAL` × ฐาน, ต่ำ = ต่ำกว่านั้น; ไม่ระบุฐาน → "ไม่ได้ประเมิน" และ Priority = ระดับ Confidence; **Priority** จากตาราง `ASSESS.PRIORITY`; ทุก Finding มี review_status "รอ Human Review" และ review_reason ระบุ R2 / R3, Confidence ต่ำ และ "ไม่มีฐาน Materiality"
 
 ```python
-# RECIPE ASSESS-CMP v1.1 | Skill: - | Risk: -
+# RECIPE ASSESS-CMP v1.2 | Skill: - | Risk: -
 # Registry: ASSESS.CONFIDENCE, ASSESS.MATERIALITY, ASSESS.CLEARLY_TRIVIAL, ASSESS.PRIORITY | Input: findings(UNIFY-FINDINGS), transactions(tx_id, amount), materiality_amount
 REVIEW_NOTES = {"R2": "บัญชีมีรูปแบบสอดคล้องกับ Mule Account pattern — ควรทบทวนรายบัญชี",
                 "R3": "กลุ่มบัญชีที่มีธุรกรรมเชื่อมโยงกันและสอดคล้องกับ Mule Account pattern — ควรทบทวนทั้งกลุ่ม"}
 def assess_cmp(findings: pd.DataFrame, tx: pd.DataFrame, materiality_amount, cfg: dict) -> pd.DataFrame:
     f, m = findings.copy().reset_index(drop=True), materiality_amount
-    amt = pd.Series(pd.to_numeric(tx["amount"], errors="coerce").to_numpy(), index=tx["tx_id"].astype(str))
+    amt = pd.Series(pd.to_numeric(tx.get("amount", pd.Series(np.nan, index=tx.index)), errors="coerce").to_numpy(),
+                    index=tx["tx_id"].astype(str))  # no amount column: no card ran, exposure 0
     amt = amt[~amt.index.duplicated()]
     found = [amt.reindex(sorted(set(ref_list(r)))) for r in f["record_refs"]]
     f["exposure"] = [round(float(v.sum()), 2) for v in found]
@@ -581,7 +582,8 @@ def out_bundle(tables: dict, profile, plan, evidence, findings, trails: list, ru
                         ignore_index=True) if cn else run_log  # card limits (card_note) -> REVIEW
     full = [t for t in trails if len(t)]  # read attrs above: pd.concat drops them
     flows = pd.concat(full, ignore_index=True) if full else pd.DataFrame(columns=TRAIL_COLUMNS)
-    t = clean_tx(tables["transactions"])
+    tx = tables["transactions"]  # without a base column (e.g. no ts) no card ran: no edges
+    t = clean_tx(tx) if all(c in tx.columns for c in GATE_BASE) else pd.DataFrame(columns=GATE_BASE)
     e = t[t["tx_id"].isin({x for r in findings["record_refs"] for x in ref_list(r)})].drop_duplicates("tx_id")
     net_of = {a: n for n, m in zip(nets["network_id"], nets["member_accts"]) for a in m}
     s, d = e["from_acct"].map(net_of), e["to_acct"].map(net_of)

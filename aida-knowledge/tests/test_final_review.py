@@ -228,5 +228,91 @@ class TestFirstSeenNotAssessed(unittest.TestCase):
         self.assertIn(f"ไม่ได้ประเมิน {n:,} บัญชี", reason)
 
 
+class TestCrossTxPerMonth(unittest.TestCase):
+    def test_mule_only_in_its_r2_month(self):
+        """K1, K2 have R2 evidence in 2026-08 only: their March payments to C are not
+        collector links; their August payments to D are."""
+        rows = [("X1", "2026-03-02 10:00", "K1", "C", 100.0), ("X2", "2026-03-03 10:00", "K2", "C", 100.0),
+                ("X3", "2026-08-04 10:00", "K1", "D", 100.0), ("X4", "2026-08-05 10:00", "K2", "D", 100.0)]
+        ev = tp._ev("MULE-PATTERN", "5.10 Hybrid", "R2", [("K1", "2026-08", ["X3"]), ("K2", "2026-08", ["X4"])])
+        out = R()["mule_cross_tx"]({"transactions": _tx(rows), "evidence": ev, "_out": {}}, CFG)
+        self.assertEqual(set(zip(out["entity_id"], out["period"], out["value"])), {("D", "2026-08", "collector")})
+
+
+def run_glue(raw_tx, folder):
+    """Steps 3-11 of the Instructions as glue code: only Run cards, ev = core_evidence()
+    when none runs, then outputs. Returns (plan, bundle, paths)."""
+    tables = R()["prep_map"]({"transactions": raw_tx}, IDENTITY, CFG)
+    profile, status = R()["prof_profile"](tables, CFG)
+    assert not status.startswith("STOP"), status
+    plan = R()["gate_capability"](tables, CFG)
+    run = set(plan.loc[plan["decision"] == "Run", "recipe_id"])
+    tables["_out"] = {}
+    parts = [R()[f](tables, CFG) for f in tp.ACCOUNT_CARDS if f.upper().replace("_", "-") in run]
+    ev = pd.concat(parts, ignore_index=True) if parts else R()["core_evidence"]()
+    for f in ("mule_pattern", "mule_cross_tx", "mule_network"):
+        if f.upper().replace("_", "-") in run:
+            tables["evidence"] = ev
+            ev = pd.concat([ev, R()[f](tables, CFG)], ignore_index=True)
+    findings = R()["unify_findings"](ev, CFG, tables["_out"].get("mule_networks"))
+    findings = R()["assess_cmp"](findings, tables["transactions"], None, CFG)
+    trails = [R()["flow_trace"](tables, CFG, a, d, p) for a, p in R()["select_auto_trace"](findings, CFG)
+              for d in ("forward", "backward")]
+    events = [{"stage": 9, "status": "OK" if d == "Run" else "SKIP", "detail": r, "recipe_id": c}
+              for c, d, r in zip(plan["recipe_id"], plan["decision"], plan["reason"])]
+    log = R()["log_run"](events, CFG)
+    b = R()["out_bundle"](tables, profile, plan, ev, findings, trails, log, None, CFG)
+    return plan, b, to.write_all(b, folder)
+
+
+class TestNoTsColumn(unittest.TestCase):
+    def test_no_ts_file_yields_outputs_with_all_skips(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        plan, b, (wb, csvs, html) = run_glue(tp.raw_samples()[0].drop(columns="ts"), d)
+        self.assertEqual(set(plan["decision"]), {"Skip"})
+        self.assertEqual(len(b["findings"]), 0)
+        self.assertEqual(len(b["edges"]), 0)
+        log = pd.read_excel(wb, sheet_name="Run_Log")
+        self.assertEqual(set(log["status"]), {"SKIP"})
+        self.assertEqual(len(log), 15)
+        for path in csvs + [html]:
+            self.assertTrue(Path(path).exists(), path)
+
+    def test_other_missing_base_columns_yield_outputs(self):
+        for col in ("amount", "from_acct", "to_acct"):
+            d = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, d, True)
+            plan, b, (wb, _, html) = run_glue(tp.raw_samples()[0].drop(columns=col), d)
+            self.assertEqual(set(plan["decision"]), {"Skip"}, col)
+            self.assertTrue(Path(wb).exists() and Path(html).exists(), col)
+
+
+class TestInstructions(unittest.TestCase):
+    TEXT = (tr.ROOT / "AIDA-agent-instructions.md").read_text(encoding="utf-8")
+
+    def test_pack_version_set(self):
+        self.assertIn('"pack_version": "2.0"', self.TEXT)
+
+    def test_empty_evidence_when_no_card_runs(self):
+        self.assertIn("core_evidence()", self.TEXT)
+
+    def test_checkpoint_1_shows_unreadable_counts(self):
+        cp1 = self.TEXT[self.TEXT.index("จุดยืนยัน 1"):self.TEXT.index("4. profile")]
+        for k in ("unparsed_amount", "amount_samples", "unparsed_opened_at", "opened_at_info"):
+            self.assertIn(k, cp1)
+
+    def test_card_notes_in_chat_summary(self):
+        self.assertIn('bundle["card_notes"]', self.TEXT)
+
+    def test_length(self):
+        self.assertLessEqual(len(self.TEXT), 8000)
+
+    def test_log_run_uses_pack_version(self):
+        cfg = {**CFG, "_RUN": {**CFG["_RUN"], "pack_version": "2.0"}}
+        log = R()["log_run"]([{"stage": 1, "status": "OK", "detail": "x"}], cfg)
+        self.assertEqual(log["pack_version"].iloc[0], "2.0")
+
+
 if __name__ == "__main__":
     unittest.main()
