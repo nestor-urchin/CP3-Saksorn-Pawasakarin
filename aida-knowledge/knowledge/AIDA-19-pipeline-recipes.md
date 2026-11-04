@@ -417,7 +417,7 @@ def unify_refs(tables: dict = None, cfg: dict = None) -> None:
 คอลัมน์ทำงาน member_accts, record_refs, data_ref_complete, internal_amount (จาก networks) ต่อท้ายคอลัมน์ Schema ให้ ASSESS-CMP / SELECT-AUTO-TRACE ใช้ (MULE-CROSS-TX ที่ไม่อยู่ในเครือข่ายใด ยังเป็น Finding R3 ระดับบัญชี)
 
 ```python
-# RECIPE UNIFY-FINDINGS v1.1 | Skill: - | Risk: -
+# RECIPE UNIFY-FINDINGS v1.2 | Skill: - | Risk: -
 # Registry: - | Input: evidence(Evidence schema), networks(mule_networks: network_id, member_accts, internal_amount) or None
 FINDING_COLUMNS = ["finding_id", "entity_type", "entity_id", "risk", "period", "evidence_ids",
                    "skill_families", "exposure", "confidence", "materiality", "priority",
@@ -436,8 +436,8 @@ def unify_findings(evidence: pd.DataFrame, cfg: dict, networks) -> pd.DataFrame:
         raise ValueError("มี Evidence MULE-NETWORK แต่ networks ไม่มีเครือข่ายนั้น — ส่ง tables['_out']['mule_networks']")
     net_of, amount = {a: n for n, m in members.items() for a in m}, dict(zip(nets["network_id"], nets["internal_amount"]))
     pat = ev[ev["recipe_id"] == "MULE-PATTERN"]
-    in_r2 = pd.Series([k in set(zip(pat["entity_id"], pat["period"])) for k in zip(ev["entity_id"], ev["period"])],
-                      index=ev.index, dtype=bool)
+    r2 = set(zip(pat["entity_id"], pat["period"]))
+    in_r2 = pd.Series([k in r2 for k in zip(ev["entity_id"], ev["period"])], index=ev.index, dtype=bool)
     acct = ev["entity_type"] == "account"
     ev.loc[acct & (ev["risk"] == "R1") & ev["recipe_id"].isin(ABSORB_SIGNALS) & in_r2, "risk"] = "R2"
     to_net = acct & (ev["risk"] == "R3") & ev["entity_id"].isin(list(net_of))
@@ -446,7 +446,7 @@ def unify_findings(evidence: pd.DataFrame, cfg: dict, networks) -> pd.DataFrame:
     rows = []
     for (et, eid, risk, _), g in ev.groupby(["entity_type", "entity_id", "risk", "pk"], sort=True):
         mem = members.get(eid, []) if et == "network" else []
-        ctx = pd.concat([g, ev[(ev["entity_type"] == "account") & ev["entity_id"].isin(mem)]])
+        ctx = pd.concat([g, ev[(ev["entity_type"] == "account") & ev["entity_id"].isin(mem)]]) if mem else g
         rows.append({"entity_type": et, "entity_id": eid, "risk": risk, "period": g["period"].min(),
                      "evidence_ids": list(g["evidence_id"]), "skill_families": sorted(set(ctx["skill_family"])),
                      "network_id": eid if et == "network" else net_of.get(eid), "member_accts": mem,

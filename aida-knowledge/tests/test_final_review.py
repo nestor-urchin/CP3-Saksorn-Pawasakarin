@@ -314,5 +314,64 @@ class TestInstructions(unittest.TestCase):
         self.assertEqual(log["pack_version"].iloc[0], "2.0")
 
 
+def messy_tx(n, n_accts, seed=0):
+    """Realistic-looking raw (text) transfers like the reviewer's gen.py: heavy-tailed account
+    activity, a hub that receives 8 % and sends 3 % of all transfers, day-time-weighted hours,
+    lognormal amounts written "1,234.56", dd/mm/พ.ศ. timestamps, a few self-transfers."""
+    rng = np.random.default_rng(seed)
+    accts = np.array([f"{1000000000 + i}" for i in range(n_accts)])
+    w = rng.pareto(1.5, n_accts) + 1
+    src, dst = rng.choice(n_accts, n, p=w / w.sum()), rng.choice(n_accts, n, p=w / w.sum())
+    m = rng.random(n)
+    dst[m < .08], src[(m >= .08) & (m < .11)] = 0, 0
+    hw = np.array([1, .6, .4, .3, .3, .5, 1.5, 3, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5.5, 5, 4.5, 4, 3, 2])
+    ts = (pd.Timestamp("2026-03-01") + pd.to_timedelta(rng.integers(0, 183, n), "D")
+          + pd.to_timedelta(rng.choice(24, n, p=hw / hw.sum()), "h") + pd.to_timedelta(rng.integers(0, 3600, n), "s"))
+    df = pd.DataFrame({"tx_id": [f"TX{i:07d}" for i in range(n)], "ts": ts, "from_acct": accts[src],
+                       "to_acct": accts[dst], "amount": np.round(np.exp(rng.normal(7.5, 1.6, n)), 2),
+                       "channel": rng.choice(["mobile", "internet", "atm", "branch"], n, p=[.7, .15, .1, .05])})
+    df = df.sort_values("ts")
+    df["ts"] = [f"{t.day:02d}/{t.month:02d}/{t.year + 543} {t:%H:%M:%S}" for t in df["ts"]]
+    df["amount"] = [f"{a:,.2f}" for a in df["amount"]]
+    i = df.sample(frac=.003, random_state=2).index
+    df.loc[i, "to_acct"] = df.loc[i, "from_acct"]
+    return df.reset_index(drop=True)
+
+
+class TestPerformance(unittest.TestCase):
+    """Tested ceiling (README / spike/LOCAL-RESULTS.md): one run of 20,000 rows end to end
+    well inside a minute on a laptop-class CPU."""
+
+    def test_funnel_hub_is_not_quadratic(self):
+        rng = np.random.default_rng(3)
+        n = 12000  # one account receiving 12,000 transfers from 500 sources and forwarding them
+        ts = pd.Timestamp("2026-03-01") + pd.to_timedelta(np.sort(rng.integers(0, 180 * 86400, n)), "s")
+        ins = pd.DataFrame({"tx_id": [f"I{i}" for i in range(n)], "ts": ts, "from_acct": [f"S{i % 500}" for i in range(n)],
+                            "to_acct": "HUB", "amount": 1000.0})
+        outs = ins.assign(tx_id=[f"O{i}" for i in range(n)], ts=ts + pd.Timedelta(hours=1), from_acct="HUB",
+                          to_acct="SINK", amount=950.0)
+        s = time.time()
+        ev = R()["net_funnel"]({"transactions": pd.concat([ins, outs]), "_out": {}}, CFG)
+        self.assertLess(time.time() - s, 8)  # the old per-inflow window scan took ~20 s here
+        self.assertEqual(set(ev["entity_id"]), {"HUB"})
+
+    def test_20k_rows_end_to_end_under_60s(self):
+        raw = messy_tx(20000, 1500)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        s = time.time()
+        plan, b, (wb, _, html) = run_glue(raw, d)
+        took = time.time() - s
+        self.assertLess(took, 60, f"20k rows took {took:.0f} s")
+        self.assertTrue(Path(wb).exists() and Path(html).exists())
+        self.assertGreater(len(b["findings"]), 0)
+
+    def test_tested_ceiling_published(self):
+        for doc in (tr.ROOT / "README.md", tr.ROOT / "spike" / "LOCAL-RESULTS.md"):
+            text = doc.read_text(encoding="utf-8")
+            self.assertIn("80,000", text, doc.name)
+            self.assertIn("แบ่งไฟล์ตามเดือน", text, doc.name)
+
+
 if __name__ == "__main__":
     unittest.main()

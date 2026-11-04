@@ -193,39 +193,42 @@ def net_cycle(tables: dict, cfg: dict) -> pd.DataFrame:
 
 ### NET-FUNNEL
 หาบัญชีที่รับเงินจากหลายแหล่งแล้วส่งต่อออกไปเกือบทั้งหมด: ในช่วง days วันนับจากเงินเข้าแต่ละรายการ ต้องมีแหล่งเงินเข้า ≥ min_sources บัญชี และยอดออก/ยอดเข้า ≥ out_ratio
-บัญชีที่ไม่มีเงินออกเลยไม่ได้สัญญาณ (ไม่มีการหารด้วยศูนย์); เกณฑ์อ้าง `NET.FUNNEL = รับ ≥ 10 แหล่ง, โอนออก ≥ 80% ภายใน 7 วัน`
+บัญชีที่ไม่มีเงินออกเลยไม่ได้สัญญาณ (ไม่มีการหารด้วยศูนย์); หาหน้าต่างเวลาด้วย searchsorted + ผลรวมสะสม (ไม่สแกนซ้ำทุกคู่) แล้วตรวจยอดจริงของหน้าต่างที่ผ่านเกณฑ์เบื้องต้น จึงรันเร็วแม้บัญชีรับเงินหลายพันรายการ; เกณฑ์อ้าง `NET.FUNNEL = รับ ≥ 10 แหล่ง, โอนออก ≥ 80% ภายใน 7 วัน`
 
 ```python
-# RECIPE NET-FUNNEL v1.0 | Skill: 5.9 Network | Risk: R1
+# RECIPE NET-FUNNEL v1.1 | Skill: 5.9 Network | Risk: R1
 # Registry: NET.FUNNEL | Input: transactions(tx_id, ts, from_acct, to_acct, amount)
 def net_funnel(tables: dict, cfg: dict) -> pd.DataFrame:
     t = clean_tx(tables["transactions"])
     f = cfg["NET.FUNNEL"]
-    win = pd.Timedelta(days=f["days"])
+    win = pd.Timedelta(days=f["days"]).to_timedelta64()
     outs_by = {a: g for a, g in t.groupby("from_acct")}
     rows = []
     for acct, ins in t.groupby("to_acct"):
         outs = outs_by.get(acct)
         if outs is None or ins["from_acct"].nunique() < f["min_sources"]:
             continue  # no outflow at all, or too few sources: no signal
-        for t0, p0 in zip(ins["ts"], ins["period"]):
-            wi = ins[(ins["ts"] >= t0) & (ins["ts"] < t0 + win)]
-            wo = outs[(outs["ts"] >= t0) & (outs["ts"] < t0 + win)]
-            n_src, amt_in = wi["from_acct"].nunique(), wi["amount"].sum()
-            if n_src < f["min_sources"] or wo.empty or amt_in <= 0:
+        ti, to, src = ins["ts"].to_numpy(), outs["ts"].to_numpy(), ins["from_acct"].to_numpy()
+        ai, ao = ins["amount"].to_numpy(), outs["amount"].to_numpy()
+        lo, hi = np.searchsorted(ti, ti, "left"), np.searchsorted(ti, ti + win, "left")  # window [t0, t0 + days)
+        olo, ohi = np.searchsorted(to, ti, "left"), np.searchsorted(to, ti + win, "left")
+        ci, co = np.concatenate([[0.0], ai.cumsum()]), np.concatenate([[0.0], ao.cumsum()])
+        cand = (ohi > olo) & (hi - lo >= f["min_sources"]) & (co[ohi] - co[olo] >= 0.999 * f["out_ratio"] * (ci[hi] - ci[lo]))
+        for i in np.flatnonzero(cand):  # exact check on the window itself (cumulative sums only pre-filter)
+            n_src, amt_in, amt_out = len(set(src[lo[i]:hi[i]])), ai[lo[i]:hi[i]].sum(), ao[olo[i]:ohi[i]].sum()
+            if n_src < f["min_sources"] or amt_in <= 0 or amt_out / amt_in < f["out_ratio"]:
                 continue
-            ratio = wo["amount"].sum() / amt_in
-            if ratio >= f["out_ratio"]:
-                rows.append({"entity_id": acct, "period": p0, "metric": "out_in_ratio",
-                             "value": round(ratio, 4), "threshold": f["out_ratio"],
-                             "explanation": f"รับเงินจาก {n_src} แหล่ง รวม {amt_in:,.2f} แล้วส่งต่อ "
-                             f"{ratio:.0%} ภายใน {f['days']} วัน (NET.FUNNEL ≥ {f['min_sources']} แหล่ง "
-                             f"และ ≥ {f['out_ratio']:.0%} ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร) "
-                             f"— ควรตรวจสอบเพิ่มเติม",
-                             "record_refs": list(wi["tx_id"]) + list(wo["tx_id"])})
+            ratio = amt_out / amt_in
+            rows.append({"entity_id": acct, "period": ins["period"].iloc[i], "metric": "out_in_ratio",
+                         "value": round(ratio, 4), "threshold": f["out_ratio"],
+                         "explanation": f"รับเงินจาก {n_src} แหล่ง รวม {amt_in:,.2f} แล้วส่งต่อ "
+                         f"{ratio:.0%} ภายใน {f['days']} วัน (NET.FUNNEL ≥ {f['min_sources']} แหล่ง "
+                         f"และ ≥ {f['out_ratio']:.0%} ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร) "
+                         f"— ควรตรวจสอบเพิ่มเติม",
+                         "record_refs": list(ins["tx_id"].iloc[lo[i]:hi[i]]) + list(outs["tx_id"].iloc[olo[i]:ohi[i]])})
     found = one_per_month(pd.DataFrame(rows, columns=["entity_id", "period", "metric", "value",
                                                       "threshold", "explanation", "record_refs"]))
-    return evidence_rows("NET-FUNNEL", "1.0", "5.9 Network", "R1", "NET.FUNNEL", found, cfg)
+    return evidence_rows("NET-FUNNEL", "1.1", "5.9 Network", "R1", "NET.FUNNEL", found, cfg)
 ```
 
 ## การ์ด Mule Account (สัญญาณ R1 → รูปแบบ R2 → เครือข่าย R3)
