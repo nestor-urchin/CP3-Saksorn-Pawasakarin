@@ -1,10 +1,10 @@
 # AIDA-19 · Pipeline Recipes (การ์ดเตรียมข้อมูล, Evidence builder, รวมผล และ Output)
 > ไฟล์: AIDA-19 | เวอร์ชัน: 1.0 | ส่วนหนึ่งของ AIDA Knowledge Pack
-> ไฟล์นี้ตอบคำถาม: การ์ด CORE-EVIDENCE สร้างแถว Evidence อย่างไร, กฎกลางที่ทุกการ์ดวิเคราะห์ใช้ร่วมกันคืออะไร (ตัดรายการโอนเข้าบัญชีตัวเอง / ยอด ≤ 0), ต้องรันการ์ดในไฟล์นี้ก่อนการ์ดใน AIDA-18 หรือไม่, เตรียมข้อมูล / Dataset Profile / Analysis Plan (Run/Skip) ทำอย่างไร, รวม Evidence เป็น Finding และประเมิน Confidence / Exposure / Materiality / Priority อย่างไร, เลือกบัญชีไล่เส้นทางเงินอัตโนมัติและบันทึก Run Log อย่างไร
+> ไฟล์นี้ตอบคำถาม: การ์ด CORE-EVIDENCE สร้างแถว Evidence อย่างไร, กฎกลางที่ทุกการ์ดวิเคราะห์ใช้ร่วมกันคืออะไร (ตัดรายการโอนเข้าบัญชีตัวเอง / ยอด ≤ 0), ต้องรันการ์ดในไฟล์นี้ก่อนการ์ดใน AIDA-18 หรือไม่, เตรียมข้อมูล / Dataset Profile / Analysis Plan (Run/Skip) ทำอย่างไร, รวม Evidence เป็น Finding และประเมิน Confidence / Exposure / Materiality / Priority อย่างไร, เลือกบัญชีไล่เส้นทางเงินอัตโนมัติและบันทึก Run Log อย่างไร, สร้าง Audit Workbook / Network Investigation Package (CSV) / HTML Dashboard อย่างไร
 
 ## สรุปสั้น
 ไฟล์นี้เก็บการ์ด (recipe) ระดับ pipeline ที่ Code Interpreter รันตามลำดับในข้อ 7 ของ Instructions — **ต้องรันการ์ดในไฟล์นี้ก่อนการ์ดวิเคราะห์ใน AIDA-18** เพราะการ์ดวิเคราะห์ทุกใบเรียกใช้ฟังก์ชันจาก `CORE-EVIDENCE` และ `CORE-BASELINE`
-ลำดับ: CORE-EVIDENCE, CORE-BASELINE → PREP-DATE, PREP-TS, PREP-MAP → PROF-CHECKS, PROF-PROFILE (STOP แล้วหยุด) → GATE-CAPABILITY, GATE-VOLUME → การ์ดใน AIDA-18 ตาม Analysis Plan → UNIFY-REFS, UNIFY-FINDINGS → ASSESS-CMP → SELECT-AUTO-TRACE + FLOW-TRACE → LOG-RUN; การ์ด OUT-WORKBOOK, OUT-NETWORK-CSV และ OUT-DASHBOARD จะเพิ่มต่อท้ายไฟล์นี้
+ลำดับ: CORE-EVIDENCE, CORE-BASELINE → PREP-DATE, PREP-TS, PREP-MAP → PROF-CHECKS, PROF-PROFILE (STOP แล้วหยุด) → GATE-CAPABILITY, GATE-VOLUME → การ์ดใน AIDA-18 ตาม Analysis Plan → UNIFY-REFS, UNIFY-FINDINGS → ASSESS-CMP → SELECT-AUTO-TRACE + FLOW-TRACE → LOG-RUN → OUT-BUNDLE → OUT-WORKBOOK, OUT-NETWORK-CSV, OUT-DASHBOARD (template ใน AIDA-16)
 คอลัมน์ Evidence เป็นไปตาม Schema ใน AIDA-17 และทุกแถวบันทึก Registry version จาก AIDA-14
 
 ## การ์ด Evidence builder
@@ -524,6 +524,156 @@ def log_run(events: list, cfg: dict) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=RUN_LOG_COLUMNS)
 ```
 
+## การ์ด Output (ข้อ 8 ของขั้นตอน)
+รันหลัง LOG-RUN ตามลำดับ OUT-BUNDLE → OUT-WORKBOOK, OUT-NETWORK-CSV, OUT-DASHBOARD — โครง sheet, คอลัมน์ CSV และ template Dashboard อยู่ใน AIDA-16
+ทุก output แสดงข้อมูลเต็มตามที่ผู้ใช้/องค์กรกำหนด พร้อมป้ายเตือนข้อมูลอ่อนไหวข้อความเดียวกัน (`OUT_BANNER`) และข้อจำกัดของการหาเครือข่าย (`OUT_LIMITS`) — ถ้าองค์กรต้องการปิดบังข้อมูล แก้ที่การ์ด OUT-* จุดเดียว
+
+### OUT-BUNDLE
+รวมผลทุกขั้นเป็น `bundle` (dict) ที่การ์ด Output ทั้ง 3 ใบใช้: profile, plan, evidence, findings (ASSESS-CMP), mule_networks (`tables["_out"]`), flows (Money Flow trail ทุก trace ต่อกัน), materiality (ตาราง item / value / detail), run_log, run_id และเพิ่ม 3 key: `prep` (info วันที่จาก PREP-MAP), `flow_notes` (ข้อความ trace ที่ถึง `FLOW.MAX_TRAIL_ROWS` — **อ่าน `trail.attrs` ของแต่ละ trail ก่อนต่อกัน** เพราะ attrs หายเมื่อ `pd.concat`) และ `edges` (รายการใน record_refs ของ Finding = subgraph ที่เกี่ยวกับ Finding; network_id เมื่อผู้โอนและผู้รับอยู่ในเครือข่ายเดียวกัน)
+`trails` = list ของผล `flow_trace` ทุกครั้ง (อัตโนมัติ + ตามคำสั่ง); `materiality_amount` = ฐานที่ผู้ใช้ยืนยันที่จุดยืนยัน 1 (None = ไม่ได้ระบุ → "ไม่ได้ประเมิน") และ `materiality_basis` = ข้อความอธิบายฐาน (แบบ ก. / ข.)
+
+```python
+# RECIPE OUT-BUNDLE v1.0 | Skill: - | Risk: -
+# Registry: ASSESS.CLEARLY_TRIVIAL | Input: tables(transactions, _prep, _out), profile, plan, evidence, findings(ASSESS-CMP), trails(FLOW-TRACE), run_log, materiality_amount
+OUT_BANNER = ("ไฟล์นี้มีข้อมูลส่วนบุคคล/ข้อมูลบัญชีและธุรกรรมแบบเต็ม — จำกัดการเข้าถึงตามนโยบายองค์กร "
+              "ผลลัพธ์เป็นสัญญาณที่ต้องตรวจสอบเพิ่มเติม ไม่ใช่ข้อสรุป")
+OUT_LIMITS = ("ข้อจำกัด: การหาเครือข่ายใช้ข้อมูลธุรกรรมเท่านั้น (ไม่มีข้อมูลระบุตัวตน) จึงไม่พบกลุ่มที่เชื่อมกันด้วยข้อมูลร่วม"
+              "โดยไม่มีธุรกรรมระหว่างกัน และบัญชีที่เป็นจุดผ่านเงินซึ่งทำหน้าที่ collector อาจรวมกลุ่มที่ไม่เกี่ยวข้องกัน"
+              "เป็นเครือข่ายเดียว — ควรทบทวนสมาชิกของแต่ละเครือข่ายก่อนสรุปผล")
+NETWORK_COLUMNS = ["network_id", "member_accts", "roles", "internal_tx_count", "internal_amount",
+                   "period_start", "period_end"]
+def out_bundle(tables: dict, profile, plan, evidence, findings, trails: list, run_log,
+               materiality_amount, cfg: dict, materiality_basis: str = "-") -> dict:
+    nets = tables.get("_out", {}).get("mule_networks")
+    nets = nets if nets is not None else pd.DataFrame(columns=NETWORK_COLUMNS)
+    notes = [f"{t['trace_id'].iloc[0]}: {t.attrs['note']}" for t in trails if t.attrs.get("truncated")]
+    full = [t for t in trails if len(t)]  # read attrs above: pd.concat drops them
+    flows = pd.concat(full, ignore_index=True) if full else pd.DataFrame(columns=TRAIL_COLUMNS)
+    t = clean_tx(tables["transactions"])
+    e = t[t["tx_id"].isin({x for r in findings["record_refs"] for x in ref_list(r)})].drop_duplicates("tx_id")
+    net_of = {a: n for n, m in zip(nets["network_id"], nets["member_accts"]) for a in m}
+    s, d = e["from_acct"].map(net_of), e["to_acct"].map(net_of)
+    edges = pd.DataFrame({"source": e["from_acct"], "target": e["to_acct"], "amount": e["amount"], "ts": e["ts"],
+                          "tx_id": e["tx_id"], "network_id": s.where(s == d)}).reset_index(drop=True)
+    m, ct = materiality_amount, cfg["ASSESS.CLEARLY_TRIVIAL"]
+    rows = [("ฐาน Materiality", "ไม่ได้ประเมิน" if m is None else m,
+             "ผู้ใช้ไม่ได้ระบุฐาน — Priority = ระดับ Confidence" if m is None else materiality_basis)]
+    if m is not None:
+        rows += [("Materiality สูง", f"exposure ≥ {m:,.2f}", "ยอดเงินที่เกี่ยวข้องตั้งแต่ฐาน Materiality"),
+                 ("Materiality กลาง", f"exposure ≥ {ct * m:,.2f}", f"ASSESS.CLEARLY_TRIVIAL = {ct:.0%} ของฐาน "
+                  "(ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร)"),
+                 ("Materiality ต่ำ", f"exposure < {ct * m:,.2f}", "เล็กน้อยมากเมื่อเทียบกับฐาน")]
+    rows += [(f"จำนวน Finding ที่ Materiality {k}", int(v), "") for k, v in findings["materiality"].value_counts().items()]
+    return {"profile": profile, "plan": plan, "evidence": evidence, "findings": findings,
+            "mule_networks": nets, "flows": flows, "run_log": run_log, "run_id": cfg["_RUN"]["run_id"],
+            "materiality": pd.DataFrame(rows, columns=["item", "value", "detail"]),
+            "prep": tables.get("_prep", {}), "flow_notes": notes, "edges": edges}
+```
+
+### OUT-WORKBOOK
+เขียน Audit Workbook (.xlsx) ด้วย openpyxl ตามโครง sheet ใน AIDA-16 ตามลำดับ: README, Dataset_Profile, Analysis_Plan, Evidence, Findings, Mule_Networks, Money_Flow, Materiality, Run_Log
+Findings แสดง 14 คอลัมน์ตาม Schema + member_accts + คอลัมน์ว่าง reviewer, disposition, review_date ให้ผู้ตรวจกรอก (record_refs ดูได้ใน sheet Evidence); list / dict เขียนเป็นข้อความคั่นด้วย ", "; ข้อความยาวเกินที่ Excel เก็บได้ใน 1 ช่องถูกตัดและลงท้าย "…" (ดูฉบับเต็มใน CSV); Money_Flow แสดงหมายเหตุการไล่เส้นทาง (flow_notes) เหนือตาราง
+
+```python
+# RECIPE OUT-WORKBOOK v1.0 | Skill: - | Risk: -
+# Registry: REGISTRY.VERSION | Input: bundle from OUT-BUNDLE, path of the .xlsx
+import openpyxl  # noqa: F401 — engine of pd.ExcelWriter
+EXCEL_CELL_MAX = 32767  # characters Excel can store in one cell (technical limit, not an audit threshold)
+OUT_SHEETS = {"Dataset_Profile": "ภาพรวมข้อมูลและการตรวจคุณภาพ", "Analysis_Plan": "การ์ดที่รัน / Skip พร้อมเหตุผล",
+              "Evidence": "สัญญาณรายการต่อการ์ด + record_refs (tx_id) และ data_ref สำหรับย้อนกลับไปยังรายการต้นทาง",
+              "Findings": "ข้อสังเกตที่รวมจาก Evidence พร้อม Confidence / Materiality / Priority — กรอก reviewer, "
+              "disposition, review_date หลัง Human Review", "Mule_Networks": "กลุ่มบัญชีที่มีธุรกรรมเชื่อมโยงกัน "
+              "และบทบาทในเครือข่าย (ไม่ใช่ข้อสรุป)", "Money_Flow": "เส้นทางเงินตามทอด (hop) ของแต่ละ trace",
+              "Materiality": "ฐานและเกณฑ์ที่ใช้", "Run_Log": "บันทึกการรันเพื่อทำซ้ำได้"}
+def cell_text(v):
+    if isinstance(v, dict):
+        v = ", ".join(f"{k}: {x}" for k, x in v.items())
+    elif isinstance(v, (list, tuple, set, np.ndarray)):
+        v = ", ".join(str(x) for x in v)
+    if isinstance(v, str) and v.startswith("="):
+        v = "'" + v  # keep user text from becoming an Excel formula
+    return v[:EXCEL_CELL_MAX - 1] + "…" if isinstance(v, str) and len(v) > EXCEL_CELL_MAX else v
+def out_workbook(bundle: dict, path: str, cfg: dict) -> str:
+    b, p = bundle, bundle.get("prep") or {}
+    readme = [OUT_BANNER, f"run_id: {b['run_id']} | Registry version: {cfg['REGISTRY.VERSION']}", OUT_LIMITS,
+              f"รูปแบบวันที่ที่ใช้แปลง: {p.get('date_format', '-')} | แปลงปี พ.ศ.: {'ใช่' if p.get('be_converted') else 'ไม่'}"
+              f" | วันและเดือน ≤ 12 ทั้งคู่ {p.get('ambiguous_dates', 0)} รายการ", *b["flow_notes"],
+              "วิธีอ่านไฟล์ (sheet ตามลำดับ):"] + [f"{k}: {v}" for k, v in OUT_SHEETS.items()]
+    f = b["findings"]
+    fnd = f[FINDING_COLUMNS].assign(member_accts=f["member_accts"], reviewer=None, disposition=None, review_date=None)
+    notes = b["flow_notes"] or ["ไล่เส้นทางเงินครบทุก trace (ไม่ถึงขีดจำกัด FLOW.MAX_TRAIL_ROWS)"]
+    sheets = {"README": pd.DataFrame({"README": readme}), "Dataset_Profile": b["profile"], "Analysis_Plan": b["plan"],
+              "Evidence": b["evidence"], "Findings": fnd, "Mule_Networks": b["mule_networks"],
+              "Money_Flow": b["flows"], "Materiality": b["materiality"], "Run_Log": b["run_log"]}
+    with pd.ExcelWriter(path, engine="openpyxl") as xw:
+        for name, df in sheets.items():
+            out = df.copy()
+            for c in out.columns:
+                if not (pd.api.types.is_numeric_dtype(out[c]) or pd.api.types.is_datetime64_any_dtype(out[c])):
+                    out[c] = out[c].map(cell_text)
+            top = len(notes) + 1 if name == "Money_Flow" else 0
+            out.to_excel(xw, sheet_name=name, index=False, startrow=top)
+            for i, n in enumerate(notes if top else [], 1):
+                xw.sheets[name].cell(row=i, column=1, value=n)
+    return path
+```
+
+### OUT-NETWORK-CSV
+เขียน Network Investigation Package ลงโฟลเดอร์ `folder` (UTF-8 with BOM ให้ Excel อ่านภาษาไทยได้): `nodes.csv` (node_id, role, network_id, finding_ids), `edges.csv` (source, target, amount, ts, tx_id, network_id) และ `flows.csv` (Money Flow trail) — คอลัมน์ตาม AIDA-16
+เฉพาะ subgraph ที่เกี่ยวกับ Finding: node = บัญชีที่มี Finding หรืออยู่บน edge; role จาก mule_networks.roles (สมาชิกเครือข่าย), "mule" สำหรับบัญชีที่มี Finding R2 นอกเครือข่าย และ "other" สำหรับบัญชีอื่น; finding_ids คั่นด้วย "; " (สมาชิกเครือข่ายมี Finding R3 ของเครือข่ายด้วย)
+
+```python
+# RECIPE OUT-NETWORK-CSV v1.0 | Skill: - | Risk: -
+# Registry: - | Input: bundle from OUT-BUNDLE (findings, mule_networks, edges, flows), output folder
+import os
+def out_network_csv(bundle: dict, folder: str, cfg: dict) -> list:
+    os.makedirs(folder, exist_ok=True)
+    f, nets, e = bundle["findings"], bundle["mule_networks"], bundle["edges"]
+    role, net_of, fids = {}, {}, {}
+    for n, roles in zip(nets["network_id"], nets["roles"]):
+        for a, r in roles.items():
+            role[a], net_of[a] = r, n
+    for fid, et, eid, mem in zip(f["finding_id"], f["entity_type"], f["entity_id"], f["member_accts"]):
+        for a in (list(mem) if et == "network" else [eid]):
+            fids.setdefault(a, []).append(fid)
+    r2 = set(f.loc[(f["risk"] == "R2") & (f["entity_type"] == "account"), "entity_id"])
+    accts = sorted(set(fids) | set(e["source"]) | set(e["target"]))
+    nodes = pd.DataFrame({"node_id": accts, "role": [role.get(a, "mule" if a in r2 else "other") for a in accts],
+                          "network_id": [net_of.get(a) for a in accts],
+                          "finding_ids": ["; ".join(fids.get(a, [])) for a in accts]})
+    paths = [os.path.join(folder, n) for n in ("nodes.csv", "edges.csv", "flows.csv")]
+    for path, df in zip(paths, (nodes, e, bundle["flows"])):
+        df.to_csv(path, index=False, encoding="utf-8-sig")
+    return paths
+```
+
+### OUT-DASHBOARD
+สร้าง HTML Interactive Dashboard ไฟล์เดียวจาก template ใน AIDA-16 (ส่ง `template` = ข้อความใน block ```html ของ AIDA-16 ทั้งหมด ตามตัวอักษร): แทน placeholder `/*__AIDA_DATA__*/` ด้วย JSON ของ bundle (ตาราง → list ของแถว, วันเวลาเป็น ISO) โดยแปลง "<" เป็น `<` เพื่อไม่ให้ข้อมูลปิดแท็ก script ได้
+template ไม่ครบ (ไม่มี placeholder 1 จุด หรือไม่มีบรรทัด `<!-- END-OF-TEMPLATE -->`) → ValueError — ห้ามเขียน template เอง ให้ดึง AIDA-16 ใหม่
+
+```python
+# RECIPE OUT-DASHBOARD v1.0 | Skill: - | Risk: -
+# Registry: REGISTRY.VERSION | Input: bundle from OUT-BUNDLE, template (```html block of AIDA-16), path of the .html
+DASH_PLACEHOLDER, DASH_END = "/*__AIDA_DATA__*/", "<!-- END-OF-TEMPLATE -->"
+def out_dashboard(bundle: dict, template: str, path: str, cfg: dict) -> str:
+    if template.count(DASH_PLACEHOLDER) != 1 or DASH_END not in template:
+        raise ValueError(f"template Dashboard จาก AIDA-16 ไม่ครบ (ต้องมี {DASH_PLACEHOLDER} 1 จุด และบรรทัด {DASH_END}) "
+                         "— ดึง template จาก AIDA-16 ใหม่ทั้งหมด ห้ามเขียนหรือแก้ template เอง")
+    def rows(df):
+        return json.loads(df.to_json(orient="records", date_format="iso", force_ascii=False))
+    f, e = bundle["findings"], bundle["edges"]
+    keep = [c for c in FINDING_COLUMNS + ["member_accts", "record_refs"] if c in f.columns]
+    ui = {k: rows(bundle[k]) for k in ("profile", "plan", "evidence", "mule_networks", "flows",
+                                       "materiality", "run_log")}
+    ui.update(findings=rows(f[keep]), edges=rows(e[e["network_id"].notna()]), run_id=bundle["run_id"],
+              flow_notes=bundle["flow_notes"], prep=bundle.get("prep", {}), limits=OUT_LIMITS,
+              registry_version=cfg["REGISTRY.VERSION"])
+    data = json.dumps(ui, ensure_ascii=False, default=str).replace("<", "\\u003c")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(template.replace(DASH_PLACEHOLDER, data))
+    return path
+```
+
 ## ข้อห้าม (Guardrails)
 - รันการ์ดตามที่เขียนไว้ทุกตัวอักษร (verbatim) ห้ามแก้โค้ด ห้ามเขียนการ์ดขึ้นเอง และต้องรัน CORE-EVIDENCE และ CORE-BASELINE ก่อนการ์ดใน AIDA-18
 - ถ้าดึงการ์ดมาไม่ครบ (โค้ดถูกตัด, ไม่มีบรรทัดปิด) ห้ามรันส่วนที่ได้มา — Skip การ์ดนั้นพร้อม reason "ดึง recipe ไม่ครบ"
@@ -532,6 +682,7 @@ def log_run(events: list, cfg: dict) -> pd.DataFrame:
 
 ## ไฟล์ที่เกี่ยวข้อง
 - AIDA-18 Analysis Recipes (การ์ดวิเคราะห์ที่เรียกใช้ CORE-EVIDENCE)
+- AIDA-16 Output Templates (โครง sheet, คอลัมน์ CSV และ template Dashboard ที่การ์ด OUT-* ใช้)
 - AIDA-17 Data & Evidence Schema (คอลัมน์ Evidence)
 - AIDA-14 Configuration Registry (Machine Config, `REGISTRY.VERSION = 1.1`)
 - AIDA-11 Audit Procedures & Language (ถ้อยคำที่ใช้)
