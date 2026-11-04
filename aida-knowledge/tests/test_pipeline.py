@@ -47,26 +47,59 @@ def _ev(recipe_id, family, risk, rows, etype="account", data_ref=None):
 _CHAIN = {}
 
 
-def sample_chain():
-    """Whole pipeline on the raw sample CSVs: PREP-MAP -> PROF-PROFILE -> GATE-CAPABILITY ->
+def raw_samples():
+    return (pd.read_csv(SAMPLES / "transactions.csv", dtype=str),
+            pd.read_csv(SAMPLES / "accounts.csv", dtype=str))
+
+
+def run_chain(raw_tx, raw_acc):
+    """Whole pipeline on raw (text) tables: PREP-MAP -> PROF-PROFILE -> GATE-CAPABILITY ->
     account-level cards -> MULE-PATTERN -> MULE-CROSS-TX -> MULE-NETWORK -> UNIFY -> ASSESS."""
+    tables = R()["prep_map"]({"transactions": raw_tx, "accounts": raw_acc}, IDENTITY, CFG)
+    profile, status = R()["prof_profile"](tables, CFG)
+    plan = R()["gate_capability"](tables, CFG)
+    tables["_out"] = {}
+    ev = pd.concat([R()[f](tables, CFG) for f in ACCOUNT_CARDS], ignore_index=True)
+    for f in ("mule_pattern", "mule_cross_tx", "mule_network"):
+        tables["evidence"] = ev
+        ev = pd.concat([ev, R()[f](tables, CFG)], ignore_index=True)
+    nets = tables["_out"]["mule_networks"]
+    findings = R()["unify_findings"](ev, CFG, nets)
+    return dict(tables=tables, profile=profile, status=status, plan=plan, evidence=ev,
+                networks=nets, findings=findings,
+                assessed=R()["assess_cmp"](findings, tables["transactions"], 1_000_000.0, CFG))
+
+
+def sample_chain():
     if not _CHAIN:
-        raw = {"transactions": pd.read_csv(SAMPLES / "transactions.csv", dtype=str),
-               "accounts": pd.read_csv(SAMPLES / "accounts.csv", dtype=str)}
-        tables = R()["prep_map"](raw, IDENTITY, CFG)
-        profile, status = R()["prof_profile"](tables, CFG)
-        plan = R()["gate_capability"](tables, CFG)
-        tables["_out"] = {}
-        ev = pd.concat([R()[f](tables, CFG) for f in ACCOUNT_CARDS], ignore_index=True)
-        for f in ("mule_pattern", "mule_cross_tx", "mule_network"):
-            tables["evidence"] = ev
-            ev = pd.concat([ev, R()[f](tables, CFG)], ignore_index=True)
-        nets = tables["_out"]["mule_networks"]
-        findings = R()["unify_findings"](ev, CFG, nets)
-        _CHAIN.update(tables=tables, profile=profile, status=status, plan=plan, evidence=ev,
-                      networks=nets, findings=findings,
-                      assessed=R()["assess_cmp"](findings, tables["transactions"], 1_000_000.0, CFG))
+        _CHAIN.update(run_chain(*raw_samples()))
     return _CHAIN
+
+
+def key_set():
+    return {(x["entity_type"], x["entity_id"], x["risk"], x["period"]) for x in answer_key()["findings"]}
+
+
+def finding_set(f):
+    return set(zip(f["entity_type"], f["entity_id"], f["risk"], f["period"]))
+
+
+THAI_ABBR = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.",
+             "พ.ย.", "ธ.ค."]
+
+
+def reformat(values, style):
+    """Re-write ISO sample timestamps in another style a Thai user may upload."""
+    d = pd.to_datetime(pd.Series(values))
+    if style == "dmy_ce":
+        return [f"{x:%d/%m/%Y %H:%M}" for x in d]
+    if style == "iso_be":
+        return [f"{x.year + 543}-{x:%m-%d %H:%M:%S}" for x in d]
+    if style == "dmy_be":
+        return [f"{x:%d/%m}/{x.year + 543} {x:%H:%M}" for x in d]
+    if style == "thai_month":
+        return [f"{x.day} {THAI_ABBR[x.month - 1]} {x.year + 543} {x:%H:%M}" for x in d]
+    raise ValueError(style)
 
 
 # ---------------------------------------------------------------- PREP-MAP + PROF-PROFILE
@@ -186,6 +219,10 @@ class TestGate(unittest.TestCase):
             self.assertIn("ts", plan.loc[rid, "reason"])
             self.assertIn("ts", plan.loc[rid, "missing"])
         self.assertTrue((plan["reason"].str.len() > 0).all())
+        for reason in plan["reason"]:  # names only the missing column and how to fix it
+            self.assertNotIn("tx_id", reason)
+            self.assertIn("จุดยืนยัน 1", reason)
+        self.assertEqual(set(plan["missing"]), {"ts"})
 
     def test_gate_no_accounts_new_acct_first_seen(self):
         tables = {k: v for k, v in sample_chain()["tables"].items() if k != "accounts"}
@@ -230,7 +267,7 @@ class TestUnify(unittest.TestCase):
             _ev("STAT-MAD", "5.1 Statistical", "R1", [("A1", "2026-08", ["T3"])]),
             _ev("NET-FUNNEL", "5.9 Network", "R1", [("B1", "2026-08", ["T4"])]),
         ], ignore_index=True)
-        f = R()["unify_findings"](ev, CFG)
+        f = R()["unify_findings"](ev, CFG, None)
         self.assertEqual(list(f.columns[:len(FINDING_COLUMNS)]), FINDING_COLUMNS)
         got = {(r.entity_id, r.risk, r.period): r for r in f.itertuples()}
         self.assertEqual(set(got), {("A1", "R2", "2026-08"), ("A1", "R1", "2026-08"),
@@ -262,7 +299,7 @@ class TestUnify(unittest.TestCase):
         self.assertTrue(pd.isna(f.loc["M01", "network_id"]))
 
     def test_unify_empty(self):
-        f = R()["unify_findings"](pd.DataFrame(columns=tr.EVIDENCE_COLUMNS), CFG)
+        f = R()["unify_findings"](pd.DataFrame(columns=tr.EVIDENCE_COLUMNS), CFG, None)
         self.assertTrue(f.empty)
         self.assertEqual(list(f.columns[:len(FINDING_COLUMNS)]), FINDING_COLUMNS)
 
@@ -377,6 +414,105 @@ class TestSelectAndLog(unittest.TestCase):
         with self.assertRaises(ValueError):
             R()["log_run"]([{"stage": 19, "status": "OK"}], CFG)
         self.assertEqual(list(R()["log_run"]([], CFG).columns), RUN_LOG_COLUMNS)
+
+
+
+# ---------------------------------------------------------------- fix round 1
+class TestThaiDates(unittest.TestCase):
+    def _check_style(self, style):
+        tx, acc = raw_samples()
+        tx["ts"] = reformat(tx["ts"], style)
+        acc["opened_at"] = reformat(acc["opened_at"], style)
+        c = run_chain(tx, acc)
+        self.assertEqual(c["status"], "OK", style)
+        self.assertEqual(c["tables"]["_prep"]["unparsed_ts"], 0, style)
+        self.assertEqual(finding_set(c["findings"]), key_set(), style)
+        return c["tables"]["_prep"]
+
+    def test_dmy_ce_sample_matches_key(self):
+        prep = self._check_style("dmy_ce")
+        self.assertEqual(prep["date_format"], "dd/mm/yyyy")
+        self.assertFalse(prep["be_converted"])
+        self.assertGreater(prep["ambiguous_dates"], 0)
+
+    def test_iso_be_sample_matches_key(self):
+        prep = self._check_style("iso_be")
+        self.assertEqual(prep["date_format"], "iso")
+        self.assertTrue(prep["be_converted"])
+
+    def test_dmy_be_sample_matches_key(self):
+        self.assertTrue(self._check_style("dmy_be")["be_converted"])
+
+    def test_thai_month_sample_matches_key(self):
+        self.assertTrue(self._check_style("thai_month")["be_converted"])
+
+    def test_all_ambiguous_dmy_parses_day_first(self):
+        t = _prep([(f"T{i}", v, "A", "B", 10, "m") for i, v in
+                   enumerate(["01/08/2026", "03/08/2026 10:30", "05/09/2026", "12/08/2026"])])
+        self.assertEqual(list(t["transactions"]["ts"]),
+                         [pd.Timestamp("2026-08-01"), pd.Timestamp("2026-08-03 10:30"),
+                          pd.Timestamp("2026-09-05"), pd.Timestamp("2026-08-12")])
+        prep = t["_prep"]
+        self.assertEqual(prep["date_format"], "dd/mm/yyyy")
+        self.assertEqual(prep["ambiguous_dates"], 4)
+        self.assertEqual(len(prep["date_samples"]), 3)
+        self.assertEqual(prep["date_samples"][0], ("01/08/2026", "2026-08-01 00:00:00"))
+
+    def test_month_first_only_when_every_value_fits(self):
+        t = _prep([(f"T{i}", v, "A", "B", 10, "m") for i, v in
+                   enumerate(["08/15/2026", "08/03/2026", "09/01/2026"])])
+        self.assertEqual(t["_prep"]["date_format"], "mm/dd/yyyy")
+        self.assertEqual(list(t["transactions"]["ts"]), [pd.Timestamp("2026-08-15"),
+                                                         pd.Timestamp("2026-08-03"),
+                                                         pd.Timestamp("2026-09-01")])
+        # 15/08 and 08/15 in one column fit no single format: day-first, 08/15 unparsed
+        t = _prep([(f"T{i}", v, "A", "B", 10, "m") for i, v in
+                   enumerate(["15/08/2026", "08/15/2026", "03/08/2026"])])
+        self.assertEqual(t["_prep"]["date_format"], "dd/mm/yyyy")
+        ts = t["transactions"]["ts"]
+        self.assertEqual(ts[0], pd.Timestamp("2026-08-15"))
+        self.assertTrue(pd.isna(ts[1]))
+        self.assertEqual(ts[2], pd.Timestamp("2026-08-03"))
+
+    def test_implausible_range_stops(self):
+        for when, hint in [("1985-08-01 10:00", "1990"), ("2031-08-01 10:00", "หลังวันที่รัน")]:
+            rows = [(f"T{i}", "2026-08-01 10:00", "A", "B", 10, "m") for i in range(40)]
+            rows.append(("TX", when, "A", "B", 10, "m"))
+            t = _prep(rows)
+            _, status = R()["prof_profile"](t, {**CFG, "_RUN": {**CFG["_RUN"], "run_date": "2026-11-04"}})
+            self.assertTrue(status.startswith("STOP: "), status)
+            self.assertIn(hint, status)
+            self.assertIn("พ.ศ.", status)
+
+    def test_run_date_today_not_stopped(self):
+        t = _prep([("T1", "2026-11-04 09:00", "A", "B", 10, "m")])
+        _, status = R()["prof_profile"](t, {**CFG, "_RUN": {**CFG["_RUN"], "run_date": "2026-11-04"}})
+        self.assertEqual(status, "OK")
+
+
+class TestFixRound1(unittest.TestCase):
+    def test_unify_requires_networks(self):
+        ev = sample_chain()["evidence"]
+        with self.assertRaises(TypeError):
+            R()["unify_findings"](ev, CFG)
+        with self.assertRaises(ValueError):  # MULE-NETWORK evidence but no network table
+            R()["unify_findings"](ev, CFG, None)
+
+    def test_assess_r3_exposure_from_networks(self):
+        f = TestAssess._findings(2, risk="R3", refs=("T1",)).assign(
+            entity_type="network", entity_id="NET-1", internal_amount=999.0)
+        a = R()["assess_cmp"](f, TestAssess.TX, None, CFG).iloc[0]
+        self.assertEqual(a["exposure"], 999.0)
+
+    def test_assess_refs_as_string(self):
+        tx = TestAssess.TX
+        for refs, want, missing in [("T1, T2", 150.0, False), ("['T1', 'T9']", 100.0, True),
+                                    ("T1", 100.0, False)]:
+            f = TestAssess._findings(1).copy()
+            f.at[0, "record_refs"] = refs
+            a = R()["assess_cmp"](f, tx, None, CFG).iloc[0]
+            self.assertEqual(a["exposure"], want, refs)
+            self.assertEqual("ไม่พบรายการอ้างอิงบางรายการ" in a["review_reason"], missing, refs)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 
 ## สรุปสั้น
 ไฟล์นี้เก็บการ์ด (recipe) ระดับ pipeline ที่ Code Interpreter รันตามลำดับในข้อ 7 ของ Instructions — **ต้องรันการ์ดในไฟล์นี้ก่อนการ์ดวิเคราะห์ใน AIDA-18** เพราะการ์ดวิเคราะห์ทุกใบเรียกใช้ฟังก์ชันจาก `CORE-EVIDENCE` และ `CORE-BASELINE`
-ลำดับ: CORE-EVIDENCE, CORE-BASELINE → PREP-TS, PREP-MAP → PROF-PROFILE (STOP แล้วหยุด) → GATE-CAPABILITY, GATE-VOLUME → การ์ดใน AIDA-18 ตาม Analysis Plan → UNIFY-FINDINGS → ASSESS-CMP → SELECT-AUTO-TRACE + FLOW-TRACE → LOG-RUN; การ์ด OUT-WORKBOOK, OUT-NETWORK-CSV และ OUT-DASHBOARD จะเพิ่มต่อท้ายไฟล์นี้
+ลำดับ: CORE-EVIDENCE, CORE-BASELINE → PREP-DATE, PREP-TS, PREP-MAP → PROF-CHECKS, PROF-PROFILE (STOP แล้วหยุด) → GATE-CAPABILITY, GATE-VOLUME → การ์ดใน AIDA-18 ตาม Analysis Plan → UNIFY-REFS, UNIFY-FINDINGS → ASSESS-CMP → SELECT-AUTO-TRACE + FLOW-TRACE → LOG-RUN; การ์ด OUT-WORKBOOK, OUT-NETWORK-CSV และ OUT-DASHBOARD จะเพิ่มต่อท้ายไฟล์นี้
 คอลัมน์ Evidence เป็นไปตาม Schema ใน AIDA-17 และทุกแถวบันทึก Registry version จาก AIDA-14
 
 ## การ์ด Evidence builder
@@ -77,55 +77,111 @@ def core_baseline(tables: dict = None, cfg: dict = None) -> None:
 
 ## การ์ดเตรียมข้อมูลและ Gate (ข้อ 2–4 ของขั้นตอน)
 
-### PREP-TS
-ฟังก์ชันช่วยของ PREP-MAP: `to_naive_ts` แปลงคอลัมน์วันเวลาที่ปนหลายรูปแบบ (ข้อความรูปแบบต่าง ๆ, YYYYMMDD, เลข serial ของ Excel ทั้งที่เป็นตัวเลขและข้อความ, datetime และค่าที่มี timezone) เป็น datetime แบบไม่มี timezone ทีละค่าที่ไม่ซ้ำ
-ค่าที่มี timezone ใช้เวลาท้องถิ่นตามที่บันทึก (ตัด timezone ออก ไม่แปลงเป็น UTC) เพื่อให้ TEMP-OFFHOURS เทียบเวลาทำการได้ถูก; ค่าที่แปลงไม่ได้เป็น NaT และนับใน Dataset Profile
+### PREP-DATE
+ฟังก์ชันช่วยของ PREP-TS และค่าคงที่ของปฏิทิน (กฎนิยาม ไม่ใช่เกณฑ์ตรวจสอบ จึงไม่อยู่ใน AIDA-14): ปี ≥ 2400 ถือเป็นปี พ.ศ. และลบ 543 เป็น ค.ศ.; ชื่อเดือนย่อภาษาไทย (ม.ค. … ธ.ค. มีหรือไม่มีจุดก็ได้) แปลงเป็นเลขเดือน; วันที่ก่อนปี 1990 ในไฟล์ธุรกรรมถือว่าไม่สมเหตุสมผล (PROF-PROFILE ใช้ STOP)
+`date_parts` แยกค่าข้อความเป็น (ชนิด, ช่อง 1, ช่อง 2, ปี, ส่วนเวลา) สำหรับ ISO / YYYYMMDD, วัน เดือนไทย ปี และแบบ ตัวเลข/ตัวเลข/ปี; `iso_text` เขียนกลับเป็น `YYYY-MM-DD HH:MM:SS` (ค.ศ.) เพื่อแปลงทั้งคอลัมน์ด้วยรูปแบบเดียวที่ระบุชัด
 
 ```python
-# RECIPE PREP-TS v1.0 | Skill: - | Risk: -
-# Registry: - | Input: one date/time column (text in any format, YYYYMMDD, Excel serial days, datetime, tz-aware)
+# RECIPE PREP-DATE v1.0 | Skill: - | Risk: -
+# Registry: - | Input: one date/time text value
+import re
+# Calendar rules (definitional, not audit thresholds, so not registry keys):
+BE_MIN_YEAR = 2400          # a year >= 2400 is a Buddhist Era (พ.ศ.) year
+BE_OFFSET = 543             # ค.ศ. = พ.ศ. - 543
+PLAUSIBLE_MIN_YEAR = 1990   # an earlier transaction date points to a wrong format or calendar
+THAI_MONTHS = {"มค": 1, "กพ": 2, "มีค": 3, "เมย": 4, "พค": 5, "มิย": 6,
+               "กค": 7, "สค": 8, "กย": 9, "ตค": 10, "พย": 11, "ธค": 12}
+RE_ISO = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})(.*)$")
+RE_YMD8 = re.compile(r"^(\d{4})(\d{2})(\d{2})()$")
+RE_THAI = re.compile(r"^(\d{1,2})\s*([ก-๙.]+)\s*(\d{2,4})(.*)$")
+RE_DMY = re.compile(r"^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})(.*)$")
+RE_TIME = re.compile(r"(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?")
+def date_parts(x: str):
+    # -> (kind, a, b, year, rest): iso / thai give (day, month); slash gives the fields as written
+    x = x.strip()
+    m = RE_ISO.match(x) or RE_YMD8.match(x)
+    if m:
+        return "iso", int(m[3]), int(m[2]), int(m[1]), m[4]
+    m = RE_THAI.match(x)
+    if m and m[2].replace(".", "") in THAI_MONTHS:
+        return "thai", int(m[1]), THAI_MONTHS[m[2].replace(".", "")], int(m[3]), m[4]
+    m = RE_DMY.match(x)
+    return ("slash", int(m[1]), int(m[2]), int(m[3]), m[4]) if m else None
+def iso_text(day: int, month: int, year: int, rest: str) -> str:
+    year = year + 2000 if year < 100 else year  # 2-digit year
+    year = year - BE_OFFSET if year >= BE_MIN_YEAR else year
+    t = RE_TIME.search(rest)
+    h, mi, s = (int(t[1]), int(t[2]), int(t[3] or 0)) if t else (0, 0, 0)
+    if t and t[4]:
+        h = h % 12 + (12 if t[4].lower() == "pm" else 0)
+    return f"{year:04d}-{month:02d}-{day:02d} {h:02d}:{mi:02d}:{s:02d}"
+def prep_date(tables: dict = None, cfg: dict = None) -> None:
+    return None  # helper card: calendar constants, date_parts and iso_text for PREP-TS
+```
+
+### PREP-TS
+`to_naive_ts` แปลงคอลัมน์วันเวลาเป็น datetime แบบไม่มี timezone โดย **ตัดสินรูปแบบครั้งเดียวต่อคอลัมน์** (ไม่ใช่ทีละค่า) จึงได้ผลเหมือนกันทุกเวอร์ชันของ pandas: แบบ ตัวเลข/ตัวเลข/ปี ใช้วัน/เดือน/ปี (แบบไทย) เป็นค่าตั้งต้น และใช้เดือน/วัน/ปี เฉพาะเมื่อมีค่าที่ช่องที่ 2 > 12 และทุกค่าเข้ากับเดือน/วัน/ปีได้; ISO คงเป็น ISO; ปี พ.ศ. แปลงเป็น ค.ศ.; ชื่อเดือนไทยแปลงเป็นเลขเดือน
+ค่าอื่น: เลข serial ของ Excel (ตัวเลขหรือข้อความตัวเลข) และ datetime; ค่าที่มี timezone ใช้เวลาท้องถิ่นตามที่บันทึก (ตัด timezone ไม่แปลงเป็น UTC); ค่าที่แปลงไม่ได้เป็น NaT — คืน info: date_format, be_converted, ambiguous_dates (ค่าที่วันและเดือน ≤ 12 ทั้งคู่) และ date_samples (3 คู่ ค่าเดิม → ค่าที่แปลง) ให้ผู้ใช้ยืนยันที่จุดยืนยัน 1
+
+```python
+# RECIPE PREP-TS v1.1 | Skill: - | Risk: -
+# Registry: - | Input: one date/time column (dd/mm/yyyy, mm/dd/yyyy, ISO, พ.ศ., Thai month, YYYYMMDD, Excel serial, datetime)
 EXCEL_EPOCH = pd.Timestamp("1899-12-30")  # Excel serial day 0 (1900 date system)
 EXCEL_MAX_SERIAL = 2958465  # 9999-12-31, the last date Excel can store
-def _ts_one(x):
-    if isinstance(x, str):
-        x = x.strip()
-        if len(x) == 8 and x.isdigit():  # YYYYMMDD
-            return pd.to_datetime(x, format="%Y%m%d", errors="coerce")
-        if x.replace(".", "", 1).isdigit():
-            x = float(x)
+def _ts_other(x):
+    if isinstance(x, str) and x.strip().replace(".", "", 1).isdigit():
+        x = float(x)
     if isinstance(x, (int, float, np.integer, np.floating)) and not isinstance(x, (bool, np.bool_)):
-        if not 0 < x <= EXCEL_MAX_SERIAL:
-            return pd.NaT
-        return (EXCEL_EPOCH + pd.Timedelta(days=float(x))).round("s")
+        return ((EXCEL_EPOCH + pd.Timedelta(days=float(x))).round("s") if 0 < x <= EXCEL_MAX_SERIAL else pd.NaT), "excel_serial"
     try:
         v = pd.Timestamp(x)
     except (ValueError, TypeError, OverflowError):
-        return pd.NaT
-    return v.tz_localize(None) if v is not pd.NaT and v.tzinfo is not None else v
-def to_naive_ts(s: pd.Series) -> pd.Series:
-    # naive wall-clock datetimes: a time-zone offset is dropped, not converted
+        return pd.NaT, "อื่น ๆ"
+    return (v.tz_localize(None) if v is not pd.NaT and v.tzinfo is not None else v), "datetime"
+def to_naive_ts(s: pd.Series) -> tuple:
+    # ONE format per column (same result on every pandas version) -> (naive datetimes, info)
+    info = {"date_format": "datetime", "be_converted": False, "ambiguous_dates": 0, "date_samples": []}
     if pd.api.types.is_datetime64_any_dtype(s):
-        return s.dt.tz_localize(None) if getattr(s.dt, "tz", None) is not None else s
-    parsed = {x: _ts_one(x) for x in s.dropna().unique()}
-    return pd.to_datetime(s.map(parsed), errors="coerce")
+        return (s.dt.tz_localize(None) if getattr(s.dt, "tz", None) is not None else s), info
+    vals = list(s.dropna().unique())
+    parts = {x: date_parts(x) for x in vals if isinstance(x, str)}
+    slash = [p for p in parts.values() if p and p[0] == "slash"]
+    mdy = any(p[2] > 12 for p in slash) and all(p[1] <= 12 for p in slash)  # default: day-first (Thai)
+    text, out, kinds = {}, {}, set()
+    for x in vals:
+        p = parts.get(x)
+        if p is None:
+            out[x], k = _ts_other(x)
+        else:
+            k = {"iso": "iso", "thai": "dd เดือนไทย yyyy"}.get(p[0], "mm/dd/yyyy" if mdy else "dd/mm/yyyy")
+            d, m = (p[2], p[1]) if p[0] == "slash" and mdy else (p[1], p[2])
+            text[x] = iso_text(d, m, p[3], p[4])
+            info["be_converted"] |= p[3] >= BE_MIN_YEAR
+        kinds.add(k)
+    conv = pd.to_datetime(pd.Series(list(text.values()), dtype=object), format="%Y-%m-%d %H:%M:%S", errors="coerce")
+    out.update(zip(text, conv))
+    amb = {x for x, p in parts.items() if p and p[0] == "slash" and p[1] <= 12 and p[2] <= 12}
+    info.update(date_format=" + ".join(sorted(kinds)) or "-", ambiguous_dates=int(s.isin(amb).sum()),
+                date_samples=[(str(x), "แปลงไม่ได้" if pd.isna(out[x]) else f"{out[x]:%Y-%m-%d %H:%M:%S}") for x in vals[:3]])
+    return pd.to_datetime(s.map(out), errors="coerce"), info
 def prep_ts(tables: dict = None, cfg: dict = None) -> None:
     return None  # helper card: defines to_naive_ts for PREP-MAP
 ```
 
 ### PREP-MAP
 เปลี่ยนชื่อคอลัมน์ตาม mapping ที่ผู้ใช้ยืนยันแล้ว (จุดยืนยัน 1) เช่น `{"transactions": {"เลขที่รายการ": "tx_id"}, "accounts": {...}}`, แปลง `ts` / `opened_at` ด้วย `to_naive_ts`, `amount` เป็นตัวเลข (ตัด , ฿ และช่องว่าง) และรหัสรายการ/บัญชีเป็นข้อความ
-ไม่ลบแถวใด — นับไว้ใน `tables["_prep"]`: ts ที่ไม่มีหรือแปลงไม่ได้, รายการโอนเข้าบัญชีตัวเอง, ยอด ≤ 0 และ amount ที่แปลงไม่ได้ (การ์ดวิเคราะห์ตัดรายการเหล่านี้เองผ่าน `clean_tx`)
+ไม่ลบแถวใด — `tables["_prep"]` นับ ts ที่ไม่มีหรือแปลงไม่ได้, รายการโอนเข้าบัญชีตัวเอง, ยอด ≤ 0, amount ที่แปลงไม่ได้ และเก็บ info ของ ts (date_format, be_converted, ambiguous_dates, date_samples — แสดงให้ผู้ใช้ยืนยันที่จุดยืนยัน 1) กับ `opened_at_info` (การ์ดวิเคราะห์ตัดรายการที่ไม่ใช้เองผ่าน `clean_tx`)
 
 ```python
-# RECIPE PREP-MAP v1.0 | Skill: - | Risk: -
+# RECIPE PREP-MAP v1.1 | Skill: - | Risk: -
 # Registry: - | Input: raw {table: DataFrame}, mapping {table: {user column: standard column}}
 def prep_map(raw: dict, mapping: dict, cfg: dict) -> dict:
-    tables = {}
+    tables, dates = {}, {}
     for name, df in raw.items():
         t = df.rename(columns=(mapping or {}).get(name, {})).copy()
         for c in ("ts", "opened_at"):
             if c in t.columns:
-                t[c] = to_naive_ts(t[c])
+                t[c], dates[c] = to_naive_ts(t[c])
         for c in ("tx_id", "from_acct", "to_acct", "acct_id"):
             if c in t.columns:
                 t[c] = t[c].map(lambda x: x if pd.isna(x) else str(x).strip())
@@ -137,25 +193,27 @@ def prep_map(raw: dict, mapping: dict, cfg: dict) -> dict:
     tx = tables.get("transactions", pd.DataFrame())
     def has(*cols):
         return all(c in tx.columns for c in cols)
+    no_ts = {"date_format": "-", "be_converted": False, "ambiguous_dates": 0, "date_samples": []}
     tables["_prep"] = {
         "unparsed_ts": int(tx["ts"].isna().sum()) if has("ts") else 0,
         "excluded_self": int((tx["from_acct"] == tx["to_acct"]).sum()) if has("from_acct", "to_acct") else 0,
         "excluded_nonpositive": int((tx["amount"] <= 0).sum()) if has("amount") else 0,
-        "unparsed_amount": int(tx["amount"].isna().sum()) if has("amount") else 0}
+        "unparsed_amount": int(tx["amount"].isna().sum()) if has("amount") else 0,
+        **dates.get("ts", no_ts), "opened_at_info": dates.get("opened_at")}
     return tables
 ```
 
 ### PROF-PROFILE
-สร้าง Dataset Profile (คอลัมน์ item, value, detail): จำนวนรายการ, ความครบถ้วนของคอลัมน์มาตรฐาน, ช่วงเวลา, จำนวนบัญชี, ts ที่แปลงไม่ได้, รายการที่ไม่นำไปวิเคราะห์ (โอนเข้าบัญชีตัวเอง / ยอด ≤ 0), tx_id ซ้ำ และมีตาราง accounts หรือไม่
-คืน status `"OK"` หรือ `"STOP: <เหตุผล>"` — STOP เมื่อไม่มีคอลัมน์ tx_id, tx_id ว่างหรือซ้ำ (`GATE.TRACE.REQUIRED`) หรือ ts ที่แปลงไม่ได้เกิน 1 − `GATE.COMPLETENESS.MIN = 95%`; STOP แล้วต้องแจ้งผู้ใช้และไม่รันขั้นต่อไป
+สร้าง Dataset Profile (คอลัมน์ item, value, detail): จำนวนรายการ, ความครบถ้วนของคอลัมน์มาตรฐาน, ช่วงเวลา, รูปแบบวันที่ที่ใช้แปลง, จำนวนบัญชี, ts ที่แปลงไม่ได้, รายการที่ไม่นำไปวิเคราะห์ (โอนเข้าบัญชีตัวเอง / ยอด ≤ 0), tx_id ซ้ำ และมีตาราง accounts หรือไม่
+คืน status `"OK"` หรือ `"STOP: <เหตุผล>"` ตามเงื่อนไขในการ์ด PROF-CHECKS; STOP แล้วต้องแจ้งผู้ใช้และไม่รันขั้นต่อไป
 
 ```python
-# RECIPE PROF-PROFILE v1.0 | Skill: - | Risk: -
-# Registry: GATE.COMPLETENESS.MIN, GATE.TRACE.REQUIRED | Input: tables from PREP-MAP (transactions, accounts, _prep)
+# RECIPE PROF-PROFILE v1.1 | Skill: - | Risk: -
+# Registry: GATE.COMPLETENESS.MIN | Input: tables from PREP-MAP (transactions, accounts, _prep)
 PROFILE_TX_COLUMNS = ["tx_id", "ts", "from_acct", "to_acct", "amount", "currency", "channel"]
 def prof_profile(tables: dict, cfg: dict) -> tuple:
     tx, prep, lim = tables["transactions"], tables.get("_prep", {}), cfg["GATE.COMPLETENESS.MIN"]
-    n, rows, stop = len(tx), [], []
+    n, rows = len(tx), []
     def add(item, value, detail=""):
         rows.append({"item": item, "value": value, "detail": detail})
     add("จำนวนรายการ (transactions)", n)
@@ -166,6 +224,10 @@ def prof_profile(tables: dict, cfg: dict) -> tuple:
     if "ts" in tx.columns and tx["ts"].notna().any():
         d = tx["ts"].dropna()
         add("ช่วงเวลาของข้อมูล", f"{d.min():%Y-%m-%d} ถึง {d.max():%Y-%m-%d}", f"{d.dt.strftime('%Y-%m').nunique()} เดือน")
+    add("รูปแบบวันที่ของ ts", prep.get("date_format", "-"),
+        f"แปลงปี พ.ศ.: {'ใช่' if prep.get('be_converted') else 'ไม่'}; วันและเดือน ≤ 12 ทั้งคู่ "
+        f"{prep.get('ambiguous_dates', 0)} รายการ; ตัวอย่าง: "
+        + ", ".join(f"{a} → {b}" for a, b in prep.get("date_samples", [])))
     if "from_acct" in tx.columns and "to_acct" in tx.columns:
         add("จำนวนบัญชี", int(pd.concat([tx["from_acct"], tx["to_acct"]]).nunique()))
     add("ts ที่ไม่มีหรือแปลงเป็นวันเวลาไม่ได้", prep.get("unparsed_ts", 0))
@@ -174,20 +236,45 @@ def prof_profile(tables: dict, cfg: dict) -> tuple:
     add("รายการยอด ≤ 0 (ไม่นำไปวิเคราะห์)", prep.get("excluded_nonpositive", 0))
     acc = tables.get("accounts")
     add("ตาราง accounts", "มี" if acc is not None else "ไม่มี", "" if acc is not None else "MULE-NEW-ACCT ใช้ basis=first_seen")
+    if "tx_id" in tx.columns:
+        ids = tx["tx_id"]
+        dup = sorted(str(x) for x in ids[ids.duplicated(keep=False) & ids.notna()].unique())
+        add("tx_id ซ้ำ (จำนวนค่า)", len(dup), ", ".join(dup[:10]))
+    stop = prof_checks(tx, prep, cfg)
+    return pd.DataFrame(rows, columns=["item", "value", "detail"]), ("STOP: " + "; ".join(stop) if stop else "OK")
+```
+
+### PROF-CHECKS
+ฟังก์ชันช่วยของ PROF-PROFILE: `prof_checks` คืนรายการเหตุผล STOP — ไม่มีคอลัมน์ tx_id, tx_id ว่างหรือซ้ำ (`GATE.TRACE.REQUIRED`), ts ที่แปลงไม่ได้เกิน 1 − `GATE.COMPLETENESS.MIN = 95%` และช่วงวันที่ไม่สมเหตุสมผล: มีวันที่ก่อนปี 1990 (`PLAUSIBLE_MIN_YEAR` ใน PREP-DATE) หรือหลังวันที่รัน (`cfg["_RUN"]["run_date"]` ถ้ามี มิฉะนั้นวันนี้) ซึ่งมักเกิดจากปี พ.ศ. หรือรูปแบบวัน/เดือนสลับกัน
+
+```python
+# RECIPE PROF-CHECKS v1.0 | Skill: - | Risk: -
+# Registry: GATE.COMPLETENESS.MIN, GATE.TRACE.REQUIRED | Input: transactions(tx_id, ts), _prep from PREP-MAP
+def prof_checks(tx: pd.DataFrame, prep: dict, cfg: dict) -> list:
+    stop, n, lim = [], len(tx), cfg["GATE.COMPLETENESS.MIN"]
     if "tx_id" not in tx.columns:
         stop.append("ไม่มีคอลัมน์ tx_id (record key) ตาม GATE.TRACE.REQUIRED จึงอ้างอิงรายการต้นทางไม่ได้")
     else:
         ids = tx["tx_id"]
         dup = sorted(str(x) for x in ids[ids.duplicated(keep=False) & ids.notna()].unique())
-        add("tx_id ซ้ำ (จำนวนค่า)", len(dup), ", ".join(dup[:10]))
         if ids.isna().any():
             stop.append(f"tx_id ว่าง {int(ids.isna().sum())} รายการ — record key ไม่ครบตาม GATE.TRACE.REQUIRED")
         if dup:
             stop.append(f"tx_id ซ้ำ {len(dup)} ค่า (เช่น {', '.join(dup[:5])}) — record key ไม่ unique ตาม GATE.TRACE.REQUIRED")
-    bad = prep.get("unparsed_ts", 0) / n if n and "ts" in tx.columns else 0.0
+    if "ts" not in tx.columns or not n:
+        return stop
+    bad = prep.get("unparsed_ts", 0) / n
     if bad > 1 - lim:
-        stop.append(f"ts ไม่มีหรือแปลงเป็นวันเวลาไม่ได้ {bad:.1%} มากกว่า {1 - lim:.0%} (1 − GATE.COMPLETENESS.MIN)")
-    return pd.DataFrame(rows, columns=["item", "value", "detail"]), ("STOP: " + "; ".join(stop) if stop else "OK")
+        stop.append(f"ts ไม่มีหรือแปลงเป็นวันเวลาไม่ได้ {bad:.1%} มากกว่า {1 - lim:.0%} (1 − GATE.COMPLETENESS.MIN) "
+                    "— ตรวจรูปแบบวันที่ (วัน/เดือน/ปี, ปี พ.ศ.) และการจับคู่คอลัมน์ที่จุดยืนยัน 1")
+    d = tx["ts"].dropna()
+    run_day = pd.Timestamp(cfg["_RUN"].get("run_date") or pd.Timestamp.now()).normalize()
+    cause = "อาจเป็นปี พ.ศ. ที่แปลงไม่ถูกต้อง หรือรูปแบบวัน/เดือนสลับกัน — ตรวจรูปแบบวันที่ที่จุดยืนยัน 1"
+    if len(d) and d.min().year < PLAUSIBLE_MIN_YEAR:
+        stop.append(f"ts มีวันที่ก่อนปี {PLAUSIBLE_MIN_YEAR} ({d.min():%Y-%m-%d}) ซึ่งไม่สมเหตุสมผล — {cause}")
+    if len(d) and d.max() >= run_day + pd.Timedelta(days=1):
+        stop.append(f"ts มีวันที่หลังวันที่รัน {run_day:%Y-%m-%d} ({d.max():%Y-%m-%d}) — {cause}")
+    return stop
 ```
 
 ### GATE-CAPABILITY
@@ -195,12 +282,14 @@ Analysis Plan: 1 แถวต่อการ์ดวิเคราะห์ 15
 ทุกการ์ดเรียก `clean_tx` จึงต้องมี tx_id, ts, from_acct, to_acct และ amount (ไม่มี ts → Skip ทุกการ์ด เพราะกำหนด period ของ Evidence ไม่ได้); ปริมาณข้อมูลที่ทำให้การ์ดไม่มีผลแน่นอนตรวจด้วย `gate_volume` (การ์ด GATE-VOLUME); ไม่มี accounts.opened_at → MULE-NEW-ACCT Run ด้วย reason "basis=first_seen"; การ์ดสัญญาณที่ Run น้อยกว่า `MULE.MIN_SIGNALS` → MULE-PATTERN, MULE-CROSS-TX และ MULE-NETWORK Skip
 
 ```python
-# RECIPE GATE-CAPABILITY v1.0 | Skill: - | Risk: -
+# RECIPE GATE-CAPABILITY v1.1 | Skill: - | Risk: -
 # Registry: MULE.MIN_SIGNALS | Input: tables from PREP-MAP (transactions, accounts ถ้ามี)
 GATE_CARDS = ["STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE", "TEMP-OFFHOURS", "NET-CYCLE", "NET-FUNNEL",
               "MULE-DWELL", "MULE-NEW-ACCT", "MULE-PATTERN", "MULE-CROSS-TX", "MULE-NETWORK",
               "CPTY-PROFILE", "CPTY-NEW-LARGE", "FLOW-TRACE", "FLOW-LAYERING"]
 GATE_BASE = ["tx_id", "ts", "from_acct", "to_acct", "amount"]  # clean_tx in every card needs all five
+GATE_COL_TEXT = {"tx_id": "เลขที่รายการ", "ts": "วันเวลาของรายการ", "from_acct": "บัญชีผู้โอน",
+                 "to_acct": "บัญชีผู้รับ", "amount": "จำนวนเงิน"}
 GATE_SIGNALS = ["NET-FUNNEL", "MULE-DWELL", "MULE-NEW-ACCT", "BEH-VELOCITY", "TEMP-OFFHOURS"]
 def gate_capability(tables: dict, cfg: dict) -> pd.DataFrame:
     tx, acc = tables["transactions"], tables.get("accounts")
@@ -210,8 +299,9 @@ def gate_capability(tables: dict, cfg: dict) -> pd.DataFrame:
     plan = {}
     for r in GATE_CARDS:
         if miss:
-            plan[r] = ("Skip", f"ไม่มีคอลัมน์ {', '.join(miss)} ซึ่งการ์ดต้องใช้ (ts ใช้เรียงลำดับเวลาและกำหนด period "
-                       "ของ Evidence; tx_id ใช้อ้างอิงรายการต้นทาง) จึงรันการ์ดนี้ไม่ได้", ", ".join(miss))
+            plan[r] = ("Skip", f"ไม่มีคอลัมน์ {', '.join(miss)} หรือแปลงค่าไม่ได้ทั้งคอลัมน์ ซึ่งการ์ดนี้ต้องใช้ จึงรันไม่ได้ "
+                       f"— แก้โดยจับคู่คอลัมน์{' / '.join(GATE_COL_TEXT[c] for c in miss)}ในไฟล์เป็น "
+                       f"{', '.join(miss)} ที่จุดยืนยัน 1 แล้วรันใหม่", ", ".join(miss))
         elif r in vol:
             plan[r] = ("Skip", vol[r], "ปริมาณข้อมูลไม่พอ")
         else:
@@ -276,35 +366,53 @@ def gate_volume(tables: dict, cfg: dict) -> dict:
 
 ## การ์ดรวมผลและประเมิน (ข้อ 6–7 ของขั้นตอน)
 
-### UNIFY-FINDINGS
-รวม Evidence เป็น Finding ตาม Schema ใน AIDA-17: Evidence ที่ entity_type + entity_id + risk + period เดียวกัน → 1 Finding; **Mule absorption:** Evidence R1 จาก NET-FUNNEL, MULE-DWELL, MULE-NEW-ACCT, BEH-VELOCITY, TEMP-OFFHOURS ของบัญชีที่มี Evidence R2 (MULE-PATTERN) ในเดือนเดียวกันถูกรวมเข้า Finding R2 (Evidence R1 อื่นของบัญชี-เดือนนั้น เช่น STAT-MAD ยังเป็น R1)
-R3: ส่ง `networks` = `tables["_out"]["mule_networks"]` — Evidence MULE-CROSS-TX ของสมาชิกถูกจัดเข้า Finding ของเครือข่าย (entity_type network, entity_id NET-<n>, 1 Finding ต่อเครือข่าย, period = เดือนแรก) และ skill_families นับ Evidence ทุกสมาชิก; Finding ระดับบัญชีของสมาชิกยังอยู่และมี network_id; คอลัมน์ทำงาน member_accts, record_refs, data_ref_complete ต่อท้ายคอลัมน์ Schema ให้ ASSESS-CMP / SELECT-AUTO-TRACE ใช้ (MULE-CROSS-TX ที่ไม่อยู่ในเครือข่ายใด ยังเป็น Finding R3 ระดับบัญชี)
+### UNIFY-REFS
+ฟังก์ชันช่วยของ UNIFY-FINDINGS และ ASSESS-CMP: `ref_list` ทำให้ record_refs เป็น list ของ tx_id เสมอ แม้ค่ามาเป็นข้อความ (เช่น `"T1, T2"` หรือ `"['T1', 'T2']"` หลังผ่าน Excel) — ไม่วนอ่านข้อความทีละตัวอักษร
 
 ```python
-# RECIPE UNIFY-FINDINGS v1.0 | Skill: - | Risk: -
-# Registry: - | Input: evidence(Evidence schema), networks(mule_networks: network_id, member_accts) ถ้ามี
+# RECIPE UNIFY-REFS v1.0 | Skill: - | Risk: -
+# Registry: - | Input: one record_refs value (list, or text such as "T1, T2" / "['T1', 'T2']")
+def ref_list(r) -> list:
+    if isinstance(r, str):
+        return [p.strip(" '\"") for p in r.strip().strip("[]").split(",") if p.strip(" '\"")]
+    if r is None or (isinstance(r, float) and np.isnan(r)):
+        return []
+    return [str(x) for x in r]
+def unify_refs(tables: dict = None, cfg: dict = None) -> None:
+    return None  # helper card: ref_list for UNIFY-FINDINGS and ASSESS-CMP
+```
+
+### UNIFY-FINDINGS
+รวม Evidence เป็น Finding ตาม Schema ใน AIDA-17: Evidence ที่ entity_type + entity_id + risk + period เดียวกัน → 1 Finding; **Mule absorption:** Evidence R1 จาก NET-FUNNEL, MULE-DWELL, MULE-NEW-ACCT, BEH-VELOCITY, TEMP-OFFHOURS ของบัญชีที่มี Evidence R2 (MULE-PATTERN) ในเดือนเดียวกันถูกรวมเข้า Finding R2 (Evidence R1 อื่นของบัญชี-เดือนนั้น เช่น STAT-MAD ยังเป็น R1)
+`networks` **ต้องส่งทุกครั้ง** = `tables["_out"]["mule_networks"]` (ส่ง None ได้เมื่อไม่ได้รัน MULE-NETWORK; ถ้ามี Evidence MULE-NETWORK แต่ไม่มีเครือข่ายนั้นในตาราง → ValueError แทนการให้ผลผิดเงียบ ๆ) — Evidence MULE-CROSS-TX ของสมาชิกถูกจัดเข้า Finding ของเครือข่าย (entity_type network, entity_id NET-<n>, 1 Finding ต่อเครือข่าย, period = เดือนแรก) และ skill_families นับ Evidence ทุกสมาชิก; Finding ระดับบัญชีของสมาชิกยังอยู่และมี network_id
+คอลัมน์ทำงาน member_accts, record_refs, data_ref_complete, internal_amount (จาก networks) ต่อท้ายคอลัมน์ Schema ให้ ASSESS-CMP / SELECT-AUTO-TRACE ใช้ (MULE-CROSS-TX ที่ไม่อยู่ในเครือข่ายใด ยังเป็น Finding R3 ระดับบัญชี)
+
+```python
+# RECIPE UNIFY-FINDINGS v1.1 | Skill: - | Risk: -
+# Registry: - | Input: evidence(Evidence schema), networks(mule_networks: network_id, member_accts, internal_amount) or None
 FINDING_COLUMNS = ["finding_id", "entity_type", "entity_id", "risk", "period", "evidence_ids",
                    "skill_families", "exposure", "confidence", "materiality", "priority",
                    "review_status", "review_reason", "network_id"]
-FINDING_WORK_COLUMNS = ["member_accts", "record_refs", "data_ref_complete"]  # for ASSESS-CMP / SELECT-AUTO-TRACE
+FINDING_WORK_COLUMNS = ["member_accts", "record_refs", "data_ref_complete", "internal_amount"]
 ABSORB_SIGNALS = ["NET-FUNNEL", "MULE-DWELL", "MULE-NEW-ACCT", "BEH-VELOCITY", "TEMP-OFFHOURS"]
-def unify_findings(evidence: pd.DataFrame, cfg: dict, networks: pd.DataFrame = None) -> pd.DataFrame:
+def unify_findings(evidence: pd.DataFrame, cfg: dict, networks) -> pd.DataFrame:
     cols = FINDING_COLUMNS + FINDING_WORK_COLUMNS
     if evidence is None or len(evidence) == 0:
         return pd.DataFrame(columns=cols)
     ev = evidence.reset_index(drop=True).copy()
     ev["ok"] = ev["data_ref"].fillna("").astype(str).str.strip() != ""
-    nets = networks if networks is not None else pd.DataFrame(columns=["network_id", "member_accts"])
+    nets = networks if networks is not None else pd.DataFrame(columns=["network_id", "member_accts", "internal_amount"])
     members = {n: sorted(m) for n, m in zip(nets["network_id"], nets["member_accts"])}
-    net_of = {a: n for n, m in members.items() for a in m}
+    if not set(ev.loc[ev["recipe_id"] == "MULE-NETWORK", "entity_id"]) <= set(members):
+        raise ValueError("มี Evidence MULE-NETWORK แต่ networks ไม่มีเครือข่ายนั้น — ส่ง tables['_out']['mule_networks']")
+    net_of, amount = {a: n for n, m in members.items() for a in m}, dict(zip(nets["network_id"], nets["internal_amount"]))
     pat = ev[ev["recipe_id"] == "MULE-PATTERN"]
-    r2 = set(zip(pat["entity_id"], pat["period"]))
+    in_r2 = pd.Series([k in set(zip(pat["entity_id"], pat["period"])) for k in zip(ev["entity_id"], ev["period"])],
+                      index=ev.index, dtype=bool)
     acct = ev["entity_type"] == "account"
-    in_r2 = pd.Series([k in r2 for k in zip(ev["entity_id"], ev["period"])], index=ev.index, dtype=bool)
     ev.loc[acct & (ev["risk"] == "R1") & ev["recipe_id"].isin(ABSORB_SIGNALS) & in_r2, "risk"] = "R2"
     to_net = acct & (ev["risk"] == "R3") & ev["entity_id"].isin(list(net_of))
-    ev.loc[to_net, "entity_id"] = ev.loc[to_net, "entity_id"].map(net_of)
-    ev.loc[to_net, "entity_type"] = "network"
+    ev.loc[to_net, "entity_id"], ev.loc[to_net, "entity_type"] = ev.loc[to_net, "entity_id"].map(net_of), "network"
     ev["pk"] = ev["period"].where(ev["entity_type"] != "network", "")  # R3: one finding per network
     rows = []
     for (et, eid, risk, _), g in ev.groupby(["entity_type", "entity_id", "risk", "pk"], sort=True):
@@ -313,22 +421,21 @@ def unify_findings(evidence: pd.DataFrame, cfg: dict, networks: pd.DataFrame = N
         rows.append({"entity_type": et, "entity_id": eid, "risk": risk, "period": g["period"].min(),
                      "evidence_ids": list(g["evidence_id"]), "skill_families": sorted(set(ctx["skill_family"])),
                      "network_id": eid if et == "network" else net_of.get(eid), "member_accts": mem,
-                     "record_refs": sorted({str(x) for r in g["record_refs"] for x in r}),
-                     "data_ref_complete": bool(ctx["ok"].all())})
+                     "record_refs": sorted({x for r in g["record_refs"] for x in ref_list(r)}),
+                     "data_ref_complete": bool(ctx["ok"].all()), "internal_amount": amount.get(eid)})
     f = pd.DataFrame(rows).sort_values(["risk", "entity_type", "entity_id", "period"], kind="mergesort")
     f["finding_id"] = [f"FND-{cfg['_RUN']['run_id']}-{i + 1}" for i in range(len(f))]
     for c in cols:  # exposure, confidence, materiality, priority, review_* come from ASSESS-CMP
-        if c not in f.columns:
-            f[c] = None
+        f[c] = f[c] if c in f.columns else None
     return f[cols].reset_index(drop=True)
 ```
 
 ### ASSESS-CMP
-ประเมิน Finding ตาม AIDA-10 / AIDA-14: **Confidence** สูง = skill family ≥ 2 และ data_ref ครบทุก Evidence / กลาง = 1 skill family และ data_ref ครบ / ต่ำ = data_ref ไม่ครบ (`ASSESS.CONFIDENCE`); **Exposure** = ผลรวม amount ของ tx_id ที่ไม่ซ้ำใน record_refs ของ Evidence ของ Finding (R3 = ธุรกรรมภายในเครือข่ายทั้งหมดใน Evidence MULE-NETWORK จึงเท่ากับ internal_amount)
+ประเมิน Finding ตาม AIDA-10 / AIDA-14: **Confidence** สูง = skill family ≥ 2 และ data_ref ครบทุก Evidence / กลาง = 1 skill family และ data_ref ครบ / ต่ำ = data_ref ไม่ครบ (`ASSESS.CONFIDENCE`); **Exposure** R1/R2/R4 = ผลรวม amount ของ tx_id ที่ไม่ซ้ำใน record_refs ของ Evidence ของ Finding (tx_id ที่หาไม่พบนับเป็น 0 และ review_reason ระบุ "ไม่พบรายการอ้างอิงบางรายการ"); R3 = internal_amount ของเครือข่ายจากตาราง mule_networks
 **Materiality** เทียบ exposure กับฐานที่ผู้ใช้ยืนยัน (`materiality_amount`): สูง ≥ ฐาน, กลาง ≥ `ASSESS.CLEARLY_TRIVIAL` × ฐาน, ต่ำ = ต่ำกว่านั้น; ไม่ระบุฐาน → "ไม่ได้ประเมิน" และ Priority = ระดับ Confidence; **Priority** จากตาราง `ASSESS.PRIORITY`; ทุก Finding มี review_status "รอ Human Review" และ review_reason ระบุ R2 / R3, Confidence ต่ำ และ "ไม่มีฐาน Materiality"
 
 ```python
-# RECIPE ASSESS-CMP v1.0 | Skill: - | Risk: -
+# RECIPE ASSESS-CMP v1.1 | Skill: - | Risk: -
 # Registry: ASSESS.CONFIDENCE, ASSESS.MATERIALITY, ASSESS.CLEARLY_TRIVIAL, ASSESS.PRIORITY | Input: findings(UNIFY-FINDINGS), transactions(tx_id, amount), materiality_amount
 REVIEW_NOTES = {"R2": "บัญชีมีรูปแบบสอดคล้องกับ Mule Account pattern — ควรทบทวนรายบัญชี",
                 "R3": "กลุ่มบัญชีที่มีธุรกรรมเชื่อมโยงกันและสอดคล้องกับ Mule Account pattern — ควรทบทวนทั้งกลุ่ม"}
@@ -336,7 +443,11 @@ def assess_cmp(findings: pd.DataFrame, tx: pd.DataFrame, materiality_amount, cfg
     f, m = findings.copy().reset_index(drop=True), materiality_amount
     amt = pd.Series(pd.to_numeric(tx["amount"], errors="coerce").to_numpy(), index=tx["tx_id"].astype(str))
     amt = amt[~amt.index.duplicated()]
-    f["exposure"] = [round(float(amt.reindex(sorted({str(x) for x in r})).sum()), 2) for r in f["record_refs"]]
+    found = [amt.reindex(sorted(set(ref_list(r)))) for r in f["record_refs"]]
+    f["exposure"] = [round(float(v.sum()), 2) for v in found]
+    ia = f["internal_amount"] if "internal_amount" in f.columns else pd.Series(None, index=f.index, dtype=object)
+    net = (f["entity_type"] == "network") & ia.notna()
+    f.loc[net, "exposure"] = ia[net].astype(float).round(2)  # R3 = internal_amount of the network
     n_fam = f["skill_families"].map(len)
     f["confidence"] = ["ต่ำ" if not ok else "สูง" if n >= 2 else "กลาง"  # ASSESS.CONFIDENCE: >= 2 families
                        for ok, n in zip(f["data_ref_complete"].astype(bool), n_fam)]
@@ -346,15 +457,17 @@ def assess_cmp(findings: pd.DataFrame, tx: pd.DataFrame, materiality_amount, cfg
         ct = cfg["ASSESS.CLEARLY_TRIVIAL"]
         f["materiality"] = ["สูง" if e >= m else "กลาง" if e >= ct * m else "ต่ำ" for e in f["exposure"]]
         f["priority"] = [cfg["ASSESS.PRIORITY"][c][x] for c, x in zip(f["confidence"], f["materiality"])]
-    def reason(risk, conf):
+    def reason(risk, conf, missing):
         notes = [REVIEW_NOTES[risk]] if risk in REVIEW_NOTES else []
         if conf == "ต่ำ":
             notes.append("Confidence ต่ำ เพราะ data_ref ของ Evidence ไม่ครบ — ต้องยืนยันแหล่งข้อมูลก่อนใช้ผล")
+        if missing:
+            notes.append("ไม่พบรายการอ้างอิงบางรายการ (tx_id ใน record_refs ไม่มีในไฟล์) จึงนับยอดเป็น 0")
         if m is None:
             notes.append("ไม่มีฐาน Materiality")
         return "; ".join(notes) if notes else "-"
     f["review_status"] = "รอ Human Review"
-    f["review_reason"] = [reason(r, c) for r, c in zip(f["risk"], f["confidence"])]
+    f["review_reason"] = [reason(r, c, bool(v.isna().any())) for r, c, v in zip(f["risk"], f["confidence"], found)]
     return f
 ```
 
