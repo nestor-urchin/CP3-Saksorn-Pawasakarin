@@ -320,7 +320,8 @@ class TestEdgeCases(unittest.TestCase):
         self.assertIn("ค่าเฉลี่ย 1,000.00 + 3 × SD 0.00 = 1,000.00", ev["explanation"].iloc[0])
 
     def test_offhours_without_channel_column(self):
-        tx = _tx([("X1", "2026-08-01 23:00", "Q1", "Q2", 500.0, "mobile")]).drop(columns="channel")
+        tx = _tx([(f"X{d}", f"2026-08-0{d} 23:00", "Q1", "Q2", 500.0, "mobile")
+                  for d in range(1, 1 + CFG["TEMP.OFF_HOURS.MIN_TX"])]).drop(columns="channel")
         ev = run_card("temp_offhours", {"transactions": tx})
         self.assertEqual(list(ev["entity_id"]), ["Q1"])
 

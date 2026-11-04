@@ -107,32 +107,35 @@ def beh_spike(tables: dict, cfg: dict) -> pd.DataFrame:
 ```
 
 ### TEMP-OFFHOURS
-นับรายการโอนออกนอกเวลาทำการ (ก่อนเวลา start หรือตั้งแต่เวลา end) และวันเสาร์-อาทิตย์ (ถ้า weekend = true) ต่อบัญชีต่อเดือน
-ไม่มีปฏิทินวันหยุดนักขัตฤกษ์ในข้อมูล จึงนับเฉพาะวันเสาร์-อาทิตย์; เกณฑ์อ้าง `TEMP.OFF_HOURS = นอก 08:00–18:00 และวันหยุด`
+นับรายการโอนออกนอกเวลาทำการ (ก่อนเวลา start หรือตั้งแต่เวลา end) และวันเสาร์-อาทิตย์ (ถ้า weekend = true) ต่อบัญชีต่อเดือน เทียบกับรายการโอนออกทั้งหมดของบัญชีในเดือนนั้น
+เป็นสัญญาณเมื่อจำนวน ≥ `TEMP.OFF_HOURS.MIN_TX = 3` **และ** สัดส่วน ≥ `TEMP.OFF_HOURS.MIN_SHARE = 80%` (รายการนอกเวลาเป็นครั้งคราวของบัญชีทั่วไปไม่ใช่สัญญาณ); record_refs = รายการนอกเวลาทำการ; ไม่มีปฏิทินวันหยุดนักขัตฤกษ์ในข้อมูล จึงนับเฉพาะวันเสาร์-อาทิตย์; เกณฑ์อ้าง `TEMP.OFF_HOURS = นอก 08:00–18:00 และวันหยุด`
 
 ```python
-# RECIPE TEMP-OFFHOURS v1.0 | Skill: 5.4 Temporal | Risk: R1
-# Registry: TEMP.OFF_HOURS | Input: transactions(tx_id, ts, from_acct, to_acct, amount)
+# RECIPE TEMP-OFFHOURS v1.1 | Skill: 5.4 Temporal | Risk: R1
+# Registry: TEMP.OFF_HOURS, TEMP.OFF_HOURS.MIN_TX, TEMP.OFF_HOURS.MIN_SHARE | Input: transactions(tx_id, ts, from_acct, to_acct, amount)
 def temp_offhours(tables: dict, cfg: dict) -> pd.DataFrame:
     t = clean_tx(tables["transactions"])
-    oh = cfg["TEMP.OFF_HOURS"]
+    oh, k, share = cfg["TEMP.OFF_HOURS"], cfg["TEMP.OFF_HOURS.MIN_TX"], cfg["TEMP.OFF_HOURS.MIN_SHARE"]
     hhmm = t["ts"].dt.strftime("%H:%M")
     off = (hhmm < oh["start"]) | (hhmm >= oh["end"])
     rule = f"นอกเวลา {oh['start']}–{oh['end']}"
     if oh["weekend"]:
         off = off | (t["ts"].dt.dayofweek >= 5)  # 5, 6 = Saturday, Sunday
         rule += " หรือวันเสาร์-อาทิตย์"
-    d = (t[off].groupby(["from_acct", "period"])
-         .agg(n=("tx_id", "size"), refs=("tx_id", list)).reset_index())
+    d = (t.assign(off=off).groupby(["from_acct", "period"])
+         .agg(n=("off", "sum"), total=("tx_id", "size")).reset_index())
+    refs = t[off].groupby(["from_acct", "period"])["tx_id"].agg(list)
+    d = d[(d["n"] >= k) & (d["n"] / d["total"] >= share)]
     found = pd.DataFrame({
-        "entity_id": d["from_acct"], "period": d["period"],
-        "metric": "offhours_tx_count", "value": d["n"], "threshold": rule,
+        "entity_id": d["from_acct"], "period": d["period"], "metric": "offhours_tx_count",
+        "value": d["n"].astype(int), "threshold": f"≥ {k} รายการ และ ≥ {share:.0%} ของรายการโอนออก ({rule})",
         "explanation": [
-            f"เดือน {p} มีรายการโอนออก {n} รายการ{rule} "
-            f"(TEMP.OFF_HOURS ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร) — ควรตรวจสอบเพิ่มเติม"
-            for p, n in zip(d["period"], d["n"])],
-        "record_refs": d["refs"]})
-    return evidence_rows("TEMP-OFFHOURS", "1.0", "5.4 Temporal", "R1",
+            f"เดือน {p} มีรายการโอนออก {n} จาก {m} รายการ ({n / m:.0%}){rule} — ครบทั้ง "
+            f"TEMP.OFF_HOURS.MIN_TX ≥ {k} รายการ และ TEMP.OFF_HOURS.MIN_SHARE ≥ {share:.0%} (TEMP.OFF_HOURS "
+            f"และเกณฑ์ทั้งสองเป็นค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร) — ควรตรวจสอบเพิ่มเติม"
+            for p, n, m in zip(d["period"], d["n"], d["total"])],
+        "record_refs": [refs[(a, p)] for a, p in zip(d["from_acct"], d["period"])]})
+    return evidence_rows("TEMP-OFFHOURS", "1.1", "5.4 Temporal", "R1",
                          "TEMP.OFF_HOURS", found, cfg)
 ```
 

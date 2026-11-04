@@ -103,13 +103,25 @@ def ref_monthly_z(tx):
     return out
 
 
-def ref_offhours(tx):
+def is_offhours(tx):
     oh = CFG["TEMP.OFF_HOURS"]
     hhmm = tx["ts"].dt.strftime("%H:%M")
     off = (hhmm < oh["start"]) | (hhmm >= oh["end"])
     if oh["weekend"]:
         off |= tx["ts"].dt.dayofweek >= 5
-    return set(tx.loc[off, "from_acct"])
+    return off
+
+
+def offhours_by_month(tx):
+    """Per sending account and month: off-hours count and share of all transfers sent."""
+    g = tx.assign(off=is_offhours(tx), month=tx["ts"].dt.strftime("%Y-%m")).groupby(["from_acct", "month"])
+    return pd.DataFrame({"n": g["off"].sum(), "share": g["off"].mean()})
+
+
+def ref_offhours(tx):
+    m = offhours_by_month(tx)
+    hit = m[(m["n"] >= CFG["TEMP.OFF_HOURS.MIN_TX"]) & (m["share"] >= CFG["TEMP.OFF_HOURS.MIN_SHARE"])]
+    return set(hit.index.get_level_values("from_acct"))
 
 
 def ref_cycles(tx):
@@ -314,12 +326,27 @@ class TestSampleData(unittest.TestCase):
         self.assertEqual({a for a in accts if is_normal(a)}, {f"A{i:04d}" for i in range(1, 301)})
 
     def test_normal_accounts_business_hours(self):
+        """Weekdays 09:00-17:00, except an occasional evening transfer (18:00-21:59) sent by
+        some payers: at most one a month per payer."""
         tx = data()[0]
         normal = tx[tx["from_acct"].map(is_normal) | tx["to_acct"].map(is_normal)]
         self.assertTrue(normal["tx_id"].str.match(r"^T\d{6}$").all())
         self.assertTrue((normal["ts"].dt.dayofweek < 5).all())
-        self.assertTrue((normal["ts"].dt.hour >= 9).all())
-        self.assertTrue((normal["ts"].dt.hour < 17).all())
+        h = normal["ts"].dt.hour
+        evening = normal[(h >= 18) & (h < 22)]
+        self.assertTrue(((h >= 9) & (h < 17) | (h >= 18) & (h < 22)).all())
+        per_month = evening.groupby(["from_acct", evening["ts"].dt.month]).size()
+        self.assertEqual(per_month.max(), 1)
+
+    def test_normal_offhours_traffic_present_but_below_rule(self):
+        """Realistic occasional off-hours traffic (5-20 % of a month's transfers) that the
+        TEMP.OFF_HOURS.MIN_TX / MIN_SHARE rule must not flag."""
+        m = offhours_by_month(normal_rows(data()[0]))
+        some = m[m["n"] > 0]
+        self.assertGreaterEqual(some.index.get_level_values("from_acct").nunique(), 20)
+        self.assertGreaterEqual(some["share"].min(), 0.05)
+        self.assertLessEqual(some["share"].max(), 0.20)
+        self.assertFalse(ref_offhours(normal_rows(data()[0])))
 
     def test_normal_accounts_stable_history(self):
         tx = data()[0]

@@ -52,6 +52,8 @@
 | `TEMP.PERIOD_END.WINDOW = 3 วันทำการก่อนสิ้นงวด + 3 วันแรกของงวดถัดไป` | ช่วงเวลาที่ใช้วิเคราะห์ Period-end / Month-end / Quarter-end Spike |
 | `TEMP.TREND.MIN_PERIODS = 12 งวด (seasonality 24)` | จำนวนงวดขั้นต่ำสำหรับ Trend / Change Point (ถ้าดูฤดูกาลใช้ 24) |
 | `TEMP.OFF_HOURS = นอก 08:00–18:00 และวันหยุด` | นิยามช่วงเวลานอกเวลาทำการสำหรับ Time-of-day / Unusual Timing |
+| `TEMP.OFF_HOURS.MIN_TX = 3` | จำนวนรายการโอนออกนอกเวลาทำการขั้นต่ำต่อบัญชีต่อเดือน จึงนับเป็นสัญญาณ (TEMP-OFFHOURS) — ที่มา: แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `TEMP.OFF_HOURS.MIN_SHARE = 80%` | สัดส่วนขั้นต่ำของรายการโอนออกนอกเวลาทำการต่อรายการโอนออกทั้งหมดของบัญชีในเดือนนั้น (ต้องครบทั้งจำนวนและสัดส่วน) — ที่มา: แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
 
 ## 6. Sequence Anomaly (5.5)
 | ค่า | ความหมาย |
@@ -83,7 +85,7 @@
 | `NET.SHARED_ID.MIN = 2` | จำนวน entity ขั้นต่ำที่ใช้ identifier ร่วมกัน (บัญชีธนาคาร ที่อยู่ เบอร์โทร เลขผู้เสียภาษี) |
 | `NET.CYCLE = 2–5 ทอด ภายใน 30 วัน` | นิยาม Circular Flow: เงินหมุนกลับต้นทางภายในจำนวนทอดและช่วงเวลานี้ |
 | `NET.FUNNEL = รับ ≥ 10 แหล่ง, โอนออก ≥ 80% ภายใน 7 วัน` | นิยาม Funnel Account / Mule pattern |
-| `NET.CYCLE.MAX_PATHS = 100,000` | จำนวนเส้นทางสูงสุดที่ NET-CYCLE ค้นหา ถึงขีดนี้แล้วหยุดและแจ้งว่าผลอาจไม่ครบ — ที่มา: ขีดจำกัดทางเทคนิคเพื่อป้องกันหน่วยความจำเต็ม |
+| `NET.CYCLE.MAX_PATHS = 100,000` | จำนวนเส้นทางสูงสุดที่ NET-CYCLE ค้นหาต่อเดือน (เดือนของทอดแรก) ถึงขีดนี้แล้วหยุดค้นเดือนนั้นและแจ้งว่าผลของเดือนนั้นอาจไม่ครบ — ที่มา: ขีดจำกัดทางเทคนิคเพื่อป้องกันหน่วยความจำเต็ม |
 
 ## 10. Assessment Model (ดูรายละเอียดใน AIDA-10)
 
@@ -147,6 +149,8 @@ JSON ก้อนเดียวนี้คือค่าที่ recipe อ�
   "BEH.DEVIATION": 3,
   "BEH.VELOCITY.SD_FLOOR": "poisson",
   "TEMP.OFF_HOURS": {"start": "08:00", "end": "18:00", "weekend": true},
+  "TEMP.OFF_HOURS.MIN_TX": 3,
+  "TEMP.OFF_HOURS.MIN_SHARE": 0.8,
   "NET.CYCLE": {"min_len": 2, "max_len": 5, "days": 30},
   "NET.FUNNEL": {"min_sources": 10, "out_ratio": 0.8, "days": 7},
   "NET.CYCLE.MAX_PATHS": 100000,
@@ -177,7 +181,7 @@ JSON ก้อนเดียวนี้คือค่าที่ recipe อ�
 | เวอร์ชัน | วันที่ | การเปลี่ยนแปลง |
 |---|---|---|
 | 1.0 | 2026-11-03 | ฉบับแรก: ค่ามาตรฐานทั่วไปทุก skill |
-| 1.1 | 2026-11-03 | เพิ่มหมวด 11 (MULE / CPTY / FLOW รวม `MULE.DWELL_MIN_PAIRS`, `MULE.NEW_ACCT_MIN_TX`), `BEH.VELOCITY.SD_FLOOR`, `NET.CYCLE.MAX_PATHS`, `FLOW.MAX_TRAIL_ROWS`, `REGISTRY.VERSION` และ Machine Config JSON สำหรับ recipe (ไม่เปลี่ยนค่าเดิม) |
+| 1.1 | 2026-11-03 | เพิ่มหมวด 11 (MULE / CPTY / FLOW รวม `MULE.DWELL_MIN_PAIRS`, `MULE.NEW_ACCT_MIN_TX`), `BEH.VELOCITY.SD_FLOOR`, `NET.CYCLE.MAX_PATHS` (ต่อเดือน), `FLOW.MAX_TRAIL_ROWS`, `TEMP.OFF_HOURS.MIN_TX`, `TEMP.OFF_HOURS.MIN_SHARE`, `REGISTRY.VERSION` และ Machine Config JSON สำหรับ recipe (ไม่เปลี่ยนค่าเดิม) |
 
 ## ข้อห้าม (Guardrails)
 - ห้ามนำเสนอค่าในไฟล์นี้ว่าเป็นนโยบายที่องค์กรอนุมัติแล้ว — ต้องแจ้งว่าเป็นค่ามาตรฐานทุกครั้ง

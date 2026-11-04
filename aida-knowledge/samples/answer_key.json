@@ -262,7 +262,7 @@
       "intended_recipes": [
         "TEMP-OFFHOURS"
       ],
-      "notes": "5 transfers to HX1 on Saturdays or outside 08:00-18:00. Only 5 transfers, no history."
+      "notes": "5 transfers to HX1 on Saturdays or outside 08:00-18:00: 5 of its 5 transfers in August (100%), meeting TEMP.OFF_HOURS.MIN_TX (3) and MIN_SHARE (80%). Only 5 transfers, no history. Normal payers with one evening transfer a month (14-20%) stay below the rule."
     },
     "single_mule": {
       "accounts": [

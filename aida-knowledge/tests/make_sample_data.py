@@ -9,7 +9,10 @@ planted cases and the answer key are the same for every seed.
 Normal data design (why no recipe fires on it):
 - A0001-A0100 only send, A0101-A0300 only receive -> no cycles, no dwell, no layering.
 - Each sender has 3 fixed receivers, all used in January -> no new counterparties later.
-- Every normal account is in at most one transaction a day (either side), weekdays 09:00-17:00.
+- Every normal account is in at most one transaction a day (either side), weekdays 09:00-17:00,
+  except that EVENING_PAYERS move one transfer a month to the same day's evening (18:00-21:59):
+  occasional off-hours traffic (14-20 % of the month's transfers) that stays below
+  TEMP.OFF_HOURS.MIN_TX / MIN_SHARE, so TEMP-OFFHOURS must not flag it.
 - A sender makes the same number of transfers every month and its monthly total follows
   MONTH_PATTERN (within 3 % of the mean) -> no velocity or spike against any baseline.
 - Amounts are lognormal around a per-sender median drawn from 1,000-7,000, so the
@@ -30,6 +33,7 @@ CHANNELS = ["mobile", "internet", "branch"]
 MONTH_PATTERN = [1.03, 0.97, 1.03, 0.97, 1.02, 0.98, 1.00, 1.00]  # Jan..Aug
 PAYERS = [f"A{i:04d}" for i in range(1, 101)]
 PAYEES = [f"A{i:04d}" for i in range(101, 301)]
+EVENING_PAYERS = 40  # normal payers with one evening transfer a month (realistic off-hours traffic)
 MULES = ["M01", "N01", "N02", "N03", "N04"]
 NETWORK = ["N01", "N02", "N03", "N04", "NF1", "NC1"]
 OPENED = {"M01": "2026-08-01", "N01": "2026-07-15", "N02": "2026-07-17",
@@ -92,7 +96,15 @@ def _normal_rows(rng):
                 ts = day + pd.Timedelta(hours=int(rng.integers(9, 17)), minutes=int(rng.integers(0, 60)))
                 rows.append({"ts": ts, "from_acct": payer, "to_acct": payee, "amount": float(amounts[j]),
                              "currency": "THB", "channel": str(rng.choice(CHANNELS, p=[0.5, 0.3, 0.2]))})
-    df = pd.DataFrame(rows).sort_values(["ts", "from_acct"]).reset_index(drop=True)
+    df = pd.DataFrame(rows)
+    # drawn after all other normal data so the rest of the stream is unchanged
+    evening = set(rng.choice(PAYERS, EVENING_PAYERS, replace=False))
+    month = df["ts"].dt.month
+    for (payer, _), g in df[df["from_acct"].isin(evening)].groupby(["from_acct", month]):
+        i = g.index[int(rng.integers(len(g)))]
+        df.at[i, "ts"] = df.at[i, "ts"].normalize() + pd.Timedelta(hours=int(rng.integers(18, 22)),
+                                                                    minutes=int(rng.integers(0, 60)))
+    df = df.sort_values(["ts", "from_acct"]).reset_index(drop=True)
     df.insert(0, "tx_id", [f"T{i:06d}" for i in range(1, len(df) + 1)])
     return df
 
@@ -224,7 +236,9 @@ CASES = {
                  "above the monthly baseline (spike). All counterparties already known."},
     "offhours": {
         "accounts": ["H01"], "intended_recipes": ["TEMP-OFFHOURS"],
-        "notes": "5 transfers to HX1 on Saturdays or outside 08:00-18:00. Only 5 transfers, no history."},
+        "notes": "5 transfers to HX1 on Saturdays or outside 08:00-18:00: 5 of its 5 transfers in August "
+                 "(100%), meeting TEMP.OFF_HOURS.MIN_TX (3) and MIN_SHARE (80%). Only 5 transfers, no history. "
+                 "Normal payers with one evening transfer a month (14-20%) stay below the rule."},
     "single_mule": {
         "accounts": ["M01"],
         "intended_recipes": ["NET-FUNNEL", "MULE-DWELL", "MULE-NEW-ACCT", "BEH-VELOCITY", "MULE-PATTERN"],

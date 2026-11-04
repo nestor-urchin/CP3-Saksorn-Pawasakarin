@@ -113,5 +113,50 @@ class TestNetCycleBudget(unittest.TestCase):
         self.assertFalse(((b["run_log"]["status"] == "REVIEW") & (b["run_log"]["recipe_id"] == "NET-CYCLE")).any())
 
 
+def _off_rows(acct, n_off, n_day, month="2026-08"):
+    """n_off transfers at 22:00 on weekdays and n_day at 10:00, all sent by `acct`."""
+    days = [d for d in pd.date_range(f"{month}-01", periods=28) if d.dayofweek < 5]
+    rows = [(f"{acct}-O{i}", f"{days[i]:%Y-%m-%d} 22:00", acct, "Z", 100.0) for i in range(n_off)]
+    rows += [(f"{acct}-D{i}", f"{days[i]:%Y-%m-%d} 10:00", acct, "Z", 100.0) for i in range(n_day)]
+    return rows
+
+
+class TestOffHoursMinimum(unittest.TestCase):
+    def test_registry_keys(self):
+        self.assertEqual(CFG["TEMP.OFF_HOURS.MIN_TX"], 3)
+        self.assertEqual(CFG["TEMP.OFF_HOURS.MIN_SHARE"], 0.8)
+
+    def run_off(self, rows, cfg=CFG):
+        return R()["temp_offhours"]({"transactions": _tx(rows), "_out": {}}, cfg)
+
+    def test_single_offhours_transfer_not_flagged(self):
+        self.assertTrue(self.run_off(_off_rows("S1", 1, 0)).empty)
+
+    def test_count_below_minimum_not_flagged(self):
+        self.assertTrue(self.run_off(_off_rows("S2", 2, 0)).empty)  # 100 % but only 2
+
+    def test_share_below_minimum_not_flagged(self):
+        self.assertTrue(self.run_off(_off_rows("S3", 3, 3)).empty)  # 3 off-hours = 50 %
+
+    def test_count_and_share_flagged(self):
+        ev = self.run_off(_off_rows("S4", 4, 1) + _off_rows("S5", 3, 0))  # 80 % and 100 %
+        self.assertEqual(sorted(ev["entity_id"]), ["S4", "S5"])
+        row = ev.set_index("entity_id").loc["S4"]
+        self.assertEqual(row["value"], 4)
+        self.assertEqual(len(row["record_refs"]), 4)  # off-hours transfers only
+        for key in ("TEMP.OFF_HOURS.MIN_TX", "TEMP.OFF_HOURS.MIN_SHARE", "80%", "AIDA-14"):
+            self.assertIn(key, row["explanation"])
+        self.assertEqual(row["recipe_version"], "1.1")
+
+    def test_share_is_per_account_month(self):
+        rows = _off_rows("S6", 3, 0, "2026-07") + _off_rows("S6", 0, 9, "2026-08")
+        ev = self.run_off(rows)
+        self.assertEqual(list(ev["period"]), ["2026-07"])
+
+    def test_thresholds_from_cfg(self):
+        cfg = {**CFG, "TEMP.OFF_HOURS.MIN_TX": 1, "TEMP.OFF_HOURS.MIN_SHARE": 0.1}
+        self.assertEqual(list(self.run_off(_off_rows("S7", 1, 5), cfg)["entity_id"]), ["S7"])
+
+
 if __name__ == "__main__":
     unittest.main()
