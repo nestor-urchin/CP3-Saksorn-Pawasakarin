@@ -23,19 +23,26 @@ engine อ่านค่าเกณฑ์จาก `AIDA-14-configuration-regi
 ```text
 import glob, os, shutil, importlib.util, sys
 roots = [r for r in ("/mnt/data", os.getcwd()) if os.path.isdir(r)]
-found = lambda pat: sorted(p for r in roots for p in glob.glob(os.path.join(r, "**", pat), recursive=True))
-src = (found("aida_engine*.py") + found("aida_engine*.txt"))[0]
+found = lambda pat: sorted(p for r in roots for p in glob.glob(os.path.join(r, "**", pat), recursive=True)
+                           if "probe" not in os.path.basename(p).lower() and "aida_work" not in p)
+srcs = found("aida_engine*.py") + found("aida_engine*.txt")
+regs = found("AIDA-14-configuration-registry.md")
+print("ENGINE:", srcs[0] if srcs else "NOT FOUND", "| AIDA-14:", regs[0] if regs else "NOT FOUND")
+assert srcs, "ENGINE NOT FOUND — ขอให้ผู้ใช้แนบ aida_engine.py (AIDA-16 ข้อ 4)"
 work = os.path.join(os.getcwd(), "aida_work"); os.makedirs(work, exist_ok=True)
-path = os.path.join(work, "aida_engine.py"); shutil.copyfile(src, path)
-reg = found("AIDA-14-configuration-registry.md")
-if reg: shutil.copyfile(reg[0], os.path.join(work, "AIDA-14-configuration-registry.md"))
+path = os.path.join(work, "aida_engine.py"); shutil.copyfile(srcs[0], path)
+if regs: shutil.copyfile(regs[0], os.path.join(work, "AIDA-14-configuration-registry.md"))
 spec = importlib.util.spec_from_file_location("aida_engine", path)
 aida = importlib.util.module_from_spec(spec); sys.modules["aida_engine"] = aida; spec.loader.exec_module(aida)
-print(aida.__version__, aida.REGISTRY_VERSION, aida.default_registry_path())
+reg = aida.default_registry_path()
+reg_ver = aida.load_registry(reg).get("REGISTRY.VERSION") if reg else "NOT FOUND"
+print(aida.__version__, aida.REGISTRY_VERSION, reg_ver, reg)
 ```
-3. **ตรวจผล** — ต้องได้ `3.0.0 1.2 <ที่อยู่ของ AIDA-14>`:
-   - `__version__ == "3.0.0"` และ `REGISTRY_VERSION == "1.2"` → ใช้งานได้
-   - `default_registry_path()` เป็น `None` → ยังไม่มี AIDA-14 ข้าง engine (ดูข้อ 4)
+3. **ตรวจผล** — บรรทัด ENGINE / AIDA-14 ต้องไม่เป็น `NOT FOUND` และบรรทัดสุดท้ายต้องได้ `3.0.0 1.2 1.2 <ที่อยู่ของ AIDA-14>`:
+   - `__version__ == "3.0.0"` → engine ถูกรุ่น
+   - `REGISTRY.VERSION` ของไฟล์ AIDA-14 ที่แนบ (ค่าที่ 3) **ต้องเท่ากับ** `aida.REGISTRY_VERSION` (ค่าที่ 2) — ไม่เท่า → หยุดและแจ้งตามข้อ 4 (engine เองก็ปฏิเสธ AIDA-14 ต่างรุ่นด้วยข้อความภาษาไทยเมื่อเรียก `inspect` / `run`)
+   - ค่าที่ 3 เป็น `NOT FOUND` → ยังไม่มี AIDA-14 ข้าง engine (ดูข้อ 4)
+   - ไฟล์ probe ของ spike (`aida_engine_probe.*`) ไม่ถูกเลือก
 4. ใช้ `aida.inspect(...)`, `aida.confirm(...)`, `aida.run(...)` ต่อตาม AIDA-19
 
 ทางสำรอง (ถ้า importlib ใช้ไม่ได้): โหลดด้วย `exec` โดยกำหนด `__file__` ให้ engine หา AIDA-14 ข้างตัวเองได้
@@ -51,9 +58,10 @@ exec(compile(open(path, encoding="utf-8").read(), path, "exec"), aida.__dict__)
 ## 4. ถ้าโหลดไม่ได้ — สิ่งที่ต้องบอกผู้ใช้
 | อาการ | บอกผู้ใช้ว่า |
 |---|---|
-| ไม่พบไฟล์ `aida_engine*` | "ยังไม่พบไฟล์ aida_engine.py — กรุณาแนบไฟล์จากโฟลเดอร์ 5-engine ของชุด Knowledge Pack หรือส่งลิงก์ SharePoint/OneDrive ที่เปิดสิทธิ์อ่านได้" |
+| ไม่พบไฟล์ `aida_engine*` (`ENGINE: NOT FOUND`) | "ยังไม่พบไฟล์ aida_engine.py — กรุณาแนบไฟล์จากโฟลเดอร์ 5-engine ของชุด Knowledge Pack หรือส่งลิงก์ SharePoint/OneDrive ที่เปิดสิทธิ์อ่านได้" |
 | `__version__` ไม่ใช่ 3.0.0 | "engine ที่แนบเป็นรุ่น X แต่ Knowledge Pack นี้ใช้รุ่น 3.0.0 — กรุณาแนบ aida_engine.py จาก Knowledge Pack ชุดเดียวกัน" แล้วหยุด ไม่วิเคราะห์ด้วยรุ่นที่ไม่ตรง |
-| `default_registry_path()` เป็น None | "ยังไม่พบ AIDA-14-configuration-registry.md ข้าง engine — กรุณาแนบไฟล์นี้จากโฟลเดอร์ 1-upload-knowledge หรือวางไว้ในโฟลเดอร์เดียวกับ engine" |
+| ไม่พบ AIDA-14 (`NOT FOUND`) | "ยังไม่พบ AIDA-14-configuration-registry.md ข้าง engine — กรุณาแนบไฟล์นี้จากโฟลเดอร์ 1-upload-knowledge หรือวางไว้ในโฟลเดอร์เดียวกับ engine" |
+| `REGISTRY.VERSION` ของ AIDA-14 ที่แนบไม่เท่ากับ `aida.REGISTRY_VERSION` | "AIDA-14 ที่แนบเป็นรุ่น X — กรุณาแนบ AIDA-14 จาก Knowledge Pack ชุดเดียวกัน" แล้วหยุด ไม่วิเคราะห์ด้วยค่าเกณฑ์ต่างรุ่น |
 | `SyntaxError` / ไฟล์ถูกตัด | "ไฟล์ engine ไม่ครบ (อาจถูกตัดระหว่างอัปโหลด) — กรุณาแนบไฟล์ใหม่" |
 | `ModuleNotFoundError` (pandas / numpy / openpyxl) | "Code Interpreter ไม่มีไลบรารีที่ engine ต้องใช้ — วิเคราะห์ข้อมูลไม่ได้ในสภาพแวดล้อมนี้" แล้วให้คำปรึกษาแบบระยะ A |
 | อ่านลิงก์ SharePoint/OneDrive ไม่ได้ | ขอให้ผู้ใช้แนบไฟล์ในแชตแทนครั้งเดียว |

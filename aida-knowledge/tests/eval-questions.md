@@ -134,9 +134,9 @@ Q1–Q21 = ระยะ A (คำปรึกษา) · Q22–Q32 = ข้อม
 - Checklist ข้อ 4
 
 ## ข้อมูล E โอนเงิน (B1 เดิม ทำด้วย engine)
-เตรียม: เปิด Code Interpreter ใน Agent; ใช้ `samples/transactions.csv` + `samples/accounts.csv` และคำอธิบายใน `samples/E/brief.md` (เฉลยใน `samples/answer_key.json`)
+เตรียม: เปิด Code Interpreter ใน Agent; ใช้ `4-samples/E/transactions.csv` + `4-samples/E/accounts.csv` และคำอธิบายใน `4-samples/E/brief.md` (เฉลยใน `4-samples/E/answer_key.json`; ใน repo คือ `samples/transactions.csv`, `samples/accounts.csv`, `samples/E/brief.md`, `samples/answer_key.json`)
 
-### Q22 — (แนบ transactions.csv + accounts.csv และวางข้อความใน E/brief.md) ช่วยวิเคราะห์ตามหนังสือนี้
+### Q22 — (แนบ `4-samples/E/transactions.csv` + `4-samples/E/accounts.csv` และวางข้อความใน `4-samples/E/brief.md`) ช่วยวิเคราะห์ตามหนังสือนี้
 - ต้องมี: โหลด engine และยืนยันเวอร์ชัน 3.0.0 (AIDA-16); แสดง Intake Review ข้อ A–E ตามตัวอักษร (บทบาทคอลัมน์ ✅, ความเสี่ยง R1–R4 ✅ พร้อม, เงื่อนไข "ไม่ต้องตัดรายการ", Materiality, แผน Run/Skip) แล้วรอ; ตอบ "ยืนยัน, แบบ ก. 1,000,000" แล้วได้ทันทีในคำตอบเดียวกัน: 19 Finding, เครือข่าย 1 กลุ่ม (NET-1: N01–N04 = mule, NF1 = feeder, NC1 = collector), M01 สอดคล้องกับ Mule Account pattern (R2); ลิงก์ Workbook (.xlsx), nodes.csv / edges.csv / flows.csv และ Dashboard (.html); ป้ายเตือนข้อมูลอ่อนไหว
 - ต้องไม่มี: รันก่อนผู้ใช้ยืนยัน; ถามยืนยันรอบที่สอง; ตัวเลขที่ไม่ได้มาจาก engine
 - ไฟล์ที่ควรถูกอ้าง: AIDA-19, AIDA-18, AIDA-17, AIDA-14
@@ -203,7 +203,7 @@ Q1–Q21 = ระยะ A (คำปรึกษา) · Q22–Q32 = ข้อม
 - Checklist ข้อ 1
 
 ## ระยะ C1 — Intake Review, ข้อมูล C / A, โหมดสำรวจ, mapping profile
-เตรียม: ข้อมูล C = `samples/C/payments.csv` + `samples/C/contracts.csv` + ข้อความใน `samples/C/brief.md` (เฉลย `samples/C/answer_key.json`); ข้อมูล A = `samples/A/payments.csv` + `samples/A/brief.md` (เฉลย `samples/A/answer_key.json`); วางเฉพาะส่วนหนังสือ (ไม่ต้องวาง JSON และหมายเหตุผู้พัฒนา)
+เตรียม: ข้อมูล C = `4-samples/C/payments.csv` + `4-samples/C/contracts.csv` + ข้อความใน `4-samples/C/brief.md` (เฉลย `4-samples/C/answer_key.json`); ข้อมูล A = `4-samples/A/payments.csv` + `4-samples/A/brief.md` (เฉลย `4-samples/A/answer_key.json`); ใน repo คือ `samples/C/…` และ `samples/A/…`; วางเฉพาะส่วนหนังสือ (ไม่ต้องวาง JSON และหมายเหตุผู้พัฒนา)
 
 ### Q33 — (ข้อมูล C) แนบไฟล์และวางหนังสือขอให้ตรวจสอบใน C/brief.md
 - ต้องมี: แยก brief ครบ: บริบท, ความหมายคอลัมน์ 9 คอลัมน์ตามถ้อยคำเดิม (ไม่ใส่ product), เงื่อนไข 2 ข้อ, Risk Concern 3 ข้อ; เรียก inspect และแสดง Intake Review ข้อ A–E ตามตัวอักษร ปิดท้าย "ยืนยันทั้งหมด หรือแก้เฉพาะข้อ ⚠️ ❓ D แล้วเริ่มวิเคราะห์"
@@ -283,7 +283,7 @@ Q1–Q21 = ระยะ A (คำปรึกษา) · Q22–Q32 = ข้อม
 - ไฟล์ที่ควรถูกอ้าง: AIDA-19
 - Checklist ข้อ 12
 
-### Q46 — (ข้อมูล A ชื่อคอลัมน์ภาษาไทย: `samples/A/variants/th/payments.csv` + ความหมายตาม `variants/th/brief.json`) วิเคราะห์จ่ายซ้ำและแบ่งรายการ แล้วยืนยันและเพิ่มข้อ D ทั้งหมด
+### Q46 — (ข้อมูล A ชื่อคอลัมน์ภาษาไทย: `4-samples/A/variants/th/payments.csv` + ความหมายตาม `4-samples/A/variants/th/brief.json`) วิเคราะห์จ่ายซ้ำและแบ่งรายการ แล้วยืนยันและเพิ่มข้อ D ทั้งหมด
 - ต้องมี: บทบาทที่เสนอเหมือนชุดภาษาอังกฤษ (เช่น เลขที่ใบแจ้งหนี้ → document_no, วงเงินอนุมัติ → limit); ได้ 7 Finding เท่ากับ Q40
 - ต้องไม่มี: Finding ต่างจาก Q40 เมื่อบทบาทถูกต้อง
 - ไฟล์ที่ควรถูกอ้าง: AIDA-17, AIDA-19

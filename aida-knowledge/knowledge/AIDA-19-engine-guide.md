@@ -16,11 +16,13 @@ AIDA วิเคราะห์ข้อมูลด้วย engine ไฟล�
 | 1 | `r = aida.inspect(files, brief)` (หรือ `mapping=` ข้อ 6) | `r["intake"]` (ร่าง), `r["review_th"]` (ข้อความ Intake Review), `r["changes"]` |
 | 2 | แสดง `r["review_th"]` **ทั้งข้อความตามตัวอักษร** แล้วรอผู้ตรวจสอบ | — |
 | 3 | `it = aida.confirm(r["intake"], answers, "intake.json")` | intake ที่ยืนยัน + ไฟล์ `intake.json` (มี `it["intake_path"]`) |
-| 4 | `res = aida.run(files, it, out_dir)` ในคำตอบเดียวกับข้อ 3 | `res["summary_th"]`, `res["findings"]`, `res["paths"]` (workbook, dashboard, csv_dir), `res["warnings"]` |
+| 4 | `res = aida.run(files, it, "/mnt/data/aida_out")` ในคำตอบเดียวกับข้อ 3 | `res["summary_th"]`, `res["findings"]`, `res["paths"]` (workbook, dashboard, csv_dir), `res["warnings"]` |
 | 5 | แสดง `summary_th`, คำเตือน และลิงก์ไฟล์ output | — |
 
 - `files` = dict `{ชื่อตาราง: ที่อยู่ไฟล์}` เช่น `{"payments": "/mnt/data/payments.csv", "contracts": "/mnt/data/contracts.csv"}` (หรือ list ของที่อยู่ไฟล์; CSV UTF-8 / TIS-620 หรือ XLSX ทุก sheet)
 - `run()`, `data()` และ `trace()` ทำงานจาก `intake.json` + ไฟล์เท่านั้น ถ้าตัวแปรใน Code Interpreter หาย → โหลด engine ใหม่ (AIDA-16) แล้วส่งที่อยู่ `intake.json` แทน dict โดยไม่ถามยืนยันซ้ำ
+- `out_dir` ให้อยู่ใต้โฟลเดอร์ที่ Copilot ให้ดาวน์โหลดได้ เช่น `/mnt/data/aida_out` (ใช้ซ้ำกับ `trace`) แล้วส่งลิงก์ไฟล์จาก `res["paths"]`; `intake.json` ไว้ที่ `/mnt/data` ได้เช่นกัน
+- `profile_status` อยู่ที่ `r["intake"]["profile_status"]` และแสดงในข้อ E ของ `review_th`
 - ไฟล์เกิน 80,000 รายการ → แนะนำให้แบ่งไฟล์ตามเดือน (ขนาดที่ทดสอบแล้ว)
 
 ### รูปแบบ brief (AIDA แยกจากข้อความอิสระของผู้ตรวจสอบ)
@@ -76,7 +78,7 @@ answers = {
 - **จ่ายซ้ำ (DUP-PAY)**: ถ้ารายการซ้ำทุกรายการมีเลขเอกสาร (`document_no`) เดียวกัน Finding ใช้เลขเอกสารเป็น entity (`entity_type = document`) เช่น ใบแจ้งหนี้ INV-7781; ข้อมูลสินเชื่อที่ไม่มีเลขเอกสารรายงานตามสัญญา (C-R3)
 - **ยอดซ้ำ / ยอดกลม (FOR-REPEAT / FOR-ROUND)** ถูกรวมเข้า Finding A-R2 ของการแบ่งรายการ (SPLIT-LIMIT) **เฉพาะเมื่อรายการของมันเป็นส่วนหนึ่งของรายการ SPLIT-LIMIT** (entity และงวดเดียวกัน) — ยอดซ้ำบนรายการอื่นของผู้ขายเดียวกันยังเป็น Finding G-R4 แยก
 - Finding ทุกรายการเป็น "รอ Human Review" และเป็นสัญญาณให้ตรวจสอบเพิ่มเติม ไม่ใช่ข้อสรุป
-- ไล่เส้นทางเงินเพิ่ม (ข้อมูล E): `aida.trace(files, "intake.json", "บัญชี", direction="both", period=None, out_dir=...)` → `summary_th` + CSV (FLOW-TRACE ไม่ใช่การ์ดรับรอง ไม่สร้าง Finding)
+- ไล่เส้นทางเงินเพิ่ม (ข้อมูล E): `aida.trace(files, "intake.json", "บัญชี", direction="both", period=None, out_dir="/mnt/data/aida_out")` → `summary_th` + CSV (FLOW-TRACE ไม่ใช่การ์ดรับรอง ไม่สร้าง Finding)
 
 ## 5. โหมดสำรวจ (คำถามนอกการ์ดรับรอง)
 1. แจ้ง: "ไม่มีการ์ดรับรองสำหรับคำถามนี้ — วิเคราะห์ในโหมดสำรวจ"
@@ -99,8 +101,9 @@ answers = {
 |---|---|---|
 | ไม่พบไฟล์ ... | ที่อยู่ไฟล์ข้อมูล / intake / mapping ไม่ถูก | ตรวจที่อยู่ หรือขอให้ผู้ใช้แนบไฟล์ใหม่ครั้งเดียว |
 | ไม่พบไฟล์ AIDA-14-configuration-registry.md | engine หาค่าเกณฑ์ไม่เจอ | วาง AIDA-14 ข้าง engine ตาม AIDA-16 |
+| AIDA-14 ที่ใช้ ... เป็นรุ่น X แต่ engine ... ต้องใช้ Registry รุ่น ... | แนบ AIDA-14 คนละรุ่นกับ engine | ขอ AIDA-14 จาก Knowledge Pack ชุดเดียวกัน แล้วหยุดจนกว่าจะได้ |
 | ไม่รู้จักคำตอบ ... / ไม่รู้จักค่าเกณฑ์ ... | answers มี key หรือชื่อ KEY ที่ไม่มี | ใช้ key ตามข้อ 3 และชื่อ KEY ตาม AIDA-14 |
-| ไม่รู้จักรหัสความเสี่ยง ... | add_risks / risk ไม่อยู่ใน Risk Library | เลือกจาก AIDA-18 หรือใช้โหมดสำรวจ (RX) |
+| ไม่รู้จักรหัสความเสี่ยง ... (จาก confirm) / ไม่รู้จักความเสี่ยง ... (จาก promote) | add_risks หรือ risk ของ promote ไม่อยู่ใน Risk Library | เลือกจาก AIDA-18 หรือใช้โหมดสำรวจ (RX) |
 | ตัวกรองข้อ n ... | ตัวกรองผิดรูปแบบ / ไม่พบคอลัมน์ / ค่าเทียบไม่ได้ | แก้ตามข้อความ (เช่น between ต้องมี 2 ค่า) |
 | Materiality แบบ ก. ต้องมี amount | เลือก ก./ข. แต่ไม่มีฐาน | ถามฐาน หรือใช้ "ไม่ระบุ" |
 | ไฟล์ของตาราง ... เปลี่ยนไปจากตอนยืนยัน Intake (คำเตือน) | sha256 ไม่ตรงกับตอนยืนยัน | แจ้งผู้ใช้ว่าผลอาจต่างจาก Intake Review |

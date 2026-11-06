@@ -321,6 +321,11 @@ class TestInstructions(unittest.TestCase):
         self.assertIn('"บัญชีม้า"', self.TEXT)
         self.assertIn("ระบุชื่อผู้ทบทวน", self.TEXT)
 
+    def test_stop_location_and_out_dir(self):
+        self.assertIn('r["intake"]["profile_status"]', self.TEXT)
+        self.assertIn("ข้อ E ของ review_th", self.TEXT)
+        self.assertIn("/mnt/data/aida_out", self.TEXT)
+
     def test_no_b1_recipe_steps_left(self):
         for old in ("จุดยืนยัน 1", "prep_map", "card_notes", "RECIPE"):
             self.assertNotIn(old, self.TEXT)

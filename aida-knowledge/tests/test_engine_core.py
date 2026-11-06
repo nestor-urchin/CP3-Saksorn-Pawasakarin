@@ -79,6 +79,21 @@ class EngineCore(unittest.TestCase):
         with self.assertRaises(ValueError):
             e.load_registry("# ไม่มีหัวข้อ")
 
+    def test_stale_registry_file_rejected_in_thai(self):
+        import tempfile
+        e = engine()
+        text = (KNOWLEDGE / "AIDA-14-configuration-registry.md").read_text(encoding="utf-8")
+        self.assertIn('"REGISTRY.VERSION": "1.2"', text)
+        with tempfile.TemporaryDirectory() as d:
+            stale = Path(d) / "AIDA-14-configuration-registry.md"
+            stale.write_text(text.replace('"REGISTRY.VERSION": "1.2"', '"REGISTRY.VERSION": "1.1"'), encoding="utf-8")
+            with self.assertRaises(e.AidaError) as cm:
+                e._load_cfg(None, str(stale))
+            self.assertIn("รุ่น 1.1", str(cm.exception))
+            self.assertIn("Knowledge Pack ชุดเดียวกับ engine", str(cm.exception))
+            cfg, path = e._load_cfg(None, str(KNOWLEDGE / "AIDA-14-configuration-registry.md"))
+            self.assertEqual(cfg["REGISTRY.VERSION"], e.REGISTRY_VERSION)
+
     def test_dashboard_template_lives_in_engine(self):
         # C1: the template is carried by the engine only; no Knowledge file holds a copy any more
         t = engine().DASHBOARD_TEMPLATE

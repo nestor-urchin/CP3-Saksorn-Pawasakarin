@@ -2914,7 +2914,12 @@ def _load_cfg(cfg=None, registry_path=None) -> tuple:
     if path is None:
         raise AidaError(f"ไม่พบไฟล์ {REGISTRY_FILE} — วางไฟล์ AIDA-14 ไว้ในโฟลเดอร์เดียวกับ aida_engine.py หรือส่ง "
                         "registry_path='<ที่อยู่ไฟล์ AIDA-14>' แล้วเรียกใหม่")
-    return load_registry(path), os.path.abspath(path)
+    cfg = load_registry(path)
+    have = str(cfg.get("REGISTRY.VERSION", "ไม่ระบุ"))
+    if have != REGISTRY_VERSION:  # a stale AIDA-14 would fail later with a missing key
+        raise AidaError(f"AIDA-14 ที่ใช้ ({os.path.basename(str(path))}) เป็นรุ่น {have} แต่ engine {__version__} ต้องใช้ "
+                        f"Registry รุ่น {REGISTRY_VERSION} — กรุณาแนบ AIDA-14 จาก Knowledge Pack ชุดเดียวกับ engine แล้วเรียกใหม่")
+    return cfg, os.path.abspath(path)
 
 
 def _sha256(path: str) -> str:
