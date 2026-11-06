@@ -1,4 +1,4 @@
-"""Tests for the analysis recipe cards (AIDA-18) and CORE-EVIDENCE (AIDA-19).
+"""Tests for the B1 analysis checks (formerly AIDA-18 cards) and CORE-EVIDENCE, now in the engine.
 
 Cards are loaded from the engine (tests/_engine.recipes) exactly as Copilot's Code
 Interpreter would run them, then run on the sample data. Each card must flag at

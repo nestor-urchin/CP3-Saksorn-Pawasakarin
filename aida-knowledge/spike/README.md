@@ -37,7 +37,7 @@
 
 ## ผลที่คาดหวัง (expected result)
 - NET-FUNNEL ต้องพบบัญชี **F01 เพียงบัญชีเดียว**: sources = 12, total_in = 58700, out_ratio = 0.85
-  (ตรวจในเครื่องแล้วด้วย `python3 -m unittest test_extract_recipes` ใน `aida-knowledge/tools`)
+  (ตรวจในเครื่องแล้วในระยะ B1 ด้วย test_extract_recipes ซึ่งถูกลบใน C1 พร้อม extract_recipes.py)
 - การ์ดยาว 26 บรรทัดโค้ด; template ยาวประมาณ 118 บรรทัด และบรรทัดสุดท้ายต้องเป็น `<!-- END-OF-TEMPLATE -->`
   ถ้า Copilot แสดงบรรทัดสุดท้ายไม่ใช่ marker นี้ แปลว่า template ถูกตัด
 - ไฟล์ .xlsx เปิดได้ และไฟล์ .html เปิดในเบราว์เซอร์ได้ มี 3 แท็บ (สรุป, Findings, Run Log) โดยไม่โหลดอะไรจากภายนอก

@@ -1,4 +1,4 @@
-"""Tests for the pipeline recipe cards in AIDA-19 (PREP-MAP, PROF-PROFILE, GATE-CAPABILITY,
+"""Tests for the B1 pipeline functions now in the engine (formerly AIDA-19 cards: PREP-MAP, PROF-PROFILE, GATE-CAPABILITY,
 UNIFY-FINDINGS, ASSESS-CMP, SELECT-AUTO-TRACE, LOG-RUN).
 
 Cards come from the engine via tests/_engine (helpers from test_recipes), as Copilot's Code Interpreter runs them

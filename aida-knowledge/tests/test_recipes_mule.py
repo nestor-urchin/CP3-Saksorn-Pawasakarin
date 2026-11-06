@@ -1,4 +1,4 @@
-"""Tests for the mule, counterparty and money flow recipe cards (AIDA-18, part 2).
+"""Tests for the mule, counterparty and money flow checks (formerly AIDA-18 cards, part 2), now in the engine.
 
 Uses the helpers of test_recipes (cards loaded from the engine via tests/_engine as Copilot's
 Code Interpreter would run them). The module is imported as `tr` so its test classes

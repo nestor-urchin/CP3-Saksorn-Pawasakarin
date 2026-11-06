@@ -1,12 +1,16 @@
 # AIDA-00 · สารบัญ หลักการ และอภิธานศัพท์
-> ไฟล์: AIDA-00 | เวอร์ชัน: 1.1 | ส่วนหนึ่งของ AIDA Knowledge Pack
+> ไฟล์: AIDA-00 | เวอร์ชัน: 3.0 | ส่วนหนึ่งของ AIDA Knowledge Pack
 > ไฟล์นี้ตอบคำถาม: AIDA คืออะไร, หลักการออกแบบ 6 ข้อมีอะไรบ้าง, Layer 1–10 คืออะไร, ควรเปิดไฟล์ไหนเพื่อตอบเรื่องใด, ศัพท์แต่ละคำหมายถึงอะไร
 
 ## สรุปสั้น
 **AIDA (Audit Intelligence Architecture)** คือสถาปัตยกรรมที่เชื่อม Business Risk, Data, Evidence, Audit Judgment และ Management Action อย่างมีวินัย
 เป้าหมาย: **"จาก เครื่องมือตรวจจับ สู่ ระบบปฏิบัติการด้านหลักฐานและข้อมูลเชิงลึกสำหรับงานตรวจสอบ"**
 AIDA ระยะ A ทำหน้าที่ **ที่ปรึกษาด้านวิธีการ** — แนะนำ skill, gate, การตีความ และ output ตามกรอบนี้ โดยผู้ตรวจสอบเป็นผู้ตัดสินใจ
-ระยะ B1 เพิ่มการ **วิเคราะห์ข้อมูลธุรกรรมจริง** ด้วย Code Interpreter (use case Potential Unusual Transactions across Mule Accounts) จากการ์ดสูตรใน AIDA-18/19 — ผลเป็นสัญญาณให้ Human Review ไม่ใช่ข้อสรุป
+ระยะ B1 เพิ่มการ **วิเคราะห์ข้อมูลธุรกรรมจริง** ด้วย Code Interpreter (use case Potential Unusual Transactions across Mule Accounts)  — ผลเป็นสัญญาณให้ Human Review ไม่ใช่ข้อสรุป
+ระยะ **C1** (Knowledge Pack 3.0) แทนการ์ดสูตร 34 ใบของ B1 ด้วย **engine ไฟล์เดียวที่ทดสอบแล้ว** `aida_engine.py` v3.0.0 (Registry 1.2) ซึ่งทำงานตาม **บทบาทคอลัมน์** จึงวิเคราะห์ได้หลายประเภทข้อมูล: **E โอนเงินระหว่างบัญชี**, **C รับชำระค่างวดสินเชื่อ**, **A จ่ายเงินเจ้าหนี้**
+- ผู้ตรวจสอบเล่าบริบท ความหมายคอลัมน์ เงื่อนไข และ Risk Concern เป็นข้อความอิสระ → engine สร้าง **Intake Review** (ความหมายคอลัมน์, ความพอเพียงต่อความเสี่ยง + Data Request, เงื่อนไข, ความเสี่ยงที่แนะนำ, คุณภาพข้อมูล) → ผู้ตรวจสอบยืนยัน **ครั้งเดียว** → engine วิเคราะห์จนได้ Workbook / Dashboard
+- คำถามนอกการ์ดรับรองใช้ **โหมดสำรวจ** (ผลติดป้าย "ยังไม่ผ่านการรับรอง" เลื่อนเป็น Finding ได้เมื่อผู้ตรวจสอบสั่ง)
+- ขอบเขตถัดไป: C2 บัตรเครดิต, ประกันชีวิต · C3 กองทุน/การลงทุน, มูลนิธิ, สหกรณ์ — ระหว่างนี้ใช้การ์ดทั่วไปที่บทบาทพอ + โหมดสำรวจ
 
 ## Target State: หลักการออกแบบ 6 ข้อ
 | หลักการ | ความหมาย | ผลต่อการทำงาน |
@@ -37,10 +41,12 @@ AIDA ระยะ A ทำหน้าที่ **ที่ปรึกษาด
 | AIDA-13 | Traceability และ Governance | Evidence Lineage, Audit Trail, Version |
 | AIDA-14 | Configuration Registry | ค่ามาตรฐาน / Threshold |
 | AIDA-15 | Acceptance Checklist และ FAQ | เกณฑ์ตรวจรับ, ตัวอย่างคำถาม |
-| AIDA-16 | Output Templates (ระยะ B1) | sheet ของ Audit Workbook, คอลัมน์ nodes/edges/flows.csv, template HTML Dashboard, ป้ายเตือนข้อมูลอ่อนไหว |
-| AIDA-17 | Data & Evidence Schema (ระยะ B1) | คอลัมน์มาตรฐานของ transactions/accounts, Schema Evidence / Finding / Mule Network / Money Flow trail / Run Log, Data Reference, ความเสี่ยง R1–R4 |
-| AIDA-18 | Analysis Recipes (ระยะ B1) | การ์ดวิเคราะห์ 15 ใบ: STAT, BEH, TEMP, NET, MULE (Mule Account pattern / เครือข่าย), CPTY, FLOW (ไล่เส้นทางเงิน) |
-| AIDA-19 | Pipeline Recipes (ระยะ B1) | การ์ด 19 ใบ: Evidence builder, เตรียมข้อมูล, Dataset Profile, Gate (Run/Skip), รวมผล, ประเมิน C/M/P, Run Log, Output |
+| AIDA-16 | ติดตั้ง engine (ระยะ C1) | โหลด `aida_engine.py` จาก SharePoint/OneDrive หรือไฟล์แนบ, ตรวจเวอร์ชัน, สิ่งที่ต้องบอกเมื่อโหลดไม่ได้ |
+| AIDA-17 | บทบาทคอลัมน์และ Schema (ระยะ C1) | 14 บทบาท + custom, preset E/C/A, พจนานุกรมชื่อคอลัมน์ไทย/อังกฤษ, Schema Evidence / Finding / Exploratory / Data Dictionary / Data Request / Run Log, Output |
+| AIDA-18 | Risk Library และการ์ดรับรอง (ระยะ C1) | ความเสี่ยง R1–R4, G-R1–G-R4, C-R1–C-R3, A-R1–A-R4: การ์ดที่ใช้, บทบาทและข้อมูลขั้นต่ำ, สิ่งที่ต้องขอเพิ่ม, Registry key ของการ์ดแต่ละใบ |
+| AIDA-19 | คู่มือเรียก engine (ระยะ C1) | ลำดับ inspect → confirm → run, รูปแบบ brief / answers, Intake Review A–E, กติกาการยืนยัน, โหมดสำรวจและ promote, mapping profile, การแก้ปัญหา |
+
+เวอร์ชันที่ใช้คู่กัน: Knowledge Pack 3.0 · `aida_engine.py` v3.0.0 · Registry 1.2 (AIDA-14)
 
 ## Layer 1–10 โดยย่อ
 Layer 7–10 มาจากสไลด์โดยตรง ส่วน Layer 1–6 จัดกลุ่มตามโครงสร้าง workflow (AIDA-01) และกลุ่ม skill
@@ -78,6 +84,11 @@ Layer 7–10 มาจากสไลด์โดยตรง ส่วน Layer
 | Run ID | รหัสการรันแต่ละครั้ง ใช้ใน Execution Reference |
 | Drill Down | การเจาะจาก Output ไปยัง Finding และ Evidence ต้นทาง |
 | Potential Risk | ความเสี่ยงที่อาจเกิด ซึ่งยังต้องพิสูจน์ด้วย Audit Procedure |
+| บทบาทคอลัมน์ (role) | ความหมายมาตรฐานของคอลัมน์ที่การ์ดใช้ เช่น record_id, date, amount, entity (AIDA-17) |
+| Intake Review | ผลตรวจข้อมูลและคำอธิบายของผู้ตรวจสอบก่อนวิเคราะห์ ข้อ A–E — จุดยืนยันเดียวของ C1 (AIDA-19) |
+| Risk Library | รายการความเสี่ยงที่ engine วิเคราะห์ได้ด้วยการ์ดรับรอง (AIDA-18) |
+| การ์ดรับรอง (certified check) | ฟังก์ชันวิเคราะห์ใน engine ที่ทดสอบแล้ว อ่านเกณฑ์จาก AIDA-14 |
+| โหมดสำรวจ | การวิเคราะห์คำถามนอกการ์ดรับรอง ผลติดป้าย "ยังไม่ผ่านการรับรอง" และ Confidence ไม่เกิน "กลาง" เมื่อเลื่อนเป็น Finding |
 
 ## ข้อห้าม (Guardrails)
 - AIDA ไม่ใช่เครื่องมือตัดสินว่ามีการกระทำผิด — ชี้ความผิดปกติและ Potential Risk เท่านั้น
@@ -86,3 +97,4 @@ Layer 7–10 มาจากสไลด์โดยตรง ส่วน Layer
 
 ## ไฟล์ที่เกี่ยวข้อง
 - AIDA-01 Workflow, AIDA-03 Selection Matrix, AIDA-13 Governance, AIDA-14 Registry, AIDA-15 Checklist
+- AIDA-16 ติดตั้ง engine, AIDA-19 คู่มือเรียก engine

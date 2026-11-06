@@ -7,7 +7,7 @@
 ทุกค่าเป็น **ค่ามาตรฐานทั่วไป** ที่ใช้ในวงการตรวจสอบ/สถิติ ไม่ใช่นโยบายที่องค์กรอนุมัติ
 ทุกครั้งที่ AIDA อ้างค่าจากไฟล์นี้ ต้องแจ้งผู้ใช้ว่าเป็นค่ามาตรฐานและปรับได้ตามบริบทองค์กร
 ค่าเขียนในรูปแบบ `KEY = ค่า` เพื่อให้ไฟล์อื่นอ้างอิงได้ตรงกัน
-ค่าที่ recipe (โค้ดวิเคราะห์ข้อมูล ดู AIDA-17) ต้องอ่านเป็นตัวเลข อยู่ใน JSON ของหัวข้อ "Machine Config (สำหรับ recipe)" ท้ายไฟล์นี้ ซึ่งต้องตรงกับตารางเสมอ
+ค่าที่ engine (`aida_engine.py` ดู AIDA-19) อ่านเป็นตัวเลข อยู่ใน JSON ของหัวข้อ "Machine Config (สำหรับ recipe)" ท้ายไฟล์นี้ (ชื่อหัวข้อคงเดิมเพื่อให้ engine หาเจอ) ซึ่งต้องตรงกับตารางเสมอ
 
 ## วิธีใช้ค่ามาตรฐาน
 - **Registry version:** `REGISTRY.VERSION = 1.2` (2026-11-06)
@@ -153,9 +153,10 @@ Priority = ตาราง Confidence × Materiality แล้ว **ปรับ
 | `TEMP.PERIOD_END.MIN_TX = 3` | จำนวนรายการขั้นต่ำของ entity ในช่วงสิ้นงวด (`TEMP.PERIOD_END.WINDOW`) ของงวดนั้น จึงนับเป็นสัญญาณ (GEN-PERIOD-END) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
 | `TEMP.PERIOD_END.MIN_SHARE = 50%` | สัดส่วนขั้นต่ำของรายการช่วงสิ้นงวดต่อรายการทั้งหมดของ entity ในงวดนั้น (ต้องครบทั้งจำนวนและสัดส่วน) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
 | `FOR.ROUND.MIN_SHARE = 50%` | สัดส่วนขั้นต่ำของยอดกลม (`FOR.ROUND.UNIT`) ต่อรายการทั้งหมดของ entity จึงนับเป็นสัญญาณ (FOR-ROUND ใช้ `GATE.SAMPLE.MIN` เป็นจำนวนรายการขั้นต่ำของ entity) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `SOD.SAME_USER = ผู้บันทึกและผู้อนุมัติเป็นผู้ใช้คนเดียวกัน` | กฎ (ไม่มีค่าตัวเลข) ของการ์ด SOD-SAME-USER — Evidence อ้าง key นี้ | หลักการแบ่งแยกหน้าที่ (Segregation of Duties) |
 
 ## Machine Config (สำหรับ recipe)
-JSON ก้อนเดียวนี้คือค่าที่ recipe อ่านเป็น `cfg[<key>]` — key ระดับบนสุดต้องมีในตาราง/หัวข้อของไฟล์นี้ (key ที่ขึ้นต้นด้วย `_` ใช้เป็น runtime context) และ `ASSESS.PRIORITY` เรียง Confidence ก่อน แล้วจึง Materiality ตามตาราง Priority (ไม่รวมหมายเหตุ Human Review)
+JSON ก้อนเดียวนี้คือค่าที่ engine อ่านเป็น `cfg[<key>]` — key ระดับบนสุดต้องมีในตาราง/หัวข้อของไฟล์นี้ (key ที่ขึ้นต้นด้วย `_` ใช้เป็น runtime context) และ `ASSESS.PRIORITY` เรียง Confidence ก่อน แล้วจึง Materiality ตามตาราง Priority (ไม่รวมหมายเหตุ Human Review)
 ```json
 {
   "REGISTRY.VERSION": "1.2",
@@ -220,7 +221,7 @@ JSON ก้อนเดียวนี้คือค่าที่ recipe อ�
 |---|---|---|
 | 1.0 | 2026-11-03 | ฉบับแรก: ค่ามาตรฐานทั่วไปทุก skill |
 | 1.1 | 2026-11-03 | เพิ่มหมวด 11 (MULE / CPTY / FLOW รวม `MULE.DWELL_MIN_PAIRS`, `MULE.NEW_ACCT_MIN_TX`), `BEH.VELOCITY.SD_FLOOR`, `NET.CYCLE.MAX_PATHS` (ต่อเดือน), `FLOW.MAX_TRAIL_ROWS`, `TEMP.OFF_HOURS.MIN_TX`, `TEMP.OFF_HOURS.MIN_SHARE`, `REGISTRY.VERSION` และ Machine Config JSON สำหรับ recipe (ไม่เปลี่ยนค่าเดิม) |
-| 1.2 | 2026-11-06 | เพิ่มหมวด 12 สำหรับการ์ดใหม่ของ engine (`DUP.WINDOW_DAYS`, `SPLIT.WINDOW_DAYS`, `SPLIT.MIN_TX`, `DUE.NEAR_DAYS`, `DUE.MIN_SHARE`, `DUE.MIN_PERIODS`, `PAYER.MIN_CONTRACTS`, `INTAKE.ROLE_CONF`, `INTAKE.JOIN_MIN_PCT`, `TEMP.PERIOD_END.MIN_TX`, `TEMP.PERIOD_END.MIN_SHARE`, `FOR.ROUND.MIN_SHARE`) และเพิ่มค่า `FOR.*`, `CONC.*`, `TEMP.PERIOD_END.WINDOW` เดิมเข้า Machine Config (ค่าเดิมไม่เปลี่ยน; แก้ข้อความ `FOR.THRESHOLD_AVOID.BAND` เป็น 90%–99.99% เท่านั้น) |
+| 1.2 | 2026-11-06 | เพิ่มหมวด 12 สำหรับการ์ดใหม่ของ engine (`DUP.WINDOW_DAYS`, `SPLIT.WINDOW_DAYS`, `SPLIT.MIN_TX`, `DUE.NEAR_DAYS`, `DUE.MIN_SHARE`, `DUE.MIN_PERIODS`, `PAYER.MIN_CONTRACTS`, `INTAKE.ROLE_CONF`, `INTAKE.JOIN_MIN_PCT`, `TEMP.PERIOD_END.MIN_TX`, `TEMP.PERIOD_END.MIN_SHARE`, `FOR.ROUND.MIN_SHARE`) และเพิ่มค่า `FOR.*`, `CONC.*`, `TEMP.PERIOD_END.WINDOW` เดิมเข้า Machine Config (ค่าเดิมไม่เปลี่ยน; แก้ข้อความ `FOR.THRESHOLD_AVOID.BAND` เป็น 90%–99.99% เท่านั้น); บันทึกกฎ `SOD.SAME_USER` ที่ Evidence ของ SOD-SAME-USER อ้าง (ไม่มีค่าตัวเลข) |
 
 ## ข้อห้าม (Guardrails)
 - ห้ามนำเสนอค่าในไฟล์นี้ว่าเป็นนโยบายที่องค์กรอนุมัติแล้ว — ต้องแจ้งว่าเป็นค่ามาตรฐานทุกครั้ง
@@ -233,4 +234,4 @@ JSON ก้อนเดียวนี้คือค่าที่ recipe อ�
 - AIDA-04 ถึง AIDA-08 Skill แต่ละกลุ่ม
 - AIDA-10 Assessment Model (Confidence / Materiality / Priority)
 - AIDA-13 Governance (Version / Change Control)
-- AIDA-17 Data Evidence Schema (Machine Config ถูกใช้โดย recipe)
+- AIDA-18 Risk Library (key ที่การ์ดรับรองแต่ละใบใช้), AIDA-19 คู่มือ engine (Machine Config ถูกอ่านโดย engine)

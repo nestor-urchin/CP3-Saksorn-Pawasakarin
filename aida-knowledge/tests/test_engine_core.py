@@ -79,10 +79,13 @@ class EngineCore(unittest.TestCase):
         with self.assertRaises(ValueError):
             e.load_registry("# ไม่มีหัวข้อ")
 
-    def test_dashboard_template_matches_aida16(self):
-        text = (KNOWLEDGE / "AIDA-16-output-templates.md").read_text(encoding="utf-8")
-        m = re.search(r"^```html\n(.*?)^```$", text, re.S | re.M)
-        self.assertEqual(engine().DASHBOARD_TEMPLATE, m.group(1))
+    def test_dashboard_template_lives_in_engine(self):
+        # C1: the template is carried by the engine only; no Knowledge file holds a copy any more
+        t = engine().DASHBOARD_TEMPLATE
+        self.assertEqual(t.count(engine().DASH_PLACEHOLDER), 1)
+        self.assertTrue(t.rstrip().endswith(engine().DASH_END))
+        for f in KNOWLEDGE.glob("*.md"):
+            self.assertNotRegex(f.read_text(encoding="utf-8"), r"(?m)^```html", f.name)
 
     def test_recipes_loader_exposes_cards(self):
         r = recipes()

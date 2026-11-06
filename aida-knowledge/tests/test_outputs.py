@@ -1,5 +1,5 @@
-"""Tests for the output cards in AIDA-19 (OUT-BUNDLE, OUT-WORKBOOK, OUT-NETWORK-CSV,
-OUT-DASHBOARD) and the dashboard template in AIDA-16.
+"""Tests for the engine output functions (out_bundle, out_workbook, out_network_csv,
+out_dashboard) and the dashboard template the engine carries (DASHBOARD_TEMPLATE).
 
 The whole chain runs on the raw sample CSVs (test_pipeline.run_chain), then SELECT-AUTO-TRACE,
 FLOW-TRACE (both directions), LOG-RUN and the output cards, as Copilot would at step 8.
@@ -36,7 +36,7 @@ DATA_RE = re.compile(r'<script id="aida-data" type="application/json">(.*?)</scr
 
 
 def template() -> str:
-    """The dashboard template, as the engine carries it (identical to the AIDA-16 html block)."""
+    """The dashboard template, as the engine carries it (the only copy since C1)."""
     return _engine.engine().DASHBOARD_TEMPLATE
 
 
@@ -232,7 +232,7 @@ class TestNetworkCsv(OutputCase):
         self.assertIn(net_fid, nodes.loc["NC1", "finding_ids"].split("; "))
 
 
-# ---------------------------------------------------------------- OUT-DASHBOARD + AIDA-16
+# ---------------------------------------------------------------- OUT-DASHBOARD + template
 class TestDashboard(OutputCase):
     def test_template_shape(self):
         t = template()

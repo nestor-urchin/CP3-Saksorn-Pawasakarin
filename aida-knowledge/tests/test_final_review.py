@@ -304,19 +304,26 @@ class TestNoTsColumn(unittest.TestCase):
 class TestInstructions(unittest.TestCase):
     TEXT = (tr.ROOT / "AIDA-agent-instructions.md").read_text(encoding="utf-8")
 
-    def test_pack_version_set(self):
-        self.assertIn('"pack_version": "2.0"', self.TEXT)
+    """C1 Instructions (Task 10): the 8-step engine flow and the confirmation rules."""
 
-    def test_empty_evidence_when_no_card_runs(self):
-        self.assertIn("core_evidence()", self.TEXT)
+    def test_c1_flow_calls(self):
+        for call in ("aida.inspect(", 'r["review_th"]', "aida.confirm(", "aida.run(", "aida.data(", "aida.explore_log(",
+                     "aida.promote(", "aida.save_mapping(", "AIDA-16", '__version__ == "3.0.0"'):
+            self.assertIn(call, self.TEXT)
 
-    def test_checkpoint_1_shows_unreadable_counts(self):
-        cp1 = self.TEXT[self.TEXT.index("จุดยืนยัน 1"):self.TEXT.index("4. profile")]
-        for k in ("unparsed_amount", "amount_samples", "unparsed_opened_at", "opened_at_info"):
-            self.assertIn(k, cp1)
+    def test_confirmation_rules(self):
+        for word in ('"ยืนยัน"', '"ตกลง"', '"ok"', '"ไปต่อ"', "การแก้ค่า", '{"type": "ไม่ระบุ"}', "ไม่ตอบข้อ D = ไม่เพิ่มความเสี่ยง",
+                     "ในคำตอบเดียวกับที่ยืนยัน"):
+            self.assertIn(word, self.TEXT)
 
-    def test_card_notes_in_chat_summary(self):
-        self.assertIn('bundle["card_notes"]', self.TEXT)
+    def test_no_numbers_and_wording(self):
+        self.assertIn("ห้ามคำนวณหรือแต่งตัวเลขเอง", self.TEXT)
+        self.assertIn('"บัญชีม้า"', self.TEXT)
+        self.assertIn("ระบุชื่อผู้ทบทวน", self.TEXT)
+
+    def test_no_b1_recipe_steps_left(self):
+        for old in ("จุดยืนยัน 1", "prep_map", "card_notes", "RECIPE"):
+            self.assertNotIn(old, self.TEXT)
 
     def test_length(self):
         self.assertLessEqual(len(self.TEXT), 8000)

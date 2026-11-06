@@ -4,6 +4,8 @@ Usage: python3 validate_pack.py [pack_dir]
 pack_dir defaults to the aida-knowledge/ folder that contains this script.
 Exit code 0 when every check passes, 1 otherwise.
 """
+import ast
+import importlib.util
 import json
 import re
 import sys
@@ -26,16 +28,22 @@ SHARED_TABLE_HEADINGS = ["### ตาราง Priority", "### ตาราง Co
 # A negation exempts a term only when it ends within NEGATION_WINDOW characters before it.
 NEGATION_RE = re.compile(r"≠|ไม่(?!ว่า)|ห้าม|\bnot\b", re.IGNORECASE)
 NEGATION_WINDOW = 20
-RESERVED_IDS = {"16", "17", "18", "19"}
+RESERVED_IDS: set = set()  # AIDA-16..19 exist from phase C1 on
 
 MACHINE_CONFIG_HEADING = "## Machine Config (สำหรับ recipe)"
 HEADING_KEY_RE = re.compile(r"^#{2,4}\s+([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)+)\b", re.MULTILINE)
-RECIPE_FENCE_OPEN = re.compile(r"^```python\s*$")
-RECIPE_FENCE_CLOSE = re.compile(r"^```\s*$")
-RECIPE_H1 = re.compile(r"^#\s*RECIPE\s+(\S+)\s+v\d+\.\d+\s*\|\s*Skill:\s*.+?\s*\|\s*Risk:\s*(R[1-4]|-)\s*$")
-RECIPE_H2 = re.compile(r"^#\s*Registry:\s*.+?\s*\|\s*Input:\s*.+?\s*$")
-CFG_KEY_RE = re.compile(r"""cfg\[\s*["']([^"']+)["']\s*\]""")
-RECIPE_MAX_LINES = 40  # code lines after the two header comment lines
+KNOWLEDGE_FILES = 20  # Agent Builder Knowledge holds at most 20 files; the pack uses every slot
+ENGINE_NAME = "aida_engine.py"
+ENGINE_REL = Path("engine") / ENGINE_NAME  # approach 2 keeps the engine outside knowledge/
+ENGINE_VERSION_RE = re.compile(r"aida_engine\.py`?\s+v(\d+(?:\.\d+)+)")
+ENGINE_VERSION_FILES = ("AIDA-00", "AIDA-19")  # must state the engine version
+RISK_LIBRARY_NAME = "AIDA-18-risk-library.md"
+# the 14 fixed roles (global constraint); certified checks and the Risk Library may use no other
+ROLES = ("record_id", "date", "amount", "entity", "counterparty", "contract", "category", "channel",
+         "created_by", "approved_by", "document_no", "limit", "due_date", "opened_at")
+ALLOWED_IMPORTS = {"pandas", "numpy", "openpyxl"}
+NETWORK_MODULES = {"requests", "urllib", "urllib3", "http", "httpx", "socket", "ssl", "ftplib", "smtplib", "poplib",
+                   "imaplib", "aiohttp", "xmlrpc", "telnetlib", "websocket", "websockets", "asyncio", "webbrowser"}
 
 
 def _read(path: Path) -> str:
@@ -55,10 +63,15 @@ def parse_registry(path: Path) -> tuple[dict[str, str], list[str]]:
     return registry, errors
 
 
-def check_file_count(knowledge_dir: Path, limit: int = 20) -> list[str]:
-    count = len(list(knowledge_dir.glob("*.md")))
-    if count > limit:
-        return [f"{knowledge_dir.name}: {count} files, limit is {limit}"]
+def knowledge_files(knowledge_dir: Path) -> list[Path]:
+    """Every file that would be uploaded as Knowledge (any type; hidden files are ignored)."""
+    return sorted(p for p in knowledge_dir.iterdir() if p.is_file() and not p.name.startswith("."))
+
+
+def check_file_count(knowledge_dir: Path, expected: int = KNOWLEDGE_FILES) -> list[str]:
+    count = len(knowledge_files(knowledge_dir))
+    if count != expected:
+        return [f"{knowledge_dir.name}: {count} files, the pack must hold exactly {expected} (Knowledge limit)"]
     return []
 
 
@@ -267,37 +280,159 @@ def check_machine_config(registry_path: Path) -> list[str]:
     return errors
 
 
-def check_recipes(path: Path, registry_keys: set[str]) -> list[str]:
-    """Check recipe cards (```python blocks starting with '# RECIPE'): header, length, cfg keys."""
-    lines = _read(path).splitlines()
+def find_engine(pack_dir: Path) -> Path | None:
+    """The engine source: aida-knowledge/engine/aida_engine.py (approach 2 keeps it out of knowledge/)."""
+    path = pack_dir / ENGINE_REL
+    return path if path.is_file() else None
+
+
+def engine_constants(engine_path: Path) -> dict:
+    """Module-level string constants (__version__, REGISTRY_VERSION, ...) read with ast, without importing."""
+    out = {}
+    for node in ast.parse(_read(engine_path)).body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    out[t.id] = node.value.value
+    return out
+
+
+def check_engine_version(engine_path: Path, knowledge_dir: Path) -> list[str]:
+    """`aida_engine.py` vX.Y.Z in the Knowledge files must equal __version__; AIDA-00 and AIDA-19 must state it."""
+    version = engine_constants(engine_path).get("__version__")
+    if not version:
+        return [f"{engine_path.name}: no __version__ string"]
     errors: list[str] = []
-    i = 0
-    while i < len(lines):
-        if not RECIPE_FENCE_OPEN.match(lines[i]):
-            i += 1
+    stated = set()
+    for f in sorted(knowledge_dir.glob("*.md")):
+        found = ENGINE_VERSION_RE.findall(_read(f))
+        if found and (m := FILE_ID_RE.match(f.name)):
+            stated.add(f"AIDA-{m.group(1)}")
+        for v in dict.fromkeys(found):
+            if v != version:
+                errors.append(f"{f.name}: states aida_engine.py v{v} but the engine __version__ is {version}")
+    for fid in ENGINE_VERSION_FILES:
+        if fid not in stated:
+            errors.append(f"{fid}: must state the engine version as '`aida_engine.py` v{version}'")
+    return errors
+
+
+def check_engine_registry_version(engine_path: Path, registry_path: Path) -> list[str]:
+    registry, _ = parse_registry(registry_path)
+    want = registry.get("REGISTRY.VERSION")
+    got = engine_constants(engine_path).get("REGISTRY_VERSION")
+    if want is None:
+        return [f"{registry_path.name}: no `REGISTRY.VERSION = ...`"]
+    if got != want:
+        return [f"{engine_path.name}: REGISTRY_VERSION {got!r} but AIDA-14 says REGISTRY.VERSION = {want}"]
+    return []
+
+
+def engine_cfg_keys(engine_path: Path) -> list[str]:
+    """String keys read as cfg["KEY"] (any variable whose name contains 'cfg') in the engine code."""
+    keys = []
+    for node in ast.walk(ast.parse(_read(engine_path))):
+        if (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and "cfg" in node.value.id
+                and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str)):
+            keys.append(node.slice.value)
+    return list(dict.fromkeys(keys))
+
+
+def check_engine_cfg_keys(engine_path: Path, registry_path: Path) -> list[str]:
+    config, errors = parse_machine_config(registry_path)
+    if errors:
+        return errors
+    return [f"{engine_path.name}: reads cfg['{k}'] which is not in the AIDA-14 Machine Config"
+            for k in engine_cfg_keys(engine_path) if not k.startswith("_") and k not in config]
+
+
+def check_engine_imports(engine_path: Path) -> list[str]:
+    """pandas, numpy, openpyxl and the standard library only; never a network library."""
+    stdlib = set(getattr(sys, "stdlib_module_names", ()))
+    errors: list[str] = []
+    for node in ast.walk(ast.parse(_read(engine_path))):
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            names = [node.module]
+        else:
             continue
-        start = i + 1
-        j = start
-        while j < len(lines) and not RECIPE_FENCE_CLOSE.match(lines[j]):
-            j += 1
-        block = lines[start:j]
-        i = j + 1
-        if not (block and block[0].startswith("# RECIPE")):
-            continue
-        where = f"{path.name}:{start + 1}"
-        if j >= len(lines):
-            errors.append(f"{where}: recipe code fence never closed")
-            continue
-        m1 = RECIPE_H1.match(block[0])
-        if not (m1 and len(block) > 1 and RECIPE_H2.match(block[1])):
-            errors.append(f"{where}: malformed recipe header")
-            continue
-        rid = m1.group(1)
-        if len(block) - 2 > RECIPE_MAX_LINES:
-            errors.append(f"{where}: recipe {rid} has {len(block) - 2} code lines, limit is {RECIPE_MAX_LINES}")
-        for key in dict.fromkeys(CFG_KEY_RE.findall("\n".join(block[2:]))):
-            if not key.startswith("_") and key not in registry_keys:
-                errors.append(f"{where}: recipe {rid} reads cfg['{key}'] which is not an AIDA-14 key")
+        for name in names:
+            top = name.split(".")[0]
+            if top in NETWORK_MODULES:
+                errors.append(f"{engine_path.name}:{node.lineno}: imports network library '{name}'")
+            elif top not in ALLOWED_IMPORTS and stdlib and top not in stdlib:
+                errors.append(f"{engine_path.name}:{node.lineno}: imports '{name}' (allowed: pandas, numpy, "
+                              "openpyxl and the standard library)")
+    return errors
+
+
+def load_engine(engine_path: Path):
+    """Import the engine by path under a private name (needs pandas, numpy and openpyxl)."""
+    spec = importlib.util.spec_from_file_location("aida_engine_validate", str(engine_path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _risk_builder():
+    spec = importlib.util.spec_from_file_location(
+        "build_risk_library_md", str(Path(__file__).resolve().parent / "build_risk_library_md.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def check_risk_references(risk_library: dict, checks: dict) -> list[str]:
+    """Each risk names checks that exist and roles among the 14; each check requires roles among the 14."""
+    errors: list[str] = []
+    for rid, r in risk_library.items():
+        for c in r.get("checks", []):
+            if c not in checks:
+                errors.append(f"Risk Library {rid}: check {c} does not exist in the engine CHECKS")
+        bad = [x for x in list(r.get("min_roles", [])) + list(r.get("join_roles", [])) if x not in ROLES]
+        if bad:
+            errors.append(f"Risk Library {rid}: roles {', '.join(bad)} are not among the 14 roles")
+    for cid, spec in checks.items():
+        bad = [x for x in list(spec.get("requires", [])) + list(spec.get("optional", [])) if x not in ROLES]
+        if bad:
+            errors.append(f"check {cid}: roles {', '.join(bad)} are not among the 14 roles")
+    return errors
+
+
+def check_risk_library(engine, aida18_path: Path) -> list[str]:
+    """AIDA-18 must be exactly what tools/build_risk_library_md.py makes from the engine."""
+    want = _risk_builder().render(engine)
+    if not aida18_path.exists():
+        return [f"{aida18_path.name} is missing — run tools/build_risk_library_md.py"]
+    have = _read(aida18_path)
+    if have == want:
+        return []
+    a, b = have.splitlines(), want.splitlines()
+    n = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+    return [f"{aida18_path.name}:{n + 1}: differs from the engine Risk Library / CHECKS — "
+            "run tools/build_risk_library_md.py (never edit AIDA-18 by hand)"]
+
+
+def check_engine(pack_dir: Path, knowledge: Path, registry_path: Path) -> list[str]:
+    engine_path = find_engine(pack_dir)
+    if engine_path is None:
+        return [f"{ENGINE_REL.as_posix()} is missing (the validator reads the engine from aida-knowledge/engine/)"]
+    errors: list[str] = []
+    copy = knowledge / ENGINE_NAME
+    if copy.exists() and copy.read_bytes() != engine_path.read_bytes():
+        errors.append(f"knowledge/{ENGINE_NAME} differs from {ENGINE_REL.as_posix()} — copy the engine again")
+    errors += check_engine_imports(engine_path)
+    errors += check_engine_version(engine_path, knowledge)
+    if registry_path.exists():
+        errors += check_engine_registry_version(engine_path, registry_path)
+        errors += check_engine_cfg_keys(engine_path, registry_path)
+    try:
+        engine = load_engine(engine_path)
+    except Exception as e:  # noqa: BLE001 - report, do not crash the validator
+        return errors + [f"{engine_path.name}: cannot be imported ({type(e).__name__}: {e}) — needs pandas, numpy, openpyxl"]
+    errors += check_risk_references(engine.RISK_LIBRARY, engine.CHECKS)
+    errors += check_risk_library(engine, knowledge / RISK_LIBRARY_NAME)
     return errors
 
 
@@ -314,18 +449,19 @@ def validate(pack_dir: Path) -> list[str]:
     else:
         errors.append(f"knowledge/{REGISTRY_NAME} (AIDA-14) is missing")
 
-    registry_keys = registry_key_names(registry_path) if registry_path.exists() else set()
     if registry_path.exists():
         errors += check_machine_config(registry_path)
 
     existing = {m.group(1) for f in files if (m := FILE_ID_RE.match(f.name))}
+    if (knowledge / ENGINE_NAME).exists():  # approach 3: the engine itself takes slot 16 (engine install doc)
+        existing.add("16")
     for f in files:
         errors += check_required_sections(f)
         errors += check_registry_refs(f, registry)
         errors += check_accusatory_terms(f)
         errors += check_cross_refs(f, existing)
-        errors += check_recipes(f, registry_keys)
     errors += check_shared_tables(knowledge)
+    errors += check_engine(pack_dir, knowledge, registry_path)
 
     instructions = pack_dir / INSTRUCTIONS_NAME
     if instructions.exists():
@@ -345,7 +481,7 @@ def main(argv: list[str]) -> int:
         print(f"ERROR: {e}")
     if errors:
         return 1
-    print(f"OK: {len(list((pack_dir / 'knowledge').glob('*.md')))} files validated")
+    print(f"OK: {len(knowledge_files(pack_dir / 'knowledge'))} files validated")
     return 0
 
 
