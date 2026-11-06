@@ -3894,7 +3894,19 @@ def _read_explore(path) -> dict:
         raise AidaError(f"ไฟล์ {path} ไม่ใช่ JSON ที่ถูกต้อง ({e.msg}) — กู้คืนจากสำเนา หรือย้ายไฟล์ออกแล้วบันทึกโหมดสำรวจใหม่") from None
     if not isinstance(d, dict):
         raise AidaError(f"ไฟล์ {path} รูปแบบไม่ถูกต้อง — ต้องมี explore และ promoted")
-    return {"explore": list(d.get("explore", [])), "promoted": list(d.get("promoted", []))}
+    out = {"explore": d.get("explore", []), "promoted": d.get("promoted", [])}
+    need = {"explore": ("explore_id", "question", "code", "result", "time"),
+            "promoted": ("finding_id", "explore_id", "entity_id", "risk", "confidence", "reviewer", "promote_reason")}
+    for part, keys in need.items():
+        if not isinstance(out[part], list):
+            raise AidaError(f"ไฟล์ {path}: '{part}' ต้องเป็นรายการ — กู้คืนจากสำเนาหรือสร้างบันทึกใหม่")
+        for i, e in enumerate(out[part], 1):
+            miss = [k for k in keys if not isinstance(e, dict) or k not in e]
+            if not miss and part == "explore" and not (isinstance(e["result"], dict) and "text" in e["result"]):
+                miss = ["result.text"]
+            if miss:
+                raise AidaError(f"ไฟล์ {path}: แถวที่ {i} ของ '{part}' ขาด {', '.join(miss)} — แก้ไฟล์ให้ครบหรือกู้คืนจากสำเนา")
+    return out
 
 
 def _write_explore(path: str, data: dict) -> None:
@@ -3997,7 +4009,7 @@ def promote(explore_id, entity, risk, period, reason, reviewer, confidence: str 
     label "จากโหมดสำรวจ". The row is saved in the `promoted` list of explore_log.json (next to intake.json) so
     run(files, intake) merges it into Findings, the Exploratory sheet and the Dashboard in this and later runs."""
     rv = _nonblank(reviewer, "ผู้ตรวจสอบ (reviewer)", "ระบุชื่อผู้ตรวจสอบที่สั่งเลื่อนก่อนเลื่อนเป็น Finding")
-    if risk != "RX" and risk not in RISK_LIBRARY:
+    if not isinstance(risk, str) or (risk != "RX" and risk not in RISK_LIBRARY):
         raise AidaError(f"ไม่รู้จักความเสี่ยง '{risk}' — เลือกจาก Risk Library ({', '.join(RISK_LIBRARY)}) "
                         "หรือใช้ RX สำหรับความเสี่ยงที่ไม่มีในคลัง แล้วเรียกใหม่")
     ent = _nonblank(entity, "entity (บัญชี/ผู้ชำระ/ผู้ขาย)", "ระบุรหัสของสิ่งที่ผลสำรวจชี้")
@@ -4033,7 +4045,18 @@ def _explore_state(it: dict) -> tuple:
     """(entries, promoted rows) saved next to this intake, in a fixed order."""
     d = _read_explore(_explore_path(it))
     ents = sorted(d["explore"], key=lambda e: _explore_no(e["explore_id"]))
-    prom = sorted(d["promoted"], key=lambda p: (_explore_no(p["explore_id"]), p["finding_id"]))
+    prom = []
+    for p in sorted(d["promoted"], key=lambda p: (_explore_no(p["explore_id"]), p["finding_id"])):
+        where = f"แถว promoted {p['finding_id']} ({p['explore_id']}) ใน {EXPLORE_FILE}"
+        if not isinstance(p["reviewer"], str) or not p["reviewer"].strip():
+            raise AidaError(f"{where}: ไม่มี reviewer — Finding จากโหมดสำรวจต้องมีผู้ตรวจสอบ ใส่ชื่อผู้ตรวจสอบหรือลบแถวนี้")
+        if not isinstance(p["risk"], str) or (p["risk"] != "RX" and p["risk"] not in RISK_LIBRARY):
+            raise AidaError(f"{where}: ความเสี่ยง {p['risk']!r} ไม่อยู่ใน Risk Library — ใช้รหัสในคลังหรือ RX แล้วรันใหม่")
+        if p["confidence"] not in CONF_RANK:
+            raise AidaError(f"{where}: confidence {p['confidence']!r} ต้องเป็น ต่ำ / กลาง / สูง — แก้ไฟล์แล้วรันใหม่")
+        conf = min(p["confidence"], EXPLORE_MAX_CONFIDENCE, key=CONF_RANK.get)  # never above กลาง, whatever the file says
+        prom.append({**p, "reviewer": p["reviewer"].strip(), "confidence": conf, "priority": conf, "source": "exploratory",
+                     "source_label": EXPLORE_LABEL})
     return ents, prom
 
 

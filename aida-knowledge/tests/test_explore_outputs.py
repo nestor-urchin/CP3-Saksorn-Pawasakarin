@@ -181,6 +181,46 @@ class Promote(unittest.TestCase):
         self.assertEqual([p["finding_id"] for p in log["promoted"]], [f["finding_id"]])
 
 
+class TamperedLog(unittest.TestCase):
+    def _log(self, tag, **edit):
+        e = engine()
+        it, path = fresh("C", tag)
+        eid = e.explore_log("q", "df.head()", 1, intake=it)
+        e.promote(eid, "B0001", "RX", "2026-03", "r", "สมชาย", intake=it)
+        f = Path(path).parent / "explore_log.json"
+        j = json.loads(f.read_text(encoding="utf-8"))
+        j["promoted"][0].update(edit)
+        f.write_text(json.dumps(j, ensure_ascii=False), encoding="utf-8")
+        return e, it, tag
+
+    def test_confidence_clamped_on_run(self):
+        e, it, tag = self._log("t1", confidence="สูง", priority="สูง", source="card", source_label="")
+        r = e.run(to.files("C"), it, str(tmp("o-" + tag)))
+        row = r["findings"][r["findings"]["source"] == "exploratory"].iloc[0]
+        self.assertEqual((row["confidence"], row["priority"], row["source_label"]), ("กลาง", "กลาง", "จากโหมดสำรวจ"))
+
+    def test_blank_reviewer_and_bad_risk_rejected(self):
+        for tag, edit, word in (("t2", {"reviewer": " "}, "reviewer"), ("t3", {"risk": "ZZ"}, "ZZ"),
+                                ("t4", {"confidence": "x"}, "confidence")):
+            e, it, _ = self._log(tag, **edit)
+            with self.assertRaises(e.AidaError) as cm:
+                e.run(to.files("C"), it, str(tmp("o-" + tag)))
+            self.assertIn(word, str(cm.exception))
+            self.assertIn("FND-EXP-1", str(cm.exception))
+
+    def test_missing_keys_and_non_str_risk(self):
+        e, it, tag = self._log("t5")
+        f = Path(it["intake_path"]).parent / "explore_log.json"
+        j = json.loads(f.read_text(encoding="utf-8"))
+        del j["promoted"][0]["reviewer"]
+        f.write_text(json.dumps(j), encoding="utf-8")
+        with self.assertRaises(e.AidaError) as cm:
+            e.run(to.files("C"), it, str(tmp("o-t5")))
+        self.assertIn("reviewer", str(cm.exception))
+        with self.assertRaises(e.AidaError):
+            e.promote("EXP-1", "B", ["RX"], "p", "r", "ส", intake=it)
+
+
 def run_with_promotion(name, tag, extra_code=None):
     e = engine()
     it, path = fresh(name, tag)
