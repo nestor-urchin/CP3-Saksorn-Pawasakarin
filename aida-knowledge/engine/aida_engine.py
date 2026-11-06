@@ -2825,6 +2825,12 @@ class AidaError(ValueError):
 INTAKE_VERSION = 1
 REGISTRY_FILE = "AIDA-14-configuration-registry.md"
 CONFIRM_LINE = "ยืนยันทั้งหมด หรือแก้เฉพาะข้อ ⚠️ ❓ D แล้วเริ่มวิเคราะห์"
+REVIEWER_LINE = ("ชื่อผู้ยืนยัน: ถ้าสะดวกโปรดระบุชื่อผู้ตรวจสอบที่ยืนยัน เพื่อบันทึกใน Intake_Review และ Data_Dictionary "
+                 "(ไม่ระบุก็เริ่มวิเคราะห์ได้)")
+DRAFT_FILE = "intake_draft.json"  # inspect() writes the draft here (same working folder as intake.json)
+NO_RECORD_ID = ("ยังไม่มีคอลัมน์ที่เป็น record_id (รหัสรายการที่ไม่ซ้ำ ใช้อ้างอิงรายการต้นทาง) — record_id บังคับก่อนวิเคราะห์: "
+                "ระบุว่าคอลัมน์ใดเป็นรหัสรายการในข้อ A แล้วยืนยัน (ตรวจค่าซ้ำ/ว่างหลังยืนยัน)")
+STATUS_ROLES = {"tx_id": "record_id", "ts": "date", "amount": "amount", "from_acct": "entity", "to_acct": "counterparty"}
 COL_ICON = {"ok": "✅", "conflict": "⚠️", "guess": "❓", "unknown": "⚪"}
 SUFF_ICON = {"พร้อม": "✅", "บางส่วน": "🟡", "ไม่พอ": "❌"}
 NO_ROLE = ("", "ไม่ใช้", "none", "None", UNKNOWN_ROLE)
@@ -3241,11 +3247,34 @@ def _col_status(table, col, role, source, conflicts) -> str:
     return "guess"
 
 
+def _status_th(status, tx_roles: dict):
+    """A PROF-PROFILE status worded by role and the file's column name (never the internal tx_id / ts)."""
+    if not status:
+        return status
+
+    def name(m):
+        role = STATUS_ROLES[m.group(0)]
+        col = tx_roles.get(role)
+        return f"{role} (คอลัมน์ {col})" if col else role
+    return re.sub(r"(?<![A-Za-z0-9_.])(tx_id|ts|amount|from_acct|to_acct)(?![A-Za-z0-9_])", name, status)
+
+
+def _write_json(path: str, data: dict) -> str:
+    p = os.path.abspath(str(path))
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    return p
+
+
 @_thai_errors
-def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_path: str = None) -> dict:
+def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_path: str = None,
+            draft_path: str = None) -> dict:
     """Everything in spec 4.3 step 2: read files as text (CSV / every XLSX sheet), sha256 and data_ref, B1 date and
     amount parsing, profile, suggest_roles, check_descriptions, match_concerns, assess_sufficiency, suggest_risks
-    and plan -> {"intake": draft, "review_th": Thai Intake Review A-E, "changes": mapping changes or None}.
+    and plan -> {"intake": draft, "review_th": Thai Intake Review A-E, "changes": mapping changes or None,
+    "draft_path": path of intake_draft.json}. The draft is written to `draft_path` (default DRAFT_FILE in the working
+    folder, next to the eventual intake.json) so confirm(draft_path, answers) can resume after a lost session.
     `brief` = {context, columns {col: meaning}, conditions [..], concerns [..], materiality}; `mapping` = a mapping
     profile (path or dict from save_mapping): its roles, meanings, filters and org values are reused and only the
     columns that were added, removed or changed pattern are asked about."""
@@ -3325,6 +3354,13 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
     except ValueError as e:
         notes.append(f"ยังแปลงข้อมูลตามบทบาทที่เสนอไม่ได้: {e}")
         tables = None
+    tx_roles0 = _roles_by_table(primary)[1] if primary else {}
+    if "record_id" not in tx_roles0:  # a question for the auditor (section A), not a STOP: no column is record_id yet
+        rest = [_status_th(x, tx_roles0) for x in (prof_checks(tables["transactions"], prep, run_cfg) if tables else [])
+                if not x.startswith("ไม่มีคอลัมน์ tx_id")]
+        status = "REVIEW: " + NO_RECORD_ID + ("; ตรวจเพิ่ม: " + "; ".join(rest) if rest else "")
+    else:
+        status = _status_th(status, tx_roles0)
     dtype = _type_from_roles(set(_roles_by_table(primary)[1]) if primary else set(), profile)
     suff = assess_sufficiency(requested, primary, profile, run_cfg, tables)
     pl = plan(requested, primary, profile, run_cfg, tables)
@@ -3348,7 +3384,8 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
         "profile_status": status, "notes": notes, "changes": changes,
         "mapping": {"confirmed_by": m.get("confirmed_by"), "confirmed_at": m.get("confirmed_at")} if m else None}
     it = _plain(it)
-    return {"intake": it, "review_th": _review_text(it), "changes": changes}
+    dp = _write_json(draft_path or DRAFT_FILE, it)
+    return {"intake": it, "review_th": _review_text(it), "changes": changes, "draft_path": dp}
 
 
 def _merge_org(org: dict, cfg: dict) -> dict:
@@ -3357,6 +3394,13 @@ def _merge_org(org: dict, cfg: dict) -> dict:
     for k, v in (org or {}).items():
         out[k] = {**cfg[k], **v} if isinstance(cfg.get(k), dict) and isinstance(v, dict) else v
     return out
+
+
+def _check_share(key: str, v, std) -> None:
+    """A share / percent key (its AIDA-14 standard value is a fraction between 0 and 1) takes a fraction: 0.7 = 70%."""
+    if isinstance(std, float) and 0 < std < 1 and isinstance(v, (int, float)) and not 0 <= v <= 1:
+        raise AidaError(f"ค่าขององค์กร '{key}' = {v!r} ใช้ไม่ได้: key นี้เป็นสัดส่วน (ค่ามาตรฐาน AIDA-14 = {std!r}) ระบุเป็น"
+                        f"ทศนิยมระหว่าง 0 ถึง 1 เช่น 0.7 = 70% (ไม่ใช่ 70) แล้วยืนยันอีกครั้ง")
 
 
 def _check_org_values(org, cfg: dict) -> dict:
@@ -3380,6 +3424,7 @@ def _check_org_values(org, cfg: dict) -> dict:
             v = _num_value(v)
             if v is None:
                 raise bad
+            _check_share(k, v, std)
         elif isinstance(std, dict):
             if not isinstance(v, dict) or not set(v) <= set(std):
                 raise bad
@@ -3387,6 +3432,8 @@ def _check_org_values(org, cfg: dict) -> dict:
                  for kk, vv in v.items()}
             if any(x is None for x in v.values()):
                 raise bad
+            for kk, vv in v.items():
+                _check_share(f"{k}.{kk}", vv, std[kk])
         elif isinstance(std, str):
             if not isinstance(v, str):
                 raise bad
@@ -3494,7 +3541,9 @@ def confirm(intake: dict, answers: dict = None, path: str = "intake.json", cfg: 
     answers: roles {col: role} or {table: {col: role}} (a role may be a list: one certified role + custom roles;
     'ไม่ใช้' removes), filters [{column, op, value}], org_values {AIDA-14 KEY: value}, add_risks [risk_id],
     materiality {type ก|ข|ไม่ระบุ, amount, basis}, reviewer, columns {col: meaning}, code_values {table.col: {..}}.
-    Duplicate role targets, unknown roles / columns / keys / risk ids are rejected with a Thai message."""
+    Duplicate role targets, unknown roles / columns / keys / risk ids are rejected with a Thai message.
+    `intake` = the draft dict (inspect(...)["intake"] or the inspect result itself) or the path of intake_draft.json."""
+    intake = _load_draft(intake)
     if not isinstance(intake, dict) or "files" not in intake or "roles" not in intake:
         raise AidaError("intake ไม่ครบ — ส่ง intake ที่ได้จาก inspect(...)['intake']")
     a = dict(answers or {})
@@ -3536,6 +3585,22 @@ def confirm(intake: dict, answers: dict = None, path: str = "intake.json", cfg: 
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(it, fh, ensure_ascii=False, indent=2)
     return it
+
+
+def _load_draft(intake):
+    if isinstance(intake, (str, os.PathLike)):
+        p = str(intake)
+        if not os.path.isfile(p):
+            raise AidaError(f"ไม่พบไฟล์ร่าง intake '{p}' — เรียก inspect(files, brief) ใหม่ (ได้ผลเดิม) แล้ว confirm "
+                            f"ด้วย r['intake'] หรือ r['draft_path']")
+        try:
+            with open(p, encoding="utf-8") as fh:
+                intake = json.load(fh)
+        except json.JSONDecodeError as e:
+            raise AidaError(f"ไฟล์ร่าง intake '{p}' ไม่ใช่ JSON ที่ถูกต้อง ({e.msg}) — เรียก inspect(files, brief) ใหม่") from None
+    if isinstance(intake, dict) and "intake" in intake and "review_th" in intake:
+        intake = intake["intake"]
+    return intake
 
 
 def _load_intake(intake) -> dict:
@@ -3676,9 +3741,14 @@ def run(files, intake, out_dir: str = ".", cfg: dict = None, registry_path: str 
     primary, _ = _split_roles(it["roles"])
     tx_name, tx_roles, _ = _roles_by_table(primary)
     profile_b1, status = prof_profile(tables, cfg_run)
+    status = _status_th(status, tx_roles)
     events.append({"stage": 3, "status": "STOP" if status.startswith("STOP") else "OK", "detail": status,
                    "recipe_id": "PROF-PROFILE"})
     risk_ids = _risk_order(list(it["risks"]["requested"]) + list(it["risks"].get("added", [])))
+    bad_risks = [r for r in risk_ids if r not in RISK_LIBRARY]
+    if bad_risks:  # intake.json may be edited by hand
+        raise AidaError(f"intake: ไม่รู้จักรหัสความเสี่ยง {', '.join(map(str, bad_risks))} ใน Risk Library — เลือกจาก "
+                        f"{', '.join(RISK_LIBRARY)} (ความเสี่ยงที่ไม่มีในคลังใช้โหมดสำรวจ) แล้วแก้ด้วย confirm(...) ใหม่")
     events.append({"stage": 4, "status": "OK", "detail": "ความเสี่ยงที่ยืนยัน: " + (", ".join(risk_ids) or "ไม่มี")
                    + (f"; โหมดสำรวจ: {', '.join(it['risks'].get('exploratory', []))}" if it["risks"].get("exploratory") else "")})
     prof = profile_columns(pre["frames"])
@@ -4168,7 +4238,7 @@ def _review_text(it: dict) -> str:
         L.append(f"ใช้ mapping profile ที่ยืนยันโดย {it['mapping'].get('confirmed_by') or 'ไม่ระบุ'} เมื่อ "
                  f"{it['mapping'].get('confirmed_at') or '-'} — ถามเฉพาะสิ่งที่เปลี่ยน")
     L += [""] + _review_a(it) + [""] + _review_b(it) + [""] + _review_c(it) + [""] + _review_d(it) + [""] + _review_e(it)
-    L += ["", CONFIRM_LINE]
+    L += ["", REVIEWER_LINE, CONFIRM_LINE]
     return "\n".join(L)
 
 
@@ -4213,6 +4283,11 @@ def _review_a(it: dict) -> list:
         if isinstance(jm, dict) and p["table"] == tx_name and _role_list(it["roles"].get(p["table"], {}).get(p["column"])):
             L.append(f"การเชื่อมตาราง: {p['table']}.{p['column']} พบใน {jm['with']} {jm['normalized']:.1f}% ของรหัส "
                      f"(ตรงทุกตัวอักษร {jm['raw']:.1f}%)")
+    prim = _split_roles(it["roles"])[0]
+    if "record_id" not in (_roles_by_table(prim)[1] if prim else {}):
+        cand = [f"{p['table']}.{p['column']}" for p in it["profile"]
+                if p.get("unique_pct") == 100 and not p.get("null_pct")]
+        L.append(f"❓ {NO_RECORD_ID}" + (f" | คอลัมน์ที่ค่าไม่ซ้ำและไม่ว่างทุกแถว: {', '.join(cand)}" if cand else ""))
     for n in it.get("notes", []):
         L.append(f"⚠️ {n}")
     return L
@@ -4306,7 +4381,8 @@ def _review_e(it: dict) -> list:
                  f"ยอด ≤ 0 (ไม่นำไปวิเคราะห์) {p.get('excluded_nonpositive', 0):,} แถว")
     st = it.get("profile_status")
     if st:
-        L.append("ตรวจ record_id และคุณภาพข้อมูล: " + ("ผ่าน" if st == "OK" else st))
+        L.append("ตรวจ record_id และคุณภาพข้อมูล: " + ("ผ่าน" if st == "OK" else
+                 "รอระบุ record_id ในข้อ A" + st[len("REVIEW: " + NO_RECORD_ID):] if st.startswith("REVIEW: ") else st))
     mat = it.get("materiality") or {}
     if mat.get("type") in ("ก", "ข"):
         amt = _num_value(mat.get("amount"))

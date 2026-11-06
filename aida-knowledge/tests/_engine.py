@@ -1,6 +1,8 @@
 """Test loader for the AIDA engine (aida-knowledge/engine/aida_engine.py), imported by path."""
 import importlib.util
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 ENGINE_PATH = Path(__file__).resolve().parent.parent / "engine" / "aida_engine.py"
@@ -14,6 +16,8 @@ def engine():
         mod = importlib.util.module_from_spec(spec)
         sys.modules["aida_engine"] = mod
         spec.loader.exec_module(mod)
+        if hasattr(mod, "DRAFT_FILE"):  # inspect() writes its draft here, not into the tests folder
+            mod.DRAFT_FILE = os.path.join(tempfile.mkdtemp(prefix="aida-draft-"), "intake_draft.json")
         _MOD["m"] = mod
     return _MOD["m"]
 

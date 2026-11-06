@@ -13,16 +13,19 @@ AIDA วิเคราะห์ข้อมูลด้วย engine ไฟล�
 | ขั้น | เรียก | ได้ |
 |---|---|---|
 | 0 | โหลด engine ตาม AIDA-16 | `aida` (ตรวจ `aida.__version__ == "3.0.0"`) |
-| 1 | `r = aida.inspect(files, brief)` (หรือ `mapping=` ข้อ 6) | `r["intake"]` (ร่าง), `r["review_th"]` (ข้อความ Intake Review), `r["changes"]` |
+| 1 | `r = aida.inspect(files, brief)` (หรือ `mapping=` ข้อ 6) | `r["intake"]` (ร่าง), `r["review_th"]` (ข้อความ Intake Review), `r["changes"]`, `r["draft_path"]` (ไฟล์ร่าง `intake_draft.json`) |
 | 2 | แสดง `r["review_th"]` **ทั้งข้อความตามตัวอักษร** แล้วรอผู้ตรวจสอบ | — |
-| 3 | `it = aida.confirm(r["intake"], answers, "intake.json")` | intake ที่ยืนยัน + ไฟล์ `intake.json` (มี `it["intake_path"]`) |
+| 3 | `it = aida.confirm(r["intake"], answers, "intake.json")` (หรือ `aida.confirm("intake_draft.json", answers, "intake.json")`) | intake ที่ยืนยัน + ไฟล์ `intake.json` (มี `it["intake_path"]`) |
 | 4 | `res = aida.run(files, it, "/mnt/data/aida_out")` ในคำตอบเดียวกับข้อ 3 | `res["summary_th"]`, `res["findings"]`, `res["paths"]` (workbook, dashboard, csv_dir), `res["warnings"]` |
 | 5 | แสดง `summary_th`, คำเตือน และลิงก์ไฟล์ output | — |
 
 - `files` = dict `{ชื่อตาราง: ที่อยู่ไฟล์}` เช่น `{"payments": "/mnt/data/payments.csv", "contracts": "/mnt/data/contracts.csv"}` (หรือ list ของที่อยู่ไฟล์; CSV UTF-8 / TIS-620 หรือ XLSX ทุก sheet)
-- `run()`, `data()` และ `trace()` ทำงานจาก `intake.json` + ไฟล์เท่านั้น ถ้าตัวแปรใน Code Interpreter หาย → โหลด engine ใหม่ (AIDA-16) แล้วส่งที่อยู่ `intake.json` แทน dict โดยไม่ถามยืนยันซ้ำ
+- `inspect()` บันทึกร่างไว้ที่ `intake_draft.json` ในโฟลเดอร์ทำงาน (โฟลเดอร์เดียวกับ `intake.json` เช่น `/mnt/data`; กำหนดเองได้ด้วย `draft_path=`) เพื่อเป็นจุดทำต่อก่อนยืนยัน
+- `run()`, `data()` และ `trace()` ทำงานจาก `intake.json` + ไฟล์เท่านั้น ถ้าตัวแปรใน Code Interpreter หาย (`NameError`) → โหลด engine ใหม่ (AIDA-16) โดยไม่ถามผู้ใช้ แล้ว:
+  - **หลังยืนยัน**: ส่งที่อยู่ `intake.json` แทน dict โดยไม่ถามยืนยันซ้ำ
+  - **ก่อนยืนยัน** (ระหว่างรอคำตอบ Intake Review): `aida.confirm("intake_draft.json", answers, "intake.json")` แล้ว `run` ต่อ — หรือเรียก `aida.inspect(files, brief)` เดิมใหม่ (ได้ร่างเดิมทุกตัวเลข) แล้ว confirm
 - `out_dir` ให้อยู่ใต้โฟลเดอร์ที่ Copilot ให้ดาวน์โหลดได้ เช่น `/mnt/data/aida_out` (ใช้ซ้ำกับ `trace`) แล้วส่งลิงก์ไฟล์จาก `res["paths"]`; `intake.json` ไว้ที่ `/mnt/data` ได้เช่นกัน
-- `profile_status` อยู่ที่ `r["intake"]["profile_status"]` และแสดงในข้อ E ของ `review_th`
+- `profile_status` อยู่ที่ `r["intake"]["profile_status"]` และแสดงในข้อ E ของ `review_th`: `OK`, `STOP: …` (ปัญหาข้อมูลของคอลัมน์ที่เสนอเป็น record_id เช่น ค่าซ้ำหรือว่าง — ข้อความระบุบทบาทและชื่อคอลัมน์ตามไฟล์) หรือ `REVIEW: ยังไม่มีคอลัมน์ที่เป็น record_id …` (ไม่ใช่ STOP — ข้อ A มี ❓ ให้ผู้ตรวจสอบระบุคอลัมน์รหัสรายการ แล้ว confirm ด้วย `roles`)
 - ไฟล์เกิน 80,000 รายการ → แนะนำให้แบ่งไฟล์ตามเดือน (ขนาดที่ทดสอบแล้ว)
 
 ### รูปแบบ brief (AIDA แยกจากข้อความอิสระของผู้ตรวจสอบ)
@@ -47,12 +50,13 @@ brief = {
 | D. ความเสี่ยงที่แนะนำเพิ่ม | ความเสี่ยงในคลังที่ข้อมูลรองรับแต่ยังไม่ได้ขอ + ตัวเลขเบื้องต้นจาก engine | เลือกเพิ่ม (ไม่ตอบ = ไม่เพิ่ม) |
 | E. วันที่ / คุณภาพข้อมูล / Materiality / แผน Run-Skip | รูปแบบวันที่ที่แปลง (รวม พ.ศ.), แถวที่แปลงไม่ได้, ผลตรวจ record_id, Materiality, การ์ดที่ Run / Skip พร้อมเหตุผล | ระบุ Materiality ก./ข./ไม่ระบุ |
 
-ปิดท้ายด้วย "ยืนยันทั้งหมด หรือแก้เฉพาะข้อ ⚠️ ❓ D แล้วเริ่มวิเคราะห์" — ถ้า `profile_status` ขึ้นต้นด้วย STOP (เช่น ไม่มี record_id หรือซ้ำ) ให้แจ้งเหตุผลและสิ่งที่ต้องแก้ แล้วหยุด (AIDA-02)
+ปิดท้ายด้วยบรรทัดขอชื่อผู้ยืนยัน (ไม่บังคับ) และ "ยืนยันทั้งหมด หรือแก้เฉพาะข้อ ⚠️ ❓ D แล้วเริ่มวิเคราะห์" — ถ้า `profile_status` ขึ้นต้นด้วย STOP (เช่น record_id ซ้ำหรือว่าง) ให้แจ้งเหตุผลและสิ่งที่ต้องแก้ แล้วหยุด (AIDA-02); ถ้ายังไม่มีคอลัมน์ที่เป็น record_id (❓ ในข้อ A) ไม่ใช่ STOP → ถามผู้ตรวจสอบว่าคอลัมน์ใดเป็นรหัสรายการ
 
 ## 3. กติกาการยืนยัน
 - คำยอมรับ เช่น "ยืนยัน", "ตกลง", "ok", "ไปต่อ" **หรือการแก้ค่าใด ๆ** = ยืนยันแล้ว → เรียก `confirm` แล้ว `run` **ทันทีในคำตอบนั้น** ไม่ถามซ้ำ
 - ไม่ระบุ Materiality → `{"type": "ไม่ระบุ"}` (Materiality = "ไม่ได้ประเมิน", Priority = Confidence) และแจ้งในคำตอบ
 - ไม่ตอบข้อ D → ไม่เพิ่มความเสี่ยง (`add_risks` ว่าง) — ห้ามเพิ่มเอง
+- ผู้ใช้บอกชื่อ → ใส่ `answers["reviewer"]` = ชื่อผู้ตรวจสอบที่ยืนยัน (บันทึกใน Intake_Review และ Data_Dictionary); ถามได้พร้อมบรรทัดปิดท้าย Intake Review แต่ **ไม่รอและไม่บังคับ** — ไม่ระบุ = "ไม่ระบุ"
 - ผู้ใช้ขอให้ข้ามการยืนยันทั้งหมด → แสดง Intake Review ก่อนเสมอ (Human Accountable) แต่คำตอบสั้น ๆ อย่าง "ตกลง" ก็พอให้วิเคราะห์ต่อ
 
 ### รูปแบบ answers ของ `confirm`
@@ -60,7 +64,7 @@ brief = {
 answers = {
   "roles": {"คอลัมน์": "บทบาท"} หรือ {"ตาราง": {"คอลัมน์": "บทบาท"}},   # เฉพาะที่แก้; "ไม่ใช้" = ไม่นำเข้า; custom:<ชื่อ>; list = บทบาทรับรอง 1 + custom
   "filters": [{"column": "คอลัมน์", "op": "== != in not in > >= < <= between", "value": ค่า}],
-  "org_values": {"KEY ตาม AIDA-14": ค่า},       # ค่าขององค์กร ใช้เฉพาะ run นี้ ติดป้าย "ค่าขององค์กร"
+  "org_values": {"KEY ตาม AIDA-14": ค่า},       # ค่าขององค์กร ใช้เฉพาะ run นี้ ติดป้าย "ค่าขององค์กร"; สัดส่วนเป็นทศนิยม (0.7 = 70%)
   "add_risks": ["รหัสความเสี่ยงจากข้อ D ที่ผู้ตรวจสอบเลือก"],
   "materiality": {"type": "ก" | "ข" | "ไม่ระบุ", "amount": ฐานเป็นตัวเลข, "basis": "คำอธิบาย"},
   "reviewer": "ชื่อผู้ตรวจสอบที่ยืนยัน",
@@ -72,6 +76,7 @@ answers = {
 - **`filters` แทนที่ตัวกรองทั้งชุด** — ถ้าส่ง ให้ใส่ตัวกรองที่ engine เสนอไว้ในข้อ C (เช่น `status != C`) รวมกับตัวกรองใหม่ด้วย
 - เงื่อนไขที่ไม่ใช่ "คอลัมน์ = ค่า" (ช่วงวันที่, มากกว่า/น้อยกว่า, หลายค่า) engine แปลงไม่ได้และแสดงเป็น ❓ ในข้อ C → AIDA ส่งเป็นตัวกรองเอง เช่น "ดูเฉพาะ 1 ม.ค. – 31 ส.ค. 2026" → `{"column": "pay_date", "op": "between", "value": ["2026-01-01", "2026-08-31"]}`; "ยอดตั้งแต่ 1,000" → `{"column": "amount", "op": ">=", "value": 1000}` (คอลัมน์ต้องเป็นชื่อตามไฟล์)
 - ค่า materiality "ข." ให้ใส่ฐานที่คำนวณแล้วโดยผู้ตรวจสอบเป็น `amount` — AIDA ไม่คำนวณฐานเอง
+- `org_values` ที่เป็นสัดส่วน/ร้อยละ (ค่ามาตรฐานใน AIDA-14 เป็นทศนิยมระหว่าง 0 ถึง 1 เช่น `DUE.MIN_SHARE`, `CONC.SINGLE_ENTITY_SHARE`) ใส่เป็นทศนิยม: 0.7 = 70% — ค่ามากกว่า 1 (เช่น 70) ถูกปฏิเสธเป็นภาษาไทย
 
 ## 4. การอ่านผลและการรวม Finding ของข้อมูล C / A
 - `entity_type` ใช้ชื่อตามประเภทข้อมูล: A → vendor / document / user, C → borrower / payer / contract

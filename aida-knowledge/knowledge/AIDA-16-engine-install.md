@@ -53,7 +53,9 @@ exec(compile(open(path, encoding="utf-8").read(), path, "exec"), aida.__dict__)
 ```
 
 ## 3. ตัวแปรหายระหว่างข้อความ
-ถ้าเรียก `aida.` แล้วได้ `NameError` (Code Interpreter ไม่จำตัวแปรข้ามข้อความ) → รันขั้นตอนข้อ 2 ใหม่โดยไม่ถามผู้ใช้ แล้วเรียกต่อจาก `intake.json` (`run`, `data`, `trace` อ่านจาก intake ที่ยืนยันแล้ว ไม่ต้องยืนยันซ้ำ — AIDA-19)
+ถ้าเรียก `aida.` แล้วได้ `NameError` (Code Interpreter ไม่จำตัวแปรข้ามข้อความ) → รันขั้นตอนข้อ 2 ใหม่โดยไม่ถามผู้ใช้ แล้วเรียกต่อ:
+- หลังยืนยันแล้ว: จาก `intake.json` (`run`, `data`, `trace` อ่านจาก intake ที่ยืนยันแล้ว ไม่ต้องยืนยันซ้ำ — AIDA-19)
+- ก่อนยืนยัน: จากร่าง `intake_draft.json` ที่ `inspect` บันทึกไว้ในโฟลเดอร์ทำงานเดียวกับ `intake.json` → `aida.confirm("intake_draft.json", answers, "intake.json")` (หรือเรียก `inspect` เดิมใหม่ ได้ผลเดิม)
 
 ## 4. ถ้าโหลดไม่ได้ — สิ่งที่ต้องบอกผู้ใช้
 | อาการ | บอกผู้ใช้ว่า |
