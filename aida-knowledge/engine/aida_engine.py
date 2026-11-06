@@ -1858,3 +1858,418 @@ def detect_dataset_type(profile: pd.DataFrame):
     if {"entity", "counterparty", "date", "amount"} <= roles:
         return "E"
     return None
+
+
+# ---- certified checks on role columns (spec 4.2) and the CHECKS registry ----
+# New checks read the internal columns the role adapter produces (ROLE_TO_INTERNAL), take every threshold from
+# `cfg` and return the Evidence schema plus `roles_used` (the roles the check actually read).
+STD_NOTE = "ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร"
+ROLE_TEXT = {"record_id": "เลขที่รายการ", "date": "วันที่ของรายการ", "amount": "จำนวนเงิน",
+             "entity": "entity เจ้าของรายการ", "counterparty": "คู่ค้า/ผู้รับ", "contract": "เลขที่สัญญา",
+             "category": "หมวด", "channel": "ช่องทาง", "created_by": "ผู้บันทึก", "approved_by": "ผู้อนุมัติ",
+             "document_no": "เลขที่เอกสาร", "limit": "วงเงินอนุมัติ", "due_date": "วันครบกำหนด",
+             "opened_at": "วันที่เปิดบัญชี"}
+
+
+def _col(role: str) -> str:
+    return ROLE_TO_INTERNAL.get(role, role)
+
+
+def _has(tx: pd.DataFrame, role: str) -> bool:
+    c = _col(role)
+    return c in tx.columns and bool(tx[c].notna().any())
+
+
+def _text(tx: pd.DataFrame, role: str) -> pd.Series:
+    """The role's column as stripped text, "" for a missing value."""
+    return tx[_col(role)].where(tx[_col(role)].notna(), "").astype(str).str.strip()
+
+
+def _gen_tx(tables: dict) -> pd.DataFrame:
+    """Transactions of the role frame with a parsed date (ts), a positive numeric amount, text ids and
+    `period` (YYYY-MM), in date order. Unlike clean_tx it does not drop entity == counterparty rows
+    (a borrower paying their own loan is normal data) and does not need every role."""
+    t = tables["transactions"].copy()
+    t["ts"] = pd.to_datetime(t["ts"], errors="coerce")
+    t["tx_id"] = t["tx_id"].astype(str)
+    keep = t["ts"].notna()
+    if "amount" in t.columns:
+        t["amount"] = pd.to_numeric(t["amount"], errors="coerce")
+        keep &= t["amount"] > 0
+    t = t[keep]
+    return t.assign(period=t["ts"].dt.strftime("%Y-%m")).sort_values("ts", kind="mergesort")
+
+
+def _finish(recipe_id: str, family: str, risk: str, key: str, found: list, cfg: dict, roles: list,
+            merge: bool = False) -> pd.DataFrame:
+    """Evidence rows from a list of dicts (entity_type, entity_id, period, metric, value, threshold,
+    explanation, record_refs) + a roles_used column."""
+    f = pd.DataFrame(found, columns=["entity_type", "entity_id", "period", "metric", "value", "threshold",
+                                     "explanation", "record_refs"])
+    if merge and len(f):
+        f = one_per_month(f)
+    ev = evidence_rows(recipe_id, "1.0", family, risk, key, f, cfg)
+    return ev.assign(roles_used=[list(roles) for _ in range(len(ev))])
+
+
+def _chain_ids(day: pd.Series, groups: list, window: float) -> pd.Series:
+    """Cluster id per row: rows of one group (rows sorted by date) whose day gap to the previous row of the
+    group is <= window days stay in the same cluster."""
+    gap = day.groupby(groups, sort=False).diff().dt.days
+    new = ~(gap <= window)
+    return new.astype(int).groupby(groups, sort=False).cumsum()
+
+
+def _ids_text(ids: list, n: int = 5) -> str:
+    return ", ".join(ids[:n]) + (f" และอีก {len(ids) - n} รายการ" if len(ids) > n else "")
+
+
+# ---- GEN-CONC ----
+def gen_conc(tables: dict, cfg: dict) -> pd.DataFrame:
+    t = _gen_tx(tables)
+    thr, topn, h = cfg["CONC.SINGLE_ENTITY_SHARE"], cfg["CONC.TOPN"], cfg["CONC.HHI"]
+    dims = [("entity", "entity", "entity")]
+    if _has(t, "counterparty"):
+        dims.append(("counterparty", "counterparty", "คู่ค้า (counterparty)"))
+    found = []
+    for role, etype, label in dims:
+        d = t[t[_col(role)].notna()]
+        g = d.groupby(_col(role))["amount"].sum()
+        if len(g) == 0 or len(g) * thr <= 1:
+            continue  # with so few parties an equal split already reaches the threshold
+        share = g / g.sum()
+        hhi = float(((share * 100) ** 2).sum())
+        level = "ต่ำ" if hhi < h["low"] else "ปานกลาง" if hhi <= h["high"] else "สูง"
+        for ent in share[share >= thr].index:
+            e = d[d[_col(role)] == ent]
+            top = e.sort_values("amount", ascending=False, kind="mergesort").head(topn)
+            found.append({
+                "entity_type": etype, "entity_id": str(ent), "period": e["period"].max(),
+                "metric": "amount_share", "value": round(float(share[ent]), 4), "threshold": thr,
+                "explanation": (f"{label} {ent} มียอดรวม {g[ent]:,.2f} คิดเป็น {share[ent]:.1%} ของยอดรวมทั้งชุด "
+                                f"({len(e):,} รายการ) ตั้งแต่ CONC.SINGLE_ENTITY_SHARE {thr:.0%} ขึ้นไป; HHI ของทั้งชุด "
+                                f"{hhi:,.0f} ระดับ{level} (CONC.HHI; {STD_NOTE}) — สอดคล้องกับ pattern การกระจุกตัว "
+                                f"ควรตรวจสอบเพิ่มเติม (รายการอ้างอิงคือ {len(top)} ยอดสูงสุดตาม CONC.TOPN)"),
+                "record_refs": list(top["tx_id"])})
+    roles = ["record_id", "date", "amount", "entity"] + (["counterparty"] if len(dims) > 1 else [])
+    return _finish("GEN-CONC", "5.2 Concentration", "A-R4", "CONC.SINGLE_ENTITY_SHARE", found, cfg, roles)
+
+
+# ---- GEN-PERIOD-END ----
+def gen_period_end(tables: dict, cfg: dict) -> pd.DataFrame:
+    t = _gen_tx(tables)
+    w, k, share = cfg["TEMP.PERIOD_END.WINDOW"], cfg["TEMP.PERIOD_END.MIN_TX"], cfg["TEMP.PERIOD_END.MIN_SHARE"]
+    t = t[t[_col("entity")].notna()]
+    day = t["ts"].dt.normalize()
+    d64 = day.values.astype("datetime64[D]")
+    end = day.dt.to_period("M").dt.end_time.dt.normalize().values.astype("datetime64[D]")
+    before = np.is_busday(d64) & (np.busday_count(d64 + ONE_DAY, end + ONE_DAY) < w["before_business_days"])
+    after = (day.dt.day <= w["after_days"]).values
+    prev = (day.dt.to_period("M") - 1).astype(str)
+    t = t.assign(w_period=np.where(before, t["period"], np.where(after, prev, "")), w=before | after)
+    ent = _col("entity")
+    month_n = t.groupby([ent, "period"]).size()
+    win = t[t["w"]].groupby([ent, "w_period"]).agg(n=("tx_id", "size"), refs=("tx_id", list))
+    after_n = t[after & ~before].groupby([ent, "w_period"]).size()
+    found = []
+    for (a, p), r in win.iterrows():
+        total = int(month_n.get((a, p), 0)) + int(after_n.get((a, p), 0))
+        if r["n"] >= k and total and r["n"] / total >= share:
+            found.append({
+                "entity_type": "entity", "entity_id": str(a), "period": p, "metric": "period_end_share",
+                "value": round(r["n"] / total, 4), "threshold": share,
+                "explanation": (f"งวด {p} มี {r['n']} จาก {total} รายการ ({r['n'] / total:.0%}) ของ entity {a} อยู่ในช่วงสิ้นงวด "
+                                f"({w['before_business_days']} วันทำการสุดท้ายของงวด + {w['after_days']} วันแรกของงวดถัดไป; "
+                                f"TEMP.PERIOD_END.WINDOW) ครบทั้ง TEMP.PERIOD_END.MIN_TX ≥ {k} รายการ และ "
+                                f"TEMP.PERIOD_END.MIN_SHARE ≥ {share:.0%} ({STD_NOTE}) — สอดคล้องกับ pattern "
+                                f"กิจกรรมกระจุกช่วงสิ้นงวด ควรตรวจสอบเพิ่มเติม"),
+                "record_refs": r["refs"]})
+    return _finish("GEN-PERIOD-END", "5.4 Temporal", "G-R2", "TEMP.PERIOD_END.WINDOW", found, cfg,
+                   ["record_id", "date", "amount", "entity"])
+
+
+# ---- DUP-PAY ----
+def dup_pay(tables: dict, cfg: dict) -> pd.DataFrame:
+    t = _gen_tx(tables)
+    win = cfg["DUP.WINDOW_DAYS"]
+    t = t[t[_col("entity")].notna()].copy()
+    has_cp, has_doc = _has(t, "counterparty"), _has(t, "document_no")
+    use_contract = _has(t, "contract") and not has_doc  # loan style data: the contract is the reported unit
+    t["_e"], t["_a"] = _text(t, "entity"), t["amount"].round(2)
+    keys = ["_e", "_a"]
+    if has_cp:
+        t["_c"] = _text(t, "counterparty")
+        keys.append("_c")
+    if has_doc:
+        t["_n"] = _text(t, "document_no")
+        keys.append("_n")
+    t["_day"] = t["ts"].dt.normalize()
+    t["_cl"] = _chain_ids(t["_day"], [t[k] for k in keys], win)
+    t["_u"] = _text(t, "contract") if use_contract else t["_e"]
+    found = []
+    for _, g in t.groupby(keys + ["_cl"], sort=False):
+        if len(g) < 2:
+            continue
+        ids, span = list(g["tx_id"]), (g["_day"].max() - g["_day"].min()).days
+        doc = f" เลขที่เอกสาร {g['_n'].iloc[0]}" if has_doc else ""
+        unit = "สัญญา" if use_contract else "entity"
+        found.append({
+            "entity_type": "contract" if use_contract else "entity", "entity_id": g["_u"].iloc[0],
+            "period": g["period"].iloc[-1], "metric": "duplicate_payment_count", "value": len(g), "threshold": win,
+            "explanation": (f"{unit} {g['_u'].iloc[0]} มีรายการยอด {g['amount'].iloc[0]:,.2f} เท่ากัน {len(g)} รายการ"
+                            f"{doc} ห่างกัน {span} วัน ({_ids_text(ids)}) ภายใน DUP.WINDOW_DAYS {win} วัน ({STD_NOTE}) — "
+                            f"สอดคล้องกับ pattern การจ่าย/ชำระซ้ำ ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": ids})
+    roles = ["record_id", "date", "amount", "entity"] + (["counterparty"] if has_cp else []) \
+        + (["document_no"] if has_doc else []) + (["contract"] if use_contract else [])
+    return _finish("DUP-PAY", "5.6 Forensic", "C-R3" if use_contract else "A-R1", "DUP.WINDOW_DAYS", found, cfg,
+                   roles, merge=True)
+
+
+# ---- SPLIT-LIMIT ----
+def split_limit(tables: dict, cfg: dict) -> pd.DataFrame:
+    t = _gen_tx(tables)
+    win, k, band = cfg["SPLIT.WINDOW_DAYS"], cfg["SPLIT.MIN_TX"], cfg["FOR.THRESHOLD_AVOID.BAND"]
+    t = t[t[_col("entity")].notna()].copy()
+    t["_lim"] = pd.to_numeric(t["limit"], errors="coerce")
+    ratio = t["amount"] / t["_lim"]
+    t = t[(t["_lim"] > 0) & (ratio >= band["low"]) & (ratio <= band["high"])].copy()
+    has_cp = _has(t, "counterparty")
+    t["_e"] = _text(t, "entity")
+    keys = ["_e"] + (["_c"] if has_cp else []) + ["_lim"]
+    if has_cp:
+        t["_c"] = _text(t, "counterparty")
+    t["_day"] = t["ts"].dt.normalize()
+    found = []
+    if len(t):
+        t["_cl"] = _chain_ids(t["_day"], [t[c] for c in keys], win)
+        for _, g in t.groupby(keys + ["_cl"], sort=False):
+            lim, total = float(g["_lim"].iloc[0]), float(g["amount"].sum())
+            if len(g) < k or total <= lim:
+                continue
+            ids = list(g["tx_id"])
+            found.append({
+                "entity_type": "entity", "entity_id": g["_e"].iloc[0], "period": g["period"].iloc[-1],
+                "metric": "split_total", "value": round(total, 2), "threshold": lim,
+                "explanation": (f"entity {g['_e'].iloc[0]} มี {len(g)} รายการ ({_ids_text(ids)}) ภายใน SPLIT.WINDOW_DAYS "
+                                f"{win} วัน ซึ่งแต่ละรายการอยู่ที่ {band['low']:.0%}–{band['high']:.2%} ของวงเงิน {lim:,.2f} "
+                                f"(FOR.THRESHOLD_AVOID.BAND) แต่รวมกัน {total:,.2f} เกินวงเงิน และมีอย่างน้อย SPLIT.MIN_TX "
+                                f"{k} รายการ ({STD_NOTE}) — สอดคล้องกับ pattern การแบ่งรายการต่ำกว่าวงเงิน ควรตรวจสอบเพิ่มเติม"),
+                "record_refs": ids})
+    return _finish("SPLIT-LIMIT", "5.6 Forensic", "A-R2", "SPLIT.WINDOW_DAYS", found, cfg,
+                   ["record_id", "date", "amount", "entity", "limit"] + (["counterparty"] if has_cp else []),
+                   merge=True)
+
+
+# ---- FOR-BENFORD ----
+ONE_DAY = np.timedelta64(1, "D")
+BENFORD_EXPECTED = np.log10(1 + 1 / np.arange(1, 10))
+
+
+def _first_digits(a: pd.Series) -> np.ndarray:
+    return np.array([int(f"{x:.10e}"[0]) for x in a])
+
+
+def for_benford(tables: dict, cfg: dict) -> pd.DataFrame:
+    t = _gen_tx(tables)
+    n_min, lim = cfg["FOR.BENFORD.MIN_N"], cfg["FOR.BENFORD.MAD_1ST"]
+    t = t[t[_col("entity")].notna() & (t["amount"] >= 10)]
+    found = []
+    for ent, g in t.groupby(_col("entity")):
+        if len(g) < n_min:
+            continue
+        dg = _first_digits(g["amount"])
+        obs = np.bincount(dg, minlength=10)[1:10] / len(g)
+        mad = float(np.abs(obs - BENFORD_EXPECTED).mean())
+        if mad <= lim["marginal"]:
+            continue
+        worst = int(np.argmax(obs - BENFORD_EXPECTED)) + 1
+        found.append({
+            "entity_type": "entity", "entity_id": str(ent), "period": g["period"].max(),
+            "metric": "benford_mad_1st", "value": round(mad, 4), "threshold": lim["marginal"],
+            "explanation": (f"entity {ent} มี {len(g):,} รายการยอดตั้งแต่ 10 (≥ FOR.BENFORD.MIN_N {n_min:,}) "
+                            f"MAD หลักแรก {mad:.4f} สูงกว่า {lim['marginal']} (ระดับไม่สอดคล้อง; FOR.BENFORD.MAD_1ST "
+                            f"{STD_NOTE}) หลักที่เบี่ยงมากที่สุดคือ {worst} (พบ {obs[worst - 1]:.1%} คาด "
+                            f"{BENFORD_EXPECTED[worst - 1]:.1%}) — สอดคล้องกับ pattern ตัวเลขผิดธรรมชาติ ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": list(g["tx_id"][dg == worst])})
+    return _finish("FOR-BENFORD", "5.6 Forensic", "G-R4", "FOR.BENFORD.MIN_N", found, cfg,
+                   ["record_id", "date", "amount", "entity"])
+
+
+# ---- FOR-ROUND ----
+def for_round(tables: dict, cfg: dict) -> pd.DataFrame:
+    t = _gen_tx(tables)
+    unit, share, n_min = cfg["FOR.ROUND.UNIT"], cfg["FOR.ROUND.MIN_SHARE"], cfg["GATE.SAMPLE.MIN"]
+    t = t[t[_col("entity")].notna()].copy()
+    t["_r"] = np.round(t["amount"] * 100).astype("int64") % int(round(unit * 100)) == 0
+    found = []
+    for ent, g in t.groupby(_col("entity")):
+        k = int(g["_r"].sum())
+        if len(g) < n_min or k == 0 or k / len(g) < share:
+            continue
+        r = g[g["_r"]]
+        found.append({
+            "entity_type": "entity", "entity_id": str(ent), "period": r["period"].max(),
+            "metric": "round_amount_share", "value": round(k / len(g), 4), "threshold": share,
+            "explanation": (f"entity {ent} มี {k} จาก {len(g)} รายการ ({k / len(g):.0%}) เป็นยอดกลมที่หารด้วย "
+                            f"FOR.ROUND.UNIT {unit:,.0f} ลงตัว สูงกว่า FOR.ROUND.MIN_SHARE {share:.0%} และมีรายการไม่น้อยกว่า "
+                            f"GATE.SAMPLE.MIN {n_min} ({STD_NOTE}) — สอดคล้องกับ pattern ตัวเลขผิดธรรมชาติ ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": list(r["tx_id"])})
+    return _finish("FOR-ROUND", "5.6 Forensic", "G-R4", "FOR.ROUND.UNIT", found, cfg,
+                   ["record_id", "date", "amount", "entity"])
+
+
+# ---- FOR-REPEAT ----
+def for_repeat(tables: dict, cfg: dict) -> pd.DataFrame:
+    t = _gen_tx(tables)
+    need = cfg["FOR.REPEAT.MIN_COUNT"]
+    t = t[t[_col("entity")].notna()].assign(_a=lambda d: d["amount"].round(2))
+    found = []
+    for (ent, amt, p), g in t.groupby([_col("entity"), "_a", "period"], sort=False):
+        if len(g) < need:
+            continue  # same entity, same amount, same period: a monthly instalment never repeats within one period
+        found.append({
+            "entity_type": "entity", "entity_id": str(ent), "period": p, "metric": "same_amount_count",
+            "value": len(g), "threshold": need,
+            "explanation": (f"entity {ent} มียอด {amt:,.2f} เท่ากัน {len(g)} รายการในงวด {p} ({_ids_text(list(g['tx_id']))}) "
+                            f"ตั้งแต่ FOR.REPEAT.MIN_COUNT {need} ครั้งในงวดเดียวกัน ({STD_NOTE}) — สอดคล้องกับ pattern "
+                            f"ตัวเลขผิดธรรมชาติ ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": list(g["tx_id"])})
+    return _finish("FOR-REPEAT", "5.6 Forensic", "G-R4", "FOR.REPEAT.MIN_COUNT", found, cfg,
+                   ["record_id", "date", "amount", "entity"], merge=True)
+
+
+# ---- SOD-SAME-USER ----
+def sod_same_user(tables: dict, cfg: dict) -> pd.DataFrame:
+    t = _gen_tx(tables)
+    c, a = _text(t, "created_by"), _text(t, "approved_by")
+    same = t[(c != "") & (c == a)].assign(_u=c)
+    found = []
+    for (u, p), g in same.groupby(["_u", "period"], sort=False):
+        found.append({
+            "entity_type": "user", "entity_id": u, "period": p, "metric": "same_user_count", "value": len(g),
+            "threshold": 1,
+            "explanation": (f"ผู้ใช้ {u} เป็นทั้งผู้บันทึกและผู้อนุมัติของ {len(g)} รายการในงวด {p} "
+                            f"({_ids_text(list(g['tx_id']))}) — สอดคล้องกับ pattern การไม่แยกหน้าที่ ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": list(g["tx_id"])})
+    return _finish("SOD-SAME-USER", "5.7 Rule-Based", "A-R3", "SOD.SAME_USER", found, cfg,
+                   ["record_id", "date", "created_by", "approved_by"])
+
+
+# ---- DUE-NEAR ----
+def due_near(tables: dict, cfg: dict) -> pd.DataFrame:
+    t = _gen_tx(tables)
+    near_d, share, n_min = cfg["DUE.NEAR_DAYS"], cfg["DUE.MIN_SHARE"], cfg["DUE.MIN_PERIODS"]
+    t = t.assign(_due=pd.to_datetime(t["due_date"], errors="coerce").dt.normalize())
+    t = t[t["contract"].notna() & t["_due"].notna()]
+    t = t.assign(_dp=t["_due"].dt.strftime("%Y-%m"),
+                 _days=(t["_due"] - t["ts"].dt.normalize()).dt.days)
+    first = t.drop_duplicates(["contract", "_dp"])  # the first payment of each contract and due period
+    found = []
+    for con, g in first.groupby("contract"):
+        near = g[(g["_days"] >= 0) & (g["_days"] <= near_d)]
+        if len(g) < n_min or len(near) / len(g) < share:
+            continue
+        found.append({
+            "entity_type": "contract", "entity_id": str(con), "period": g["_dp"].max(), "metric": "near_due_share",
+            "value": round(len(near) / len(g), 4), "threshold": share,
+            "explanation": (f"สัญญา {con} ชำระก่อนวันครบกำหนด 0–{near_d} วัน (DUE.NEAR_DAYS) ใน {len(near)} จาก "
+                            f"{len(g)} งวด ({len(near) / len(g):.0%}) ครบทั้ง DUE.MIN_SHARE ≥ {share:.0%} และ "
+                            f"DUE.MIN_PERIODS ≥ {n_min} งวด ({STD_NOTE}) — สอดคล้องกับ pattern ชำระใกล้วันครบกำหนดซ้ำ ๆ "
+                            f"ซึ่งอาจเกี่ยวกับการจัดสถานะค้างชำระ ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": list(near["tx_id"])})
+    return _finish("DUE-NEAR", "5.4 Temporal", "C-R2", "DUE.NEAR_DAYS", found, cfg,
+                   ["record_id", "date", "contract", "due_date"], merge=True)
+
+
+# ---- PAYER-MULTI ----
+def payer_multi(tables: dict, cfg: dict) -> pd.DataFrame:
+    t = _gen_tx(tables)
+    need = cfg["PAYER.MIN_CONTRACTS"]
+    t = t[t["to_acct"].notna() & t["from_acct"].notna() & t["contract"].notna()]
+    t = t[t["to_acct"].astype(str) != t["from_acct"].astype(str)]
+    found = []
+    for payer, g in t.groupby("to_acct"):
+        cons = sorted(g["contract"].astype(str).unique())
+        if len(cons) < need:
+            continue
+        found.append({
+            "entity_type": "counterparty", "entity_id": str(payer), "period": g["period"].max(),
+            "metric": "distinct_contracts", "value": len(cons), "threshold": need,
+            "explanation": (f"ผู้ชำระ {payer} ชำระ {len(cons)} สัญญาที่ต่างกัน ({_ids_text(cons)}) ซึ่ง entity ของสัญญาไม่ใช่ผู้ชำระ "
+                            f"ตั้งแต่ PAYER.MIN_CONTRACTS {need} สัญญา ({STD_NOTE}) — สอดคล้องกับ pattern ผู้ชำระคนเดียวหลายสัญญา "
+                            f"ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": list(g["tx_id"])})
+    return _finish("PAYER-MULTI", "5.3 Behavioral", "C-R1", "PAYER.MIN_CONTRACTS", found, cfg,
+                   ["record_id", "date", "entity", "counterparty", "contract"])
+
+
+# ---- CHECKS registry ----
+B1_ROLES = ["record_id", "date", "entity", "counterparty", "amount"]  # the five columns every B1 card needs
+
+
+def _spec(func, risk, family, requires, registry, types, optional=(), alt=()):
+    return {"func": func, "risk": risk, "risk_alt": list(alt), "skill_family": family, "requires": list(requires),
+            "optional": list(optional), "registry": list(registry), "data_types": list(types)}
+
+
+_GEN = ["record_id", "date", "amount", "entity"]
+_ALL = ["E", "C", "A"]
+CHECKS = {
+    # migrated B1 cards (data type E; the general risks apply to any data type)
+    "STAT-MAD": _spec(stat_mad, "R1", "5.1 Statistical", B1_ROLES, ["STAT.MAD.THRESHOLD", "GATE.SAMPLE.MIN"], ["E"],
+                      ["channel"], ["G-R1"]),
+    "BEH-VELOCITY": _spec(beh_velocity, "R1", "5.3 Behavioral", B1_ROLES,
+                          ["BEH.DEVIATION", "BEH.BASELINE.MIN_PERIODS", "BEH.VELOCITY.SD_FLOOR"], ["E"], [], ["G-R1"]),
+    "BEH-SPIKE": _spec(beh_spike, "R1", "5.3 Behavioral", B1_ROLES, ["BEH.DEVIATION", "BEH.BASELINE.MIN_PERIODS"],
+                       ["E"], [], ["G-R1"]),
+    "TEMP-OFFHOURS": _spec(temp_offhours, "R1", "5.4 Temporal", B1_ROLES,
+                           ["TEMP.OFF_HOURS", "TEMP.OFF_HOURS.MIN_TX", "TEMP.OFF_HOURS.MIN_SHARE"], ["E"], [], ["G-R3"]),
+    "NET-CYCLE": _spec(net_cycle, "R1", "5.9 Network", B1_ROLES, ["NET.CYCLE", "NET.CYCLE.MAX_PATHS"], ["E"]),
+    "NET-FUNNEL": _spec(net_funnel, "R1", "5.9 Network", B1_ROLES, ["NET.FUNNEL"], ["E"]),
+    "MULE-DWELL": _spec(mule_dwell, "R1", "5.4 Temporal", B1_ROLES, ["MULE.DWELL_HOURS", "MULE.DWELL_MIN_PAIRS"], ["E"]),
+    "MULE-NEW-ACCT": _spec(mule_new_acct, "R1", "5.7 Rule-Based", B1_ROLES,
+                           ["MULE.NEW_ACCT_DAYS", "MULE.NEW_ACCT_MIN_TX"], ["E"], ["opened_at"]),
+    "MULE-PATTERN": _spec(mule_pattern, "R2", "5.10 Hybrid", B1_ROLES, ["MULE.MIN_SIGNALS"], ["E"]),
+    "MULE-CROSS-TX": _spec(mule_cross_tx, "R3", "5.9 Network", B1_ROLES, ["MULE.CROSS.MIN_LINKS", "FLOW.WINDOW_DAYS"], ["E"]),
+    "MULE-NETWORK": _spec(mule_network, "R3", "5.9 Network", B1_ROLES, ["MULE.NETWORK.MIN_SIZE"], ["E"]),
+    "CPTY-PROFILE": _spec(cpty_profile, "R4", "5.3 Behavioral", B1_ROLES,
+                          ["CPTY.NEW_RATIO", "BEH.BASELINE.MIN_PERIODS"], ["E"]),
+    "CPTY-NEW-LARGE": _spec(cpty_new_large, "R4", "5.3 Behavioral", B1_ROLES, ["CPTY.NEW_LARGE.MULTIPLIER"], ["E"]),
+    "FLOW-LAYERING": _spec(flow_layering, "R1", "5.9 Network", B1_ROLES, ["FLOW.MIN_PASS_RATIO", "FLOW.WINDOW_DAYS"], ["E"]),
+    # C1 checks on role columns
+    "GEN-CONC": _spec(gen_conc, "A-R4", "5.2 Concentration", _GEN,
+                      ["CONC.SINGLE_ENTITY_SHARE", "CONC.HHI", "CONC.TOPN"], _ALL, ["counterparty"]),
+    "GEN-PERIOD-END": _spec(gen_period_end, "G-R2", "5.4 Temporal", _GEN,
+                            ["TEMP.PERIOD_END.WINDOW", "TEMP.PERIOD_END.MIN_TX", "TEMP.PERIOD_END.MIN_SHARE"], _ALL),
+    "DUP-PAY": _spec(dup_pay, "A-R1", "5.6 Forensic", _GEN, ["DUP.WINDOW_DAYS"], ["C", "A"],
+                     ["counterparty", "document_no", "contract"], ["C-R3"]),
+    "SPLIT-LIMIT": _spec(split_limit, "A-R2", "5.6 Forensic", _GEN + ["limit"],
+                         ["SPLIT.WINDOW_DAYS", "SPLIT.MIN_TX", "FOR.THRESHOLD_AVOID.BAND"], ["A"], ["counterparty"]),
+    "FOR-BENFORD": _spec(for_benford, "G-R4", "5.6 Forensic", _GEN, ["FOR.BENFORD.MIN_N", "FOR.BENFORD.MAD_1ST"], _ALL),
+    "FOR-ROUND": _spec(for_round, "G-R4", "5.6 Forensic", _GEN,
+                       ["FOR.ROUND.UNIT", "FOR.ROUND.MIN_SHARE", "GATE.SAMPLE.MIN"], _ALL),
+    "FOR-REPEAT": _spec(for_repeat, "G-R4", "5.6 Forensic", _GEN, ["FOR.REPEAT.MIN_COUNT"], _ALL),
+    "SOD-SAME-USER": _spec(sod_same_user, "A-R3", "5.7 Rule-Based", ["record_id", "date", "created_by", "approved_by"],
+                           [], ["A"]),
+    "DUE-NEAR": _spec(due_near, "C-R2", "5.4 Temporal", ["record_id", "date", "contract", "due_date"],
+                      ["DUE.NEAR_DAYS", "DUE.MIN_SHARE", "DUE.MIN_PERIODS"], ["C"]),
+    "PAYER-MULTI": _spec(payer_multi, "C-R1", "5.3 Behavioral", ["record_id", "date", "entity", "counterparty", "contract"],
+                         ["PAYER.MIN_CONTRACTS"], ["C"]),
+}
+
+
+def plan_checks(tables: dict, cfg: dict = None) -> pd.DataFrame:
+    """Run / Skip per certified check from the roles present in tables["transactions"] (internal columns).
+    A Skip reason is Thai and names the missing roles and how to fix them."""
+    tx = tables.get("transactions")
+    rows = []
+    for cid, spec in CHECKS.items():
+        miss = [r for r in spec["requires"] if tx is None or not _has(tx, r)]
+        if miss:
+            what = " / ".join(f"{r} ({ROLE_TEXT.get(r, r)})" for r in miss)
+            rows.append((cid, "Skip", f"ไม่มีบทบาทคอลัมน์ {what} หรือคอลัมน์ว่างทั้งคอลัมน์ ซึ่งการ์ดนี้ต้องใช้ จึงรันไม่ได้ — "
+                                      f"แก้โดยกำหนดบทบาท {', '.join(miss)} ให้คอลัมน์ในไฟล์ที่จุดยืนยัน 1 แล้วรันใหม่", ", ".join(miss)))
+        else:
+            rows.append((cid, "Run", "มีบทบาทคอลัมน์ที่ต้องใช้ครบ", "-"))
+    return pd.DataFrame(rows, columns=["recipe_id", "decision", "reason", "missing"])

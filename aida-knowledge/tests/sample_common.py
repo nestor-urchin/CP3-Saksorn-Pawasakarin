@@ -11,14 +11,24 @@ SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 VARIANTS = ("en", "th", "legacy")
 JSON_BLOCK = re.compile(r"```json\s*\n(.*?)\n```", re.S)
 
-# Thresholds the planted cases are designed against (AIDA-14 v1.2 / spec 4.7). Kept here, not read from the
-# registry, because the Machine Config of the registry does not hold the FOR/CONC keys as numbers yet.
-TH = {
-    "DUP.WINDOW_DAYS": 3, "SPLIT.WINDOW_DAYS": 1, "SPLIT.MIN_TX": 2, "SPLIT.BAND": (0.90, 1.0),
-    "DUE.NEAR_DAYS": 2, "DUE.MIN_SHARE": 0.8, "DUE.MIN_PERIODS": 3, "PAYER.MIN_CONTRACTS": 3,
-    "FOR.BENFORD.MIN_N": 1000, "FOR.BENFORD.MAD_OK": 0.012, "FOR.BENFORD.MAD_BAD": 0.015,
-    "FOR.ROUND.UNIT": 1000, "FOR.REPEAT.MIN_COUNT": 3, "CONC.SINGLE_ENTITY_SHARE": 0.10,
-}
+REGISTRY_PATH = Path(__file__).resolve().parent.parent / "knowledge" / "AIDA-14-configuration-registry.md"
+
+
+def _thresholds():
+    """The thresholds the planted cases are designed against, read from the AIDA-14 Machine Config
+    (through the engine's load_registry) so the samples and the registry cannot drift apart."""
+    from _engine import engine
+    cfg = engine().load_registry(REGISTRY_PATH)
+    band, mad = cfg["FOR.THRESHOLD_AVOID.BAND"], cfg["FOR.BENFORD.MAD_1ST"]
+    th = {k: cfg[k] for k in ("DUP.WINDOW_DAYS", "SPLIT.WINDOW_DAYS", "SPLIT.MIN_TX", "DUE.NEAR_DAYS",
+                              "DUE.MIN_SHARE", "DUE.MIN_PERIODS", "PAYER.MIN_CONTRACTS", "FOR.BENFORD.MIN_N",
+                              "FOR.ROUND.UNIT", "FOR.REPEAT.MIN_COUNT", "CONC.SINGLE_ENTITY_SHARE")}
+    th.update({"SPLIT.BAND": (band["low"], band["high"]),
+               "FOR.BENFORD.MAD_OK": mad["acceptable"], "FOR.BENFORD.MAD_BAD": mad["marginal"]})
+    return th
+
+
+TH = _thresholds()
 
 
 def load_brief(path) -> dict:

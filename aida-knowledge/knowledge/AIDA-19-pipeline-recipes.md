@@ -735,6 +735,6 @@ def out_dashboard(bundle: dict, template: str, path: str, cfg: dict) -> str:
 - AIDA-18 Analysis Recipes (การ์ดวิเคราะห์ที่เรียกใช้ CORE-EVIDENCE)
 - AIDA-16 Output Templates (โครง sheet, คอลัมน์ CSV และ template Dashboard ที่การ์ด OUT-* ใช้)
 - AIDA-17 Data & Evidence Schema (คอลัมน์ Evidence)
-- AIDA-14 Configuration Registry (Machine Config, `REGISTRY.VERSION = 1.1`)
+- AIDA-14 Configuration Registry (Machine Config, `REGISTRY.VERSION = 1.2`)
 - AIDA-11 Audit Procedures & Language (ถ้อยคำที่ใช้)
 - AIDA-13 Traceability & Governance (record_refs + data_ref)

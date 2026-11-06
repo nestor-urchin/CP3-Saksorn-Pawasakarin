@@ -6,7 +6,7 @@
 
 - Spec ระยะ A: `docs/superpowers/specs/2026-11-03-aida-knowledge-pack-design.md`
 - Spec ระยะ B1: `docs/superpowers/specs/2026-11-03-aida-phase-b1-design.md`
-- Registry เวอร์ชัน: 1.1 · Knowledge Pack เวอร์ชัน: 2.0
+- Registry เวอร์ชัน: 1.2 · Knowledge Pack เวอร์ชัน: 2.0
 
 ## โครงสร้าง
 ```
