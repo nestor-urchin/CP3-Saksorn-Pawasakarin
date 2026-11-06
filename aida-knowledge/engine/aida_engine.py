@@ -2939,6 +2939,37 @@ def _load_cfg(cfg=None, registry_path=None) -> tuple:
     return cfg, os.path.abspath(path)
 
 
+def _cfg_hash(cfg: dict) -> str:
+    """sha256 of a Machine Config (the _RUN block left out), independent of key order."""
+    core = {k: v for k, v in cfg.items() if k != "_RUN"}
+    return hashlib.sha256(json.dumps(_plain(core), ensure_ascii=False, sort_keys=True, default=str)
+                          .encode("utf-8")).hexdigest()
+
+
+def _effective_cfg(cfg, it: dict, registry_path=None, org_keys=()) -> tuple:
+    """(base Machine Config, Thai source text). A cfg argument wins. A cfg saved in the intake (from inspect(cfg=...))
+    is compared with the AIDA-14 file: a key that differs and is not an organisation value is refused, so an intake
+    can never silently replace AIDA-14."""
+    rp = registry_path or it.get("registry_path")
+    if cfg is not None:
+        return _load_cfg(cfg)[0], "cfg ที่ส่งให้ฟังก์ชันโดยตรง (ไม่ได้อ่านจากไฟล์ AIDA-14)"
+    file_cfg, path = _load_cfg(None, rp)
+    src = f"AIDA-14 ({os.path.basename(str(path))} รุ่น {file_cfg.get('REGISTRY.VERSION')})"
+    icfg = it.get("cfg")
+    if icfg is None:
+        return file_cfg, src
+    if not isinstance(icfg, dict):
+        raise AidaError("cfg ใน intake ต้องเป็น dict ของ Machine Config — ลบ key cfg หรือเรียก inspect / confirm ใหม่")
+    a, b = _plain({k: v for k, v in file_cfg.items() if not k.startswith("_")}), \
+        _plain({k: v for k, v in icfg.items() if not k.startswith("_")})
+    diff = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k) and k not in set(org_keys))
+    if diff:
+        raise AidaError(f"cfg ใน intake ต่างจาก AIDA-14 ({os.path.basename(str(path))}) ที่ key {', '.join(diff)} — ค่าเกณฑ์"
+                        " มาจาก AIDA-14 เท่านั้น: ถ้าเป็นค่าขององค์กรให้ระบุใน org_values ของ confirm(...) ถ้าไม่ใช่ให้เรียก "
+                        "inspect โดยไม่ส่ง cfg แล้วยืนยันใหม่")
+    return file_cfg, src + " — cfg ใน intake ตรงกับไฟล์"
+
+
 def _sha256(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -3562,7 +3593,9 @@ def confirm(intake: dict, answers: dict = None, path: str = "intake.json", cfg: 
     extra = sorted(set(a) - known)
     if extra:
         raise AidaError(f"ไม่รู้จักคำตอบ {', '.join(extra)} — ใช้ได้เฉพาะ {', '.join(sorted(known))}")
-    base_cfg = _load_cfg(cfg if cfg is not None else intake.get("cfg"), intake.get("registry_path"))[0]
+    org_raw = {**(intake.get("org_values") or {}), **(a.get("org_values") or {})} \
+        if isinstance(a.get("org_values") or {}, dict) else {}
+    base_cfg = _effective_cfg(cfg, intake, None, org_raw)[0]
     frames_cols = {}
     for p in intake.get("profile", []):
         frames_cols.setdefault(p["table"], []).append(p["column"])
@@ -3660,19 +3693,21 @@ def _prepare(files, it: dict, cfg: dict) -> dict:
             "events": events, "filter_log": flog}
 
 
-def _run_cfg(it: dict, base_cfg: dict, meta: dict, extra: str = "") -> tuple:
+def _run_cfg(it: dict, base_cfg: dict, meta: dict, extra: str = "", source: str = "AIDA-14") -> tuple:
     try:
         _check_org_values(it.get("org_values", {}), base_cfg)  # intake.json may be edited by hand or older than AIDA-14
     except AidaError as e:
         raise AidaError(f"intake: {e} (ค่าขององค์กรใน intake.json ต้องตรงกับ AIDA-14 ที่ใช้ตอนนี้ — แก้ด้วย confirm(...) ใหม่)") from None
     org = _merge_org(it.get("org_values", {}), base_cfg)
+    cfg_sha = _cfg_hash({**base_cfg, **org})  # the effective thresholds of this run
     core = json.dumps(_plain({k: it.get(k) for k in ("roles", "filters", "org_values", "risks", "materiality")}),
-                      ensure_ascii=False, sort_keys=True) + "|" + _input_sha(meta) + extra  # extra: promoted exploratory Findings change the result, so the run_id
+                      ensure_ascii=False, sort_keys=True) + "|" + _input_sha(meta) + "|cfg=" + cfg_sha + extra  # extra: promoted exploratory Findings change the result, so the run_id
     run_id = "RUN-" + hashlib.sha256(core.encode("utf-8")).hexdigest()[:10].upper()
     cfg = {**base_cfg, **org, "_RUN": {"run_id": run_id, "data_ref": _data_ref(meta), "input_sha256": _input_sha(meta),
-                                       "pack_version": __version__}}
+                                       "pack_version": __version__, "cfg_source": source, "cfg_sha256": cfg_sha}}
     notes = [f"ค่าขององค์กร: {k} = {it['org_values'][k]!r} (แทนค่ามาตรฐาน AIDA-14 = {base_cfg[k]!r} เฉพาะ run นี้; "
              f"ผู้ยืนยัน {it.get('reviewer') or 'ไม่ระบุ'})" for k in it.get("org_values", {})]
+    cfg["_RUN"]["cfg_note"] = f"Machine Config ของ run นี้: {source} | cfg_sha256 {cfg_sha[:16]}… (รวมค่าที่ผู้ตรวจสอบยืนยันแล้ว)"
     return cfg, notes
 
 
@@ -3735,7 +3770,7 @@ def run(files, intake, out_dir: str = ".", cfg: dict = None, registry_path: str 
     Returns {status, run_id, findings, evidence, plan, run_log, paths {workbook, csv_dir, dashboard}, warnings,
     summary_th}."""
     it = _load_intake(intake)
-    base_cfg = _load_cfg(cfg if cfg is not None else it.get("cfg"), registry_path or it.get("registry_path"))[0]
+    base_cfg, cfg_src = _effective_cfg(cfg, it, registry_path, it.get("org_values") or {})
     warnings = []
     if str(base_cfg.get("REGISTRY.VERSION")) != str(it.get("registry_version")):
         warnings.append(f"Registry AIDA-14 เป็นรุ่น {base_cfg.get('REGISTRY.VERSION')} แต่ intake ยืนยันกับรุ่น "
@@ -3744,9 +3779,12 @@ def run(files, intake, out_dir: str = ".", cfg: dict = None, registry_path: str 
         warnings.append(f"engine รุ่น {__version__} แต่ intake สร้างด้วยรุ่น {it.get('engine_version')} — ตรวจผลเทียบกับรอบก่อน")
     pre = _prepare(files, it, base_cfg)
     warnings = pre["warnings"] + warnings
-    ents, prom = _explore_state(it)
-    cfg_run, org_notes = _run_cfg(it, base_cfg, pre["meta"], "|" + ",".join(p["finding_id"] for p in prom) if prom else "")
+    ents, prom, explore_notes = _explore_state(it)
+    warnings += explore_notes
+    cfg_run, org_notes = _run_cfg(it, base_cfg, pre["meta"], "|" + ",".join(p["finding_id"] for p in prom) if prom else "",
+                                  cfg_src)
     events = list(pre["events"]) + [{"stage": 2, "status": "REVIEW", "detail": w} for w in warnings[len(pre["warnings"]):]]
+    events.append({"stage": 6, "status": "OK", "detail": cfg_run["_RUN"]["cfg_note"]})
     events += [{"stage": 6, "status": "OK", "detail": n} for n in org_notes]
     tables = pre["tables"]
     primary, _ = _split_roles(it["roles"])
@@ -3821,7 +3859,7 @@ def run(files, intake, out_dir: str = ".", cfg: dict = None, registry_path: str 
     events.append({"stage": 8, "status": "REVIEW", "detail": "รอ Human Review — ผลเป็นสัญญาณที่ต้องตรวจสอบเพิ่มเติม ไม่ใช่ข้อสรุป"})
     log = log_run(events, cfg_run)
     bundle = out_bundle(tr, profile_b1, plan_df, evidence, assessed, trails, log, m_amt, cfg_run, basis)
-    bundle["org_notes"] = org_notes
+    bundle["org_notes"] = [cfg_run["_RUN"]["cfg_note"]] + org_notes  # README
     bundle.update(_intake_frames(it), exploratory=_explore_frame(ents, prom), data_type=dtype or "")
     os.makedirs(out_dir, exist_ok=True)
     paths = {"workbook": out_workbook(bundle, os.path.join(out_dir, OUT_NAMES["workbook"]), cfg_run),
@@ -3870,9 +3908,9 @@ def trace(files, intake, acct: str, direction: str = "both", period: str = None,
     if direction not in ("forward", "backward", "both"):
         raise AidaError(f"direction ต้องเป็น 'forward' (เงินออก), 'backward' (เงินเข้า) หรือ 'both' (ได้รับ {direction!r})")
     it = _load_intake(intake)
-    base_cfg = _load_cfg(cfg if cfg is not None else it.get("cfg"), registry_path or it.get("registry_path"))[0]
+    base_cfg, cfg_src = _effective_cfg(cfg, it, registry_path, it.get("org_values") or {})
     pre = _prepare(files, it, base_cfg)
-    cfg_run, _ = _run_cfg(it, base_cfg, pre["meta"])
+    cfg_run, _ = _run_cfg(it, base_cfg, pre["meta"], "", cfg_src)
     tx = pre["tables"]["transactions"]
     if "to_acct" not in tx.columns or "from_acct" not in tx.columns:
         raise AidaError("Money Flow ต้องมีบทบาท entity (บัญชีต้นทาง) และ counterparty (บัญชีปลายทาง) — ใช้ได้กับข้อมูล"
@@ -4042,7 +4080,7 @@ def data(files=None, intake=None) -> dict:
             or (isinstance(files, (str, os.PathLike)) and str(files).lower().endswith(".json"))):
         files, intake = None, files
     it = _load_intake(intake)
-    base_cfg = _load_cfg(it.get("cfg"), it.get("registry_path"))[0]
+    base_cfg = _effective_cfg(None, it, None, it.get("org_values") or {})[0]
     pre = _prepare(files, it, base_cfg)
     primary, extra = _split_roles(it["roles"])
     tx_name = _roles_by_table(primary)[0]
@@ -4114,38 +4152,81 @@ def promote(explore_id, entity, risk, period, reason, reviewer, confidence: str 
     if not found:
         raise AidaError(f"ไม่พบ {explore_id} ในบันทึกโหมดสำรวจ — เรียก explore_log(...) ก่อน หรือส่ง intake= ของชุดข้อมูลเดียวกัน")
     data_ = _read_explore(path) if path else {"explore": [], "promoted": []}
+    per = _period_text(period)
+    for p in data_["promoted"]:  # the same explore_id + entity + risk + period again: the existing row (idempotent)
+        if (p["explore_id"], str(p["entity_id"]).strip(), p["risk"], _period_text(p.get("period"))) == \
+                (explore_id, ent, risk, per):
+            return _promoted_row(explore_id, p["finding_id"], ent, risk, per, p["promote_reason"], p["reviewer"],
+                                 min(p["confidence"], EXPLORE_MAX_CONFIDENCE, key=CONF_RANK.get)
+                                 if p["confidence"] in CONF_RANK else conf, p.get("promoted_at"))
     n = sum(1 for p in data_["promoted"] if p["explore_id"] == explore_id)
-    row = {"finding_id": f"FND-{explore_id}" + (f"-{n + 1}" if n else ""), "entity_type": "entity", "entity_id": ent,
-           "risk": risk, "period": str(period).strip() if period is not None and str(period).strip() else "-",
-           "evidence_ids": [], "skill_families": ["exploratory"], "exposure": None, "confidence": conf,
-           "materiality": "ไม่ได้ประเมิน", "priority": conf, "review_status": "รอ Human Review",
-           "review_reason": f"{EXPLORE_LABEL} ({EXPLORE_NOT_CERTIFIED}) — เหตุผลที่ผู้ตรวจสอบเลื่อน: {why}",
-           "network_id": None, "member_accts": [], "record_refs": [], "data_ref_complete": False, "internal_amount": None,
-           "source": "exploratory", "source_label": EXPLORE_LABEL, "explore_id": explore_id, "reviewer": rv,
-           "promote_reason": why, "promoted_at": _now()}
+    row = _promoted_row(explore_id, _promoted_id(explore_id, n), ent, risk, per, why, rv, conf, _now())
     if path:
         data_["promoted"].append(row)
         _write_explore(path, data_)
     return row
 
 
+def _period_text(period) -> str:
+    return str(period).strip() if period is not None and str(period).strip() else "-"
+
+
+def _promoted_id(explore_id: str, n: int) -> str:
+    return f"FND-{explore_id}" + (f"-{n + 1}" if n else "")
+
+
+def _promoted_row(explore_id, finding_id, ent, risk, period, why, reviewer, conf, promoted_at) -> dict:
+    """A promoted exploratory Finding: only these inputs vary; every other field is fixed (no exposure, Materiality
+    "ไม่ได้ประเมิน", "รอ Human Review", the permanent label in review_reason)."""
+    return {"finding_id": finding_id, "entity_type": "entity", "entity_id": ent, "risk": risk, "period": period,
+            "evidence_ids": [], "skill_families": ["exploratory"], "exposure": None, "confidence": conf,
+            "materiality": "ไม่ได้ประเมิน", "priority": conf, "review_status": "รอ Human Review",
+            "review_reason": f"{EXPLORE_LABEL} ({EXPLORE_NOT_CERTIFIED}) — เหตุผลที่ผู้ตรวจสอบเลื่อน: {why}",
+            "network_id": None, "member_accts": [], "record_refs": [], "data_ref_complete": False, "internal_amount": None,
+            "source": "exploratory", "source_label": EXPLORE_LABEL, "explore_id": explore_id, "reviewer": reviewer,
+            "promote_reason": why, "promoted_at": promoted_at if isinstance(promoted_at, str) else None}
+
+
 def _explore_state(it: dict) -> tuple:
-    """(entries, promoted rows) saved next to this intake, in a fixed order."""
+    """(entries, promoted rows, Thai notes) saved next to this intake, in a fixed order. Each promoted row is rebuilt
+    from its whitelisted fields only (entity_id, risk, period, reason, reviewer, confidence capped at กลาง,
+    explore_id, promoted_at), so a hand-edited explore_log.json cannot change exposure, Materiality, review status
+    or wording. A row whose explore_id + entity + risk + period repeats an earlier one is counted once (a note)."""
     d = _read_explore(_explore_path(it))
     ents = sorted(d["explore"], key=lambda e: _explore_no(e["explore_id"]))
-    prom = []
-    for p in sorted(d["promoted"], key=lambda p: (_explore_no(p["explore_id"]), p["finding_id"])):
-        where = f"แถว promoted {p['finding_id']} ({p['explore_id']}) ใน {EXPLORE_FILE}"
+    ids = {e["explore_id"] for e in ents}
+    prom, notes, seen, count = [], [], {}, {}
+    for p in sorted(d["promoted"], key=lambda p: (_explore_no(p["explore_id"]), str(p["finding_id"]))):
+        eid = p["explore_id"]
+        where = f"แถว promoted {p['finding_id']} ({eid}) ใน {EXPLORE_FILE}"
+        if eid not in ids:
+            raise AidaError(f"{where}: ไม่พบ {eid} ในส่วน explore ของไฟล์ — Finding จากโหมดสำรวจต้องมาจากผลที่บันทึกด้วย "
+                            "explore_log(...) ลบแถวนี้หรือกู้คืนไฟล์จากสำเนา แล้วรันใหม่")
         if not isinstance(p["reviewer"], str) or not p["reviewer"].strip():
             raise AidaError(f"{where}: ไม่มี reviewer — Finding จากโหมดสำรวจต้องมีผู้ตรวจสอบ ใส่ชื่อผู้ตรวจสอบหรือลบแถวนี้")
         if not isinstance(p["risk"], str) or (p["risk"] != "RX" and p["risk"] not in RISK_LIBRARY):
             raise AidaError(f"{where}: ความเสี่ยง {p['risk']!r} ไม่อยู่ใน Risk Library — ใช้รหัสในคลังหรือ RX แล้วรันใหม่")
         if p["confidence"] not in CONF_RANK:
             raise AidaError(f"{where}: confidence {p['confidence']!r} ต้องเป็น ต่ำ / กลาง / สูง — แก้ไฟล์แล้วรันใหม่")
+        ent = p["entity_id"]
+        if not isinstance(ent, (str, int)) or isinstance(ent, bool) or not str(ent).strip():
+            raise AidaError(f"{where}: entity_id ว่าง — ระบุรหัส entity ที่ผลสำรวจชี้ หรือลบแถวนี้ แล้วรันใหม่")
+        why = p["promote_reason"]
+        if not isinstance(why, str) or not why.strip():
+            raise AidaError(f"{where}: ไม่มีเหตุผลที่เลื่อน (promote_reason) — ใส่เหตุผลหรือลบแถวนี้ แล้วรันใหม่")
+        ent, per = str(ent).strip(), _period_text(p.get("period"))
+        key = (eid, ent, p["risk"], per)
+        if key in seen:
+            notes.append(f"{where} ซ้ำกับ {seen[key]} ({eid}, entity {ent}, ความเสี่ยง {p['risk']}, งวด {per} เดียวกัน) "
+                         "— นับเป็น Finding เดียว")
+            continue
         conf = min(p["confidence"], EXPLORE_MAX_CONFIDENCE, key=CONF_RANK.get)  # never above กลาง, whatever the file says
-        prom.append({**p, "reviewer": p["reviewer"].strip(), "confidence": conf, "priority": conf, "source": "exploratory",
-                     "source_label": EXPLORE_LABEL})
-    return ents, prom
+        row = _promoted_row(eid, _promoted_id(eid, count.get(eid, 0)), ent, p["risk"], per, why.strip(),
+                            p["reviewer"].strip(), conf, p.get("promoted_at"))
+        count[eid] = count.get(eid, 0) + 1
+        seen[key] = row["finding_id"]
+        prom.append(row)
+    return ents, prom, notes
 
 
 def _explore_frame(ents: list, prom: list) -> pd.DataFrame:

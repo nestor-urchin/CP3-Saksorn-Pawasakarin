@@ -83,6 +83,7 @@ answers = {
 - **จ่ายซ้ำ (DUP-PAY)**: ถ้ารายการซ้ำทุกรายการมีเลขเอกสาร (`document_no`) เดียวกัน Finding ใช้เลขเอกสารเป็น entity (`entity_type = document`) เช่น ใบแจ้งหนี้ INV-7781; ข้อมูลสินเชื่อที่ไม่มีเลขเอกสารรายงานตามสัญญา (C-R3)
 - **ยอดซ้ำ / ยอดกลม (FOR-REPEAT / FOR-ROUND)** ถูกรวมเข้า Finding A-R2 ของการแบ่งรายการ (SPLIT-LIMIT) **เฉพาะเมื่อรายการของมันเป็นส่วนหนึ่งของรายการ SPLIT-LIMIT** (entity และงวดเดียวกัน) — ยอดซ้ำบนรายการอื่นของผู้ขายเดียวกันยังเป็น Finding G-R4 แยก
 - Finding ทุกรายการเป็น "รอ Human Review" และเป็นสัญญาณให้ตรวจสอบเพิ่มเติม ไม่ใช่ข้อสรุป
+- ค่าเกณฑ์ของ run มาจาก AIDA-14 (+ ค่าขององค์กรที่ยืนยัน) เท่านั้น: Run_Log และ README ของ Workbook บันทึกแหล่ง Machine Config และ `cfg_sha256`; `run_id` เปลี่ยนเมื่อค่าเกณฑ์ที่ใช้จริงเปลี่ยน
 - ไล่เส้นทางเงินเพิ่ม (ข้อมูล E): `aida.trace(files, "intake.json", "บัญชี", direction="both", period=None, out_dir="/mnt/data/aida_out")` → `summary_th` + CSV (FLOW-TRACE ไม่ใช่การ์ดรับรอง ไม่สร้าง Finding)
 
 ## 5. โหมดสำรวจ (คำถามนอกการ์ดรับรอง)
@@ -94,7 +95,8 @@ answers = {
 6. เลื่อนเป็น Finding **เฉพาะเมื่อผู้ตรวจสอบสั่งชัดเจนและระบุชื่อผู้ทบทวน**: `aida.promote(eid, entity, risk, period, reason, reviewer, intake="intake.json")`
    - `risk` = รหัสใน Risk Library (AIDA-18) หรือ `RX` (ความเสี่ยงจากโหมดสำรวจ)
    - Confidence สูงสุด "กลาง" (ค่าที่สูงกว่าถูกลดให้), `reviewer` บังคับ, `source = "exploratory"`, ป้าย "จากโหมดสำรวจ" ถาวร
-   - `run()` ครั้งถัดไปรวม Finding ที่เลื่อนแล้วเข้า Findings, Exploratory sheet และ Dashboard
+   - `run()` ครั้งถัดไปรวม Finding ที่เลื่อนแล้วเข้า Findings, Exploratory sheet และ Dashboard โดยสร้างแถวใหม่จาก entity, risk, period, เหตุผล, reviewer, Confidence (ไม่เกินกลาง), explore_id และเวลาเท่านั้น (exposure ว่าง, Materiality "ไม่ได้ประเมิน", "รอ Human Review" เสมอ แม้ไฟล์ถูกแก้)
+   - เลื่อนผลเดิม (explore_id, entity, risk, period เดียวกัน) ซ้ำ → ได้ Finding เดิม ไม่เพิ่มแถว
 - ไม่มีชื่อผู้ทบทวน → ถามชื่อก่อน ห้ามเลื่อนเอง; เหตุผลที่เลื่อนใช้ถ้อยคำไม่กล่าวหา
 
 ## 6. Mapping profile (ใช้ซ้ำรอบถัดไป)
@@ -115,6 +117,11 @@ answers = {
 | ต้องระบุผู้ตรวจสอบ (reviewer) | promote โดยไม่มีชื่อผู้ทบทวน | ถามชื่อผู้ทบทวนก่อนเลื่อน |
 | ไม่พบ EXP-n ในบันทึกโหมดสำรวจ | promote ก่อน explore_log หรือคนละ intake | เรียก explore_log ก่อน และส่ง intake= ชุดเดียวกัน |
 | Money Flow ต้องมีบทบาท entity และ counterparty | trace กับข้อมูลที่ไม่ใช่การโอนเงิน | ใช้ได้กับข้อมูล E เท่านั้น |
+| ค่าขององค์กร '...' ... เป็นสัดส่วน | ระบุสัดส่วนเป็นร้อยละ เช่น 70 | ใส่เป็นทศนิยม 0.7 = 70% |
+| cfg ใน intake ต่างจาก AIDA-14 ที่ key ... | intake.json มี cfg ที่ไม่ตรงกับ AIDA-14 | ระบุเป็น org_values ใน confirm หรือ inspect ใหม่โดยไม่ส่ง cfg |
+| intake: ไม่รู้จักรหัสความเสี่ยง ... | intake.json ถูกแก้ด้วยมือ | confirm ใหม่ด้วยรหัสจาก AIDA-18 |
+| แถว promoted ... ใน explore_log.json: ไม่พบ EXP-n / entity_id ว่าง | explore_log.json ถูกแก้ด้วยมือ | ลบแถวนั้นหรือกู้คืนไฟล์ แล้วรันใหม่ |
+| ไม่พบไฟล์ร่าง intake ... | confirm จากที่อยู่ร่างที่ไม่มี | เรียก inspect(files, brief) ใหม่ (ได้ผลเดิม) |
 | เกิดข้อผิดพลาดภายใน engine | กรณีที่ไม่คาดไว้ | แจ้งข้อความเต็มแก่ผู้ใช้ และส่งให้ผู้ดูแล AIDA — ห้ามเขียนโค้ดแทน |
 
 ## ข้อห้าม (Guardrails)
