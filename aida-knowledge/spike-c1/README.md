@@ -25,10 +25,13 @@
 **ข้อ 2 — import engine จาก Knowledge ได้ไหม (.py / .txt)**
 ```
 ใช้ Code Interpreter ทดสอบสองวิธีกับ path ที่เห็นในข้อ 1 (ถ้ามีทั้ง .py และ .txt ให้ทำทั้งสองไฟล์):
-วิธี A: sys.path.insert(0, <โฟลเดอร์ที่มีไฟล์>) แล้ว import aida_engine_probe จากนั้นเรียก hello()
+วิธี A (สำหรับ .py): sys.path.insert(0, <โฟลเดอร์ที่มีไฟล์ .py>) แล้ว import aida_engine_probe จากนั้นเรียก hello()
         และ summarize(<path ของ probe-data.csv>) แสดงผลลัพธ์ทั้ง dict
-วิธี B: exec(open(<path ของ aida_engine_probe.py หรือ .txt>, encoding="utf-8").read()) แล้วเรียก hello()
+วิธี A (สำหรับ .txt): คัดลอกไฟล์ .txt เป็น aida_engine_probe.py ในโฟลเดอร์ทำงาน (ไม่ใช่โฟลเดอร์ Knowledge)
+        แล้วทำเหมือนวิธี A สำหรับ .py ข้างบน (import ไฟล์ .txt โดยตรงไม่ได้)
+วิธี B (ทั้ง .py และ .txt): exec(open(<path ของไฟล์>, encoding="utf-8").read()) แล้วเรียก hello()
 รายงานแยกทีละวิธีและทีละไฟล์ว่า ผ่าน หรือ ไม่ผ่าน พร้อม __version__ และข้อความ error เต็ม (ถ้ามี)
+ระบุด้วยว่าผ่านด้วยไฟล์ .py หรือ .txt
 ```
 
 **ข้อ 3 — ทางสำรอง: อ่าน engine จาก SharePoint/ไฟล์แนบแล้ว import ได้ไหม**
@@ -37,6 +40,7 @@
 เขียนลงโฟลเดอร์ทำงานชั่วคราว แล้ว import aida_engine_probe และเรียก hello()
 รายงานว่า ผ่าน หรือ ไม่ผ่าน พร้อม __version__ และข้อความ error เต็ม (ถ้ามี)
 ```
+ก่อนส่ง ให้แทนที่ `<ใส่ลิงก์ SharePoint/OneDrive หรือแนบไฟล์>` ด้วยลิงก์หรือไฟล์จริงทุกครั้ง ห้ามส่งข้อความที่ยังมี placeholder
 
 **ข้อ 4 — ตัวแปรของ Code Interpreter อยู่ข้ามข้อความไหม**
 ส่งเป็นสองข้อความ (ข้อความที่ 4a และ 4b ต้องส่งแยกกัน)
@@ -53,7 +57,8 @@
 ถ้าไม่สำเร็จ ให้ลอง `aida_engine_probe.txt` และบันทึกผลแยกกัน
 
 ## กติกาตัดสิน (decision rule)
-1. ข้อ 2 **ผ่าน** → ใช้ **แนวทาง 3** (engine อยู่ใน Knowledge เป็น `aida_engine.py`)
+ข้อ 2 **ผ่าน** หมายถึง ข้อ 2A (import .py) **หรือ** ข้อ 2B (exec ทั้ง .py และ .txt) ได้ผล `hello()` เป็น `"AIDA engine probe OK"` อย่างน้อยหนึ่งแถว
+1. ข้อ 2 **ผ่าน** → ใช้ **แนวทาง 3** (engine อยู่ใน Knowledge เป็น `aida_engine.py` หรือ `.txt` ตามไฟล์ที่ผ่าน)
 2. ข้อ 2 **ไม่ผ่าน** แต่ข้อ 3 **ผ่าน** → ใช้ **แนวทาง 2** (engine ติดตั้งจาก `AIDA-16-engine-install.md`)
 3. ข้อ 2 และข้อ 3 **ไม่ผ่านทั้งคู่** → **หยุด** และปรึกษาผู้ใช้ก่อนทำ Task 2 ต่อ
 
@@ -61,15 +66,14 @@
 
 ## ตารางผล (กรอกแล้วส่งกลับ)
 
-| # | ทดสอบ | ผ่าน/ไม่ผ่าน | __version__ / pandas version | ข้อความ error (ถ้ามี) | หมายเหตุ |
-|---|---|---|---|---|---|
-| 1 | Code Interpreter เห็นไฟล์ใน Knowledge (path ที่เห็น) | | | | |
-| 2A | import aida_engine_probe จาก Knowledge (.py) แล้ว hello() และ summarize() ได้ | | | | |
-| 2A' | import จาก Knowledge (.txt) | | | | |
-| 2B | exec(open(...).read()) จาก Knowledge แล้ว hello() ได้ | | | | |
-| 3 | อ่านจาก SharePoint/ไฟล์แนบ แล้ว import และ hello() ได้ | | | | |
-| 4 | probe_marker ยังอยู่ในข้อความถัดไป | | | | |
-| 5 | Knowledge รับ .py (หรือ .txt) ได้ | | | | |
+| # | ทดสอบ | ผ่าน/ไม่ผ่าน | ประเภทไฟล์ที่ผ่าน (.py / .txt) | __version__ / pandas version | ข้อความ error (ถ้ามี) | หมายเหตุ |
+|---|---|---|---|---|---|---|
+| 1 | Code Interpreter เห็นไฟล์ใน Knowledge (path ที่เห็น) | | | | | |
+| 2A | import aida_engine_probe จาก Knowledge แล้ว hello() และ summarize() ได้ (.py; .txt ผ่านการคัดลอกเป็น .py) | | | | | |
+| 2B | exec(open(...).read()) จาก Knowledge แล้ว hello() ได้ | | | | | |
+| 3 | อ่านจาก SharePoint/ไฟล์แนบ แล้ว import และ hello() ได้ | | | | | |
+| 4 | probe_marker ยังอยู่ในข้อความถัดไป | | | | | |
+| 5 | Knowledge รับ .py (หรือ .txt) ได้ | | | | | |
 
 ## ถ้าไม่ผ่าน
 เขียน `Ruling:` ในแชตนี้ แล้วปรึกษาก่อนทำ Task 2 ต่อ อย่าเดาวิธีแก้เอง
