@@ -388,6 +388,7 @@ def unify_refs(tables: dict = None, cfg: dict = None) -> None:
 FINDING_COLUMNS = ["finding_id", "entity_type", "entity_id", "risk", "period", "evidence_ids",
                    "skill_families", "exposure", "confidence", "materiality", "priority",
                    "review_status", "review_reason", "network_id"]
+FINDING_SOURCE_COLUMNS = ["source", "source_label", "explore_id", "reviewer", "promote_reason", "promoted_at"]
 FINDING_WORK_COLUMNS = ["member_accts", "record_refs", "data_ref_complete", "internal_amount"]
 ABSORB_SIGNALS = ["NET-FUNNEL", "MULE-DWELL", "MULE-NEW-ACCT", "BEH-VELOCITY", "TEMP-OFFHOURS"]
 def unify_findings(evidence: pd.DataFrame, cfg: dict, networks) -> pd.DataFrame:
@@ -570,22 +571,50 @@ def cell_text(v):
         v = ", ".join(str(x) for x in v)
     v = no_formula(ILLEGAL_CHARACTERS_RE.sub("", v)) if isinstance(v, str) else v
     return v[:EXCEL_CELL_MAX - 1] + "…" if isinstance(v, str) and len(v) > EXCEL_CELL_MAX else v
+NOT_E_TEXT = "ไม่เกี่ยวข้องกับข้อมูลประเภทนี้"  # Mule_Networks / Money_Flow stay in the Workbook for data that is not type E
+OUT_SHEETS_C1 = {"Intake_Review": "สิ่งที่ผู้ตรวจสอบยืนยันใน Intake: บริบท, Risk Concern, ความพอเพียง, ความเสี่ยงที่แนะนำ, คำตอบ",
+                 "Data_Dictionary": "ความหมายคอลัมน์, บทบาท, ความหมายของค่ารหัส, ผู้ยืนยัน และวันที่",
+                 "Data_Request": "ข้อมูลที่ควรขอเพิ่มเพื่อให้วิเคราะห์ความเสี่ยงที่ขอได้ครบ",
+                 "Exploratory": "การวิเคราะห์ในโหมดสำรวจ (ยังไม่ผ่านการรับรอง): คำถาม โค้ดเต็ม ผล และการเลื่อนเป็น Finding"}
 def out_workbook(bundle: dict, path: str, cfg: dict) -> str:
     b, p = bundle, bundle.get("prep") or {}
-    readme = [OUT_BANNER, f"run_id: {b['run_id']} | Registry version: {cfg['REGISTRY.VERSION']}", OUT_LIMITS,
+    c1 = "intake_review" in b  # C1 bundle: 13 sheets; a B1 bundle keeps its nine
+    not_e = c1 and b.get("data_type") != "E"
+    o, n = OUT_SHEETS, OUT_SHEETS_C1
+    sheet_desc = ({**{k: n[k] for k in ("Intake_Review", "Data_Dictionary", "Data_Request")},
+                   **{k: o[k] for k in ("Dataset_Profile", "Analysis_Plan", "Evidence", "Findings")},
+                   "Exploratory": n["Exploratory"], **{k: o[k] for k in ("Mule_Networks", "Money_Flow", "Materiality", "Run_Log")}}
+                  if c1 else o)
+    readme = [OUT_BANNER, f"run_id: {b['run_id']} | Registry version: {cfg['REGISTRY.VERSION']}",
+              *([] if not_e else [OUT_LIMITS]),
               f"รูปแบบวันที่ที่ใช้แปลง: {p.get('date_format', '-')} | แปลงปี พ.ศ.: {'ใช่' if p.get('be_converted') else 'ไม่'}"
               f" | วันและเดือน ≤ 12 ทั้งคู่ {p.get('ambiguous_dates', 0)} รายการ", *b.get("org_notes", []),
               *b.get("card_notes", []), *b["flow_notes"],
-              "วิธีอ่านไฟล์ (sheet ตามลำดับ):"] + [f"{k}: {v}" for k, v in OUT_SHEETS.items()]
+              "วิธีอ่านไฟล์ (sheet ตามลำดับ):"] + [f"{k}: {v}" for k, v in sheet_desc.items()]
     f = b["findings"]
-    fnd = f[FINDING_COLUMNS].assign(member_accts=f["member_accts"], reviewer=None, disposition=None, review_date=None)
+    if c1 and (f["source"] == "exploratory").any():
+        readme.insert(2, f"Finding ที่มีป้าย \"{EXPLORE_LABEL}\" มาจากโหมดสำรวจที่เลื่อนโดยผู้ตรวจสอบ ({EXPLORE_NOT_CERTIFIED}; "
+                         "Confidence ไม่เกินกลาง) — ป้ายนี้ติดกับ Finding ถาวร")
+    col = lambda c: f[c] if c in f.columns else None  # noqa: E731 - B1 Findings have no source columns
+    fnd = f[FINDING_COLUMNS].assign(member_accts=f["member_accts"], reviewer=col("reviewer"), disposition=None,
+                                    review_date=f["promoted_at"].map(lambda x: str(x)[:10] if isinstance(x, str) else None)
+                                    if "promoted_at" in f.columns else None)
+    if "source" in f.columns:
+        fnd = fnd.assign(source=f["source"], source_label=f["source_label"], explore_id=f["explore_id"],
+                         promote_reason=f["promote_reason"])
     notes = b["flow_notes"] or ["ไล่เส้นทางเงินครบทุก trace (ไม่ถึงขีดจำกัด FLOW.MAX_TRAIL_ROWS)"]
-    sheets = {"README": pd.DataFrame({"README": readme}), "Dataset_Profile": b["profile"], "Analysis_Plan": b["plan"],
-              "Evidence": b["evidence"], "Findings": fnd, "Mule_Networks": b["mule_networks"],
-              "Money_Flow": b["flows"], "Materiality": b["materiality"], "Run_Log": b["run_log"]}
+    na = pd.DataFrame({"หมายเหตุ": [NOT_E_TEXT]})
+    sheets = {"README": pd.DataFrame({"README": readme})}
+    if c1:
+        sheets.update(Intake_Review=b["intake_review"], Data_Dictionary=b["data_dictionary"], Data_Request=b["data_request"])
+    sheets.update(Dataset_Profile=b["profile"], Analysis_Plan=b["plan"], Evidence=b["evidence"], Findings=fnd)
+    if c1:
+        sheets["Exploratory"] = b["exploratory"]
+    sheets.update(Mule_Networks=na if not_e else b["mule_networks"], Money_Flow=na if not_e else b["flows"],
+                  Materiality=b["materiality"], Run_Log=b["run_log"])
     with pd.ExcelWriter(path, engine="openpyxl") as xw:
         for name, df in sheets.items():
-            top = len(notes) + 1 if name == "Money_Flow" else 0
+            top = len(notes) + 1 if name == "Money_Flow" and not not_e else 0
             text_cols(df, cell_text).to_excel(xw, sheet_name=name, index=False, startrow=top)
             for i, n in enumerate(notes if top else [], 1):
                 xw.sheets[name].cell(row=i, column=1, value=cell_text(n))
@@ -623,13 +652,18 @@ def out_dashboard(bundle: dict, template: str, path: str, cfg: dict) -> str:
     def rows(df):
         return json.loads(df.to_json(orient="records", date_format="iso", force_ascii=False))
     f, e = bundle["findings"], bundle["edges"]
-    keep = [c for c in FINDING_COLUMNS + ["member_accts", "record_refs"] if c in f.columns]
+    keep = [c for c in FINDING_COLUMNS + ["member_accts", "record_refs"] + FINDING_SOURCE_COLUMNS if c in f.columns]
     ui = {k: rows(bundle[k]) for k in ("profile", "plan", "evidence", "mule_networks", "flows",
                                        "materiality", "run_log")}
     ui.update(findings=rows(f[keep]), edges=rows(e[e["network_id"].notna()]), run_id=bundle["run_id"],
               flow_notes=bundle["flow_notes"], card_notes=bundle.get("card_notes", []),
-              prep=bundle.get("prep", {}), limits=OUT_LIMITS,
+              prep=bundle.get("prep", {}), limits=OUT_LIMITS if bundle.get("data_type", "E") == "E" else "",
               registry_version=cfg["REGISTRY.VERSION"])
+    if "intake_review" in bundle:  # C1 bundle: Intake tab, exploratory entries, names of the risks in use
+        ui.update(intake={"review": rows(bundle["intake_review"]), "dictionary": rows(bundle["data_dictionary"]),
+                          "requests": rows(bundle["data_request"])},
+                  exploratory=rows(bundle["exploratory"]), data_type=bundle.get("data_type") or "",
+                  risk_names={r: _risk_name(r) for r in sorted(set(f["risk"]) | set(RISK_LIBRARY))})
     data = json.dumps(ui, ensure_ascii=False, default=str).replace("<", "\\u003c")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(template.replace(DASH_PLACEHOLDER, data))
@@ -1143,7 +1177,10 @@ main{padding:16px;max-width:1280px}section{display:none}section.on{display:block
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px}.card b{display:block;font-size:24px}
 .wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;background:var(--card);font-size:13px}
 th,td{border:1px solid var(--line);padding:5px 7px;text-align:left;vertical-align:top}th{background:var(--head)}
-td{max-width:520px;overflow-wrap:break-word}tr.click{cursor:pointer}tr.click:hover{background:#eaf3ff}
+td{max-width:520px;overflow-wrap:break-word}
+.badge{display:inline-block;background:var(--warnbg);color:var(--warn);border:1px solid #e9a94b;border-radius:10px;padding:0 8px;font-size:12px;font-weight:600;white-space:nowrap}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--head);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12px;margin:4px 0}
+.xp{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:10px}.xp h4{margin:0 0 4px;font-size:14px}tr.click{cursor:pointer}tr.click:hover{background:#eaf3ff}
 .note{color:var(--mute);font-size:13px}.warn{color:var(--warn);background:var(--warnbg);padding:6px 10px;border-radius:6px}
 select,.pager button{font:inherit;margin:4px 6px 8px 0}.refs{font-family:monospace;font-size:12px;overflow-wrap:anywhere}
 .legend span{display:inline-flex;align-items:center;margin:0 14px 6px 0}.dot{width:12px;height:12px;border-radius:50%;margin-right:5px}
@@ -1176,12 +1213,16 @@ const LABEL = {finding_id: "รหัส Finding", entity_type: "ประเภ
   missing: "ข้อมูลที่ขาด", item: "รายการ", detail: "รายละเอียด", name: "ชื่อความเสี่ยง", findings: "จำนวน Finding",
   run_id: "รหัสการรัน", timestamp: "เวลา", stage: "ขั้นตอน", status: "สถานะ", recipe_version: "เวอร์ชันการ์ด",
   registry_version: "เวอร์ชัน Registry", pack_version: "เวอร์ชัน Pack", input_sha256: "ค่า hash ของไฟล์ (sha256)",
-  account: "บัญชี", role: "บทบาทในเครือข่าย", finding_ids: "Finding ที่เกี่ยวข้อง"};
+  account: "บัญชี", role: "บทบาทในเครือข่าย", finding_ids: "Finding ที่เกี่ยวข้อง", source_label: "ที่มา", section: "หัวข้อ",
+  table: "ตาราง", column: "คอลัมน์", meaning: "ความหมาย", code_values: "ความหมายของค่ารหัส", confirmed_by: "ผู้ยืนยัน",
+  confirmed_at: "วันที่ยืนยัน", no: "ลำดับ", risk_id: "ความเสี่ยง", request: "ข้อมูลที่ควรขอเพิ่ม"};
 const RISK = {R1: "การเคลื่อนย้ายเงินผิดปกติ", R2: "รูปแบบบัญชีรับ-ส่งต่อเงิน (สอดคล้องกับ Mule Account pattern)",
   R3: "กลุ่มบัญชีที่มีธุรกรรมเชื่อมโยงกัน (Mule network)", R4: "ความผิดปกติของคู่ค้า (Counterparty)"};
 const ROLE = {mule: ["mule — สอดคล้องกับ Mule Account pattern", "#c2410c"],
   collector: ["collector — รับเงินจากหลายบัญชีในกลุ่ม", "#6d28d9"],
   feeder: ["feeder — ส่งเงินให้หลายบัญชีในกลุ่ม", "#0f766e"], other: ["บทบาทอื่น", "#64748b"]};
+Object.assign(RISK, D.risk_names || {});
+const IS_E = !("data_type" in D) || D.data_type === "E"; // Mule Networks / Money Flow only for data type E (or older bundles)
 const $ = id => document.getElementById(id);
 const esc = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const fmt = v => typeof v === "number" ? v.toLocaleString("th-TH", {maximumFractionDigits: 2})
@@ -1196,7 +1237,7 @@ function tbl(el, rows, cols, click, page) {
   let h = '<div class="wrap"><table><tr>' + cols.map(c => '<th title="' + esc(c) + '">' + esc(LABEL[c] || c) + "</th>").join("") + "</tr>";
   rows.slice(page * PAGE, (page + 1) * PAGE).forEach((r, i) => {
     h += "<tr" + (click ? ' class="click" data-i="' + (page * PAGE + i) + '"' : "") + ">" +
-      cols.map(c => "<td>" + esc(fmt(r[c])) + "</td>").join("") + "</tr>";
+      cols.map(c => "<td>" + (c === "source_label" && r[c] ? '<span class="badge">' + esc(r[c]) + "</span>" : esc(fmt(r[c]))) + "</td>").join("") + "</tr>";
   });
   if (!rows.length) h += '<tr><td colspan="' + cols.length + '" class="note">ไม่มีรายการ</td></tr>';
   h += "</table></div>";
@@ -1218,14 +1259,14 @@ function summary() {
   const card = (t, v) => '<div class="card">' + esc(t) + "<b>" + esc(v) + "</b></div>";
   let h = '<div class="cards">' + card("Finding ทั้งหมด", F.length) +
     ["สูง", "กลาง", "ต่ำ"].map(p => card("Priority " + p, P[p] || 0)).join("") +
-    card("เครือข่าย (Mule network)", D.mule_networks.length) + card("การ์ดที่รัน / Skip", (pl.Run || 0) + " / " + (pl.Skip || 0)) + "</div>";
+    (IS_E ? card("เครือข่าย (Mule network)", D.mule_networks.length) : "") + card("การ์ดที่รัน / Skip", (pl.Run || 0) + " / " + (pl.Skip || 0)) + "</div>";
   h += "<h3>Finding ตามความเสี่ยง</h3><div id='sR'></div>";
   h += '<p class="note">ทุก Finding มีสถานะ "รอ Human Review" — Priority มาจาก Confidence (จำนวนกลุ่มวิธีวิเคราะห์ที่ให้สัญญาณตรงกัน' +
     " และความครบของแหล่งข้อมูล) ร่วมกับ Materiality (ยอดเงินที่เกี่ยวข้องเทียบกับฐานที่ผู้ใช้ยืนยัน) ตาม AIDA-14</p>";
-  h += '<p class="warn">' + esc(D.limits) + "</p>" + (D.card_notes || []).concat(D.flow_notes).map(n => '<p class="warn">' + esc(n) + "</p>").join("");
+  h += (D.limits ? '<p class="warn">' + esc(D.limits) + "</p>" : "") + (D.card_notes || []).concat(D.flow_notes).map(n => '<p class="warn">' + esc(n) + "</p>").join("");
   h += "<h3>Analysis Plan (Run / Skip พร้อมเหตุผล)</h3><div id='sP'></div><h3>Materiality</h3><div id='sM'></div>";
   $("sum").innerHTML = h;
-  tbl($("sR"), Object.keys(RISK).map(r => ({risk: r, name: RISK[r], findings: Rk[r] || 0})), ["risk", "name", "findings"]);
+  tbl($("sR"), (D.risk_names ? Object.keys(Rk).sort() : Object.keys(RISK)).map(r => ({risk: r, name: RISK[r], findings: Rk[r] || 0})), ["risk", "name", "findings"]);
   tbl($("sP"), D.plan, ["recipe_id", "decision", "reason", "missing"]);
   tbl($("sM"), D.materiality, ["item", "value", "detail"]);
 }
@@ -1236,7 +1277,8 @@ function findings() {
   const go = () => {
     const p = $("fP").value, r = $("fR").value;
     const rows = D.findings.filter(f => (p === "ทั้งหมด" || f.priority === p) && (r === "ทั้งหมด" || f.risk === r));
-    tbl($("fT"), rows, ["finding_id", "entity_type", "entity_id", "risk", "period", "exposure", "confidence", "materiality", "priority", "network_id", "review_reason"], showFinding);
+    tbl($("fT"), rows, ["finding_id", "entity_type", "entity_id", "risk", "period", "exposure", "confidence", "materiality", "priority", "network_id", "review_reason"]
+      .concat(D.findings.some(f => f.source_label) ? ["source_label"] : []), showFinding);
     $("fD").innerHTML = '<p class="note">คลิกแถวเพื่อดู Evidence และ record_refs</p>';
   };
   $("fP").onchange = go; $("fR").onchange = go; go();
@@ -1245,7 +1287,8 @@ function showFinding(f) {
   showTab("fnd");
   const ids = new Set(f.evidence_ids || []), ev = D.evidence.filter(e => ids.has(e.evidence_id));
   $("fD").innerHTML = "<h3>" + esc(f.finding_id) + " · " + esc(f.entity_id) + " · " + esc(RISK[f.risk] || f.risk) + "</h3><p>" +
-    esc(f.review_status) + " — " + esc(f.review_reason) + "</p><div id='fE'></div><h3>record_refs (tx_id) " +
+    esc(f.review_status) + " — " + esc(f.review_reason) + (f.source_label ? ' <span class="badge">' + esc(f.source_label) + "</span> ยังไม่ผ่านการรับรอง" : "") +
+    "</p><div id='fE'></div><h3>record_refs (tx_id) " +
     (f.record_refs || []).length + " รายการ</h3><div class='refs'>" + esc((f.record_refs || []).join(", ")) + "</div>";
   tbl($("fE"), ev, ["evidence_id", "recipe_id", "skill_family", "period", "metric", "value", "threshold", "explanation", "record_refs"]);
   $("fD").scrollIntoView({block: "nearest"});
@@ -1314,9 +1357,35 @@ function flows() {
   $("tS").onchange = go; go();
 }
 
+function intake() {
+  const I = D.intake;
+  let h = '<p class="note">สรุปสิ่งที่ผู้ตรวจสอบยืนยันก่อนวิเคราะห์ (Intake) — ตัวเลขและข้อความมาจาก engine</p>' +
+    "<h3>Intake Review</h3><div id='iR'></div><h3>Data Dictionary</h3><div id='iD'></div><h3>Data Request</h3><div id='iQ'></div>" +
+    '<h3>โหมดสำรวจ <span class="badge">จากโหมดสำรวจ</span> ยังไม่ผ่านการรับรอง</h3>';
+  const X = D.exploratory || [];
+  h += X.length ? X.map(x => '<div class="xp"><h4>' + esc(x.explore_id) + " · " + esc(x.question) + (x.promoted === "ใช่" ? " · เลื่อนเป็น Finding โดย " +
+    esc(x.promoted_by) + " (" + esc(x.promoted_finding) + ")" : "") + "</h4><pre>" + esc(x.code) + '</pre><p class="note">ผล: ' + esc(x.result_summary) +
+    "</p>" + (x.note ? '<p class="note">หมายเหตุ: ' + esc(x.note) + "</p>" : "") + (x.promote_reason ? '<p class="note">เหตุผลที่เลื่อน: ' + esc(x.promote_reason) +
+    "</p>" : "") + '<p class="note">เวลา ' + esc(x.time) + "</p></div>").join("") : '<p class="note">ไม่มีการวิเคราะห์ในโหมดสำรวจ</p>';
+  $("intake").innerHTML = h;
+  tbl($("iR"), I.review, ["section", "item", "detail"]);
+  tbl($("iD"), I.dictionary, ["table", "column", "meaning", "role", "code_values", "confirmed_by", "confirmed_at"]);
+  tbl($("iQ"), I.requests, ["no", "risk_id", "request"]);
+}
+if (D.intake) {
+  const b = document.createElement("button"), s = document.createElement("section");
+  b.dataset.tab = "intake"; b.textContent = "Intake"; s.id = "intake";
+  document.querySelector('nav button[data-tab="sum"]').after(b); $("sum").after(s);
+}
+if (!IS_E) {
+  document.querySelectorAll('nav button[data-tab="net"], nav button[data-tab="flow"], #net, #flow').forEach(e => e.remove());
+  document.querySelector("h1").textContent = "AIDA · ข้อสังเกตที่ควรตรวจสอบเพิ่มเติมจากข้อมูลรายการ";
+}
 $("meta").textContent = "run_id " + D.run_id + " · Registry v" + D.registry_version + " · รูปแบบวันที่ที่ใช้แปลง " + ((D.prep || {}).date_format || "-");
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
-summary(); findings(); networks(); flows();
+if (D.intake) intake();
+summary(); findings();
+if (IS_E) { networks(); flows(); }
 tbl($("log"), D.run_log, ["run_id", "timestamp", "stage", "status", "detail", "recipe_id", "recipe_version", "registry_version", "pack_version", "input_sha256"]);
 </script>
 </body>
@@ -3454,7 +3523,8 @@ def confirm(intake: dict, answers: dict = None, path: str = "intake.json", cfg: 
               risks={**intake["risks"], "added": [r for r in add if r not in requested]},
               registry_version=str(base_cfg.get("REGISTRY.VERSION", REGISTRY_VERSION)), engine_version=__version__)
     it = _plain(it)
-    folder = os.path.dirname(os.path.abspath(path))
+    it["intake_path"] = os.path.abspath(path)  # explore_log.json (exploratory mode) is kept next to intake.json
+    folder = os.path.dirname(it["intake_path"])
     os.makedirs(folder, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(it, fh, ensure_ascii=False, indent=2)
@@ -3471,6 +3541,8 @@ def _load_intake(intake) -> dict:
                 intake = json.load(fh)
         except json.JSONDecodeError as e:
             raise AidaError(f"ไฟล์ intake '{p}' ไม่ใช่ JSON ที่ถูกต้อง ({e.msg}) — สร้างใหม่ด้วย confirm(...)") from None
+        if isinstance(intake, dict):
+            intake["intake_path"] = os.path.abspath(p)
     if not isinstance(intake, dict) or intake.get("status") != "confirmed":
         raise AidaError("intake ยังไม่ได้ยืนยัน — เรียก confirm(intake, answers) ก่อน แล้วจึงเรียก run / trace")
     return intake
@@ -3505,14 +3577,14 @@ def _prepare(files, it: dict, cfg: dict) -> dict:
             "events": events, "filter_log": flog}
 
 
-def _run_cfg(it: dict, base_cfg: dict, meta: dict) -> tuple:
+def _run_cfg(it: dict, base_cfg: dict, meta: dict, extra: str = "") -> tuple:
     try:
         _check_org_values(it.get("org_values", {}), base_cfg)  # intake.json may be edited by hand or older than AIDA-14
     except AidaError as e:
         raise AidaError(f"intake: {e} (ค่าขององค์กรใน intake.json ต้องตรงกับ AIDA-14 ที่ใช้ตอนนี้ — แก้ด้วย confirm(...) ใหม่)") from None
     org = _merge_org(it.get("org_values", {}), base_cfg)
     core = json.dumps(_plain({k: it.get(k) for k in ("roles", "filters", "org_values", "risks", "materiality")}),
-                      ensure_ascii=False, sort_keys=True) + "|" + _input_sha(meta)
+                      ensure_ascii=False, sort_keys=True) + "|" + _input_sha(meta) + extra  # extra: promoted exploratory Findings change the result, so the run_id
     run_id = "RUN-" + hashlib.sha256(core.encode("utf-8")).hexdigest()[:10].upper()
     cfg = {**base_cfg, **org, "_RUN": {"run_id": run_id, "data_ref": _data_ref(meta), "input_sha256": _input_sha(meta),
                                        "pack_version": __version__}}
@@ -3589,7 +3661,8 @@ def run(files, intake, out_dir: str = ".", cfg: dict = None, registry_path: str 
         warnings.append(f"engine รุ่น {__version__} แต่ intake สร้างด้วยรุ่น {it.get('engine_version')} — ตรวจผลเทียบกับรอบก่อน")
     pre = _prepare(files, it, base_cfg)
     warnings = pre["warnings"] + warnings
-    cfg_run, org_notes = _run_cfg(it, base_cfg, pre["meta"])
+    ents, prom = _explore_state(it)
+    cfg_run, org_notes = _run_cfg(it, base_cfg, pre["meta"], "|" + ",".join(p["finding_id"] for p in prom) if prom else "")
     events = list(pre["events"]) + [{"stage": 2, "status": "REVIEW", "detail": w} for w in warnings[len(pre["warnings"]):]]
     events += [{"stage": 6, "status": "OK", "detail": n} for n in org_notes]
     tables = pre["tables"]
@@ -3646,10 +3719,22 @@ def run(files, intake, out_dir: str = ".", cfg: dict = None, registry_path: str 
     if dtype == "E" and "to_acct" in tables["transactions"].columns and len(assessed):
         trails = [flow_trace(tr, cfg_run, a, d, p) for a, p in select_auto_trace(assessed, cfg_run)
                   for d in ("forward", "backward")]
+    assessed = assessed.assign(source="card", source_label=None, explore_id=None, reviewer=None, promote_reason=None,
+                               promoted_at=None)
+    if prom:  # promoted exploratory Findings (reviewer-confirmed, never above กลาง) join after the card Findings
+        pf = _promoted_frame(prom, dtype)
+        assessed = pf if not len(assessed) else pd.concat([assessed, pf[assessed.columns]], ignore_index=True)
+    for e in ents:
+        events.append({"stage": 8, "status": "REVIEW", "detail": f"{EXPLORE_NOT_CERTIFIED}: {e['explore_id']} \"{e['question']}\" "
+                       f"({e['result']['text'][:120]})"})
+    for p in prom:
+        events.append({"stage": 8, "status": "REVIEW", "detail": f"{p['explore_id']} เลื่อนเป็น {p['finding_id']} "
+                       f"(ความเสี่ยง {p['risk']}, Confidence {p['confidence']}) โดย {p['reviewer']} — ป้าย \"{EXPLORE_LABEL}\""})
     events.append({"stage": 8, "status": "REVIEW", "detail": "รอ Human Review — ผลเป็นสัญญาณที่ต้องตรวจสอบเพิ่มเติม ไม่ใช่ข้อสรุป"})
     log = log_run(events, cfg_run)
     bundle = out_bundle(tr, profile_b1, plan_df, evidence, assessed, trails, log, m_amt, cfg_run, basis)
     bundle["org_notes"] = org_notes
+    bundle.update(_intake_frames(it), exploratory=_explore_frame(ents, prom), data_type=dtype or "")
     os.makedirs(out_dir, exist_ok=True)
     paths = {"workbook": out_workbook(bundle, os.path.join(out_dir, OUT_NAMES["workbook"]), cfg_run),
              "csv_dir": None,
@@ -3658,10 +3743,11 @@ def run(files, intake, out_dir: str = ".", cfg: dict = None, registry_path: str 
         folder = os.path.join(out_dir, OUT_NAMES["csv_dir"])
         out_network_csv(bundle, folder, cfg_run)
         paths["csv_dir"] = folder
-    keep = [c for c in FINDING_COLUMNS + ["member_accts", "record_refs"] if c in assessed.columns]
+    keep = [c for c in FINDING_COLUMNS + ["member_accts", "record_refs"] + FINDING_SOURCE_COLUMNS if c in assessed.columns]
     res = {"status": "STOP" if status.startswith("STOP") else "OK", "run_id": cfg_run["_RUN"]["run_id"],
            "findings": assessed[keep].reset_index(drop=True), "evidence": evidence, "plan": plan_df,
-           "run_log": bundle["run_log"], "paths": paths, "warnings": warnings, "org_values": dict(it.get("org_values", {}))}
+           "run_log": bundle["run_log"], "paths": paths, "warnings": warnings, "org_values": dict(it.get("org_values", {})),
+           "exploratory": bundle["exploratory"], "promoted": len(prom)}
     res["summary_th"] = _summary_text(res, status, org_notes, dtype)
     return res
 
@@ -3673,12 +3759,15 @@ def _summary_text(res: dict, status: str, org_notes: list, dtype) -> str:
     if status.startswith("STOP"):
         lines.append(f"หยุดก่อนวิเคราะห์: {status[6:]}")
     for rid, n in f["risk"].value_counts().sort_index().items():
-        lines.append(f"- {rid} {RISK_LIBRARY.get(rid, {}).get('name_th', '')}: {int(n):,} รายการ")
+        lines.append(f"- {rid} {_risk_name(rid)}: {int(n):,} รายการ")
     if len(f):
         pr = f["priority"].value_counts()
         lines.append("Priority: " + " / ".join(f"{k} {int(pr.get(k, 0)):,}" for k in ("สูง", "กลาง", "ต่ำ")))
     lines.append(f"การ์ดที่รัน {int((pl['decision'] == 'Run').sum()):,} ใบ / ข้าม {int((pl['decision'] == 'Skip').sum()):,} ใบ "
                  "(เหตุผลอยู่ใน Analysis_Plan)")
+    if res.get("promoted"):
+        lines.append(f"โหมดสำรวจ: {res['promoted']:,} Finding ที่ผู้ตรวจสอบเลื่อนมา ติดป้าย \"{EXPLORE_LABEL}\" "
+                     f"({EXPLORE_NOT_CERTIFIED}; Confidence ไม่เกินกลาง)")
     lines += org_notes
     lines += [f"คำเตือน: {w}" for w in res["warnings"]]
     lines.append("ไฟล์: " + ", ".join(f"{k} = {v}" for k, v in res["paths"].items() if v))
@@ -3762,6 +3851,274 @@ def load_mapping(path) -> dict:
     if miss:
         raise AidaError(f"mapping profile ไม่ครบ (ขาด {', '.join(miss)}) — บันทึกใหม่ด้วย save_mapping(intake, ชื่อ)")
     return m
+
+
+# ---- Exploratory mode (spec 4.5) ----
+EXPLORE_LOG = []  # entries of this session (also written to explore_log.json next to intake.json)
+EXPLORE_FILE = "explore_log.json"
+EXPLORE_LABEL = "จากโหมดสำรวจ"  # permanent label of a promoted Finding
+EXPLORE_NOT_CERTIFIED = "โหมดสำรวจ — ยังไม่ผ่านการรับรอง"
+RX_NAME = "ความเสี่ยงจากโหมดสำรวจ"
+CONF_RANK = {"ต่ำ": 0, "กลาง": 1, "สูง": 2}
+EXPLORE_MAX_CONFIDENCE = "กลาง"
+EXPLORE_HEAD_ROWS = 5
+EXPLORE_TEXT_MAX = 2000
+EXPLORE_COLUMNS = ["explore_id", "question", "code", "result_summary", "note", "time", "promoted", "promoted_by",
+                   "promote_reason", "promoted_finding"]
+
+
+def _risk_name(rid: str) -> str:
+    return RX_NAME if rid == "RX" else RISK_LIBRARY.get(rid, {}).get("name_th", "")
+
+
+def _explore_path(intake):
+    """explore_log.json next to intake.json for an intake dict (its `intake_path` key, set by confirm / run) or the
+    path of intake.json; None when the intake has no known path (the log then stays in EXPLORE_LOG only)."""
+    if intake is None:
+        return None
+    if isinstance(intake, (str, os.PathLike)):
+        return os.path.join(os.path.dirname(os.path.abspath(str(intake))), EXPLORE_FILE)
+    if isinstance(intake, dict):
+        p = intake.get("intake_path")
+        return os.path.join(os.path.dirname(os.path.abspath(p)), EXPLORE_FILE) if p else None
+    raise AidaError("intake ต้องเป็น dict ที่ได้จาก confirm(...) หรือที่อยู่ไฟล์ intake.json")
+
+
+def _read_explore(path) -> dict:
+    if not path or not os.path.isfile(path):
+        return {"explore": [], "promoted": []}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except json.JSONDecodeError as e:
+        raise AidaError(f"ไฟล์ {path} ไม่ใช่ JSON ที่ถูกต้อง ({e.msg}) — กู้คืนจากสำเนา หรือย้ายไฟล์ออกแล้วบันทึกโหมดสำรวจใหม่") from None
+    if not isinstance(d, dict):
+        raise AidaError(f"ไฟล์ {path} รูปแบบไม่ถูกต้อง — ต้องมี explore และ promoted")
+    return {"explore": list(d.get("explore", [])), "promoted": list(d.get("promoted", []))}
+
+
+def _write_explore(path: str, data: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(_plain(data), fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _explore_no(eid) -> int:
+    m = re.fullmatch(r"EXP-(\d+)", str(eid))
+    return int(m.group(1)) if m else 0
+
+
+def _result_summary(res) -> dict:
+    """What the Exploratory sheet shows of a result: rows, columns and the first rows for a table, else its text."""
+    if isinstance(res, pd.Series):
+        res = res.to_frame().reset_index()
+    if isinstance(res, pd.DataFrame):
+        if res.index.name is not None or isinstance(res.index, pd.MultiIndex):
+            res = res.reset_index()
+        head = json.loads(res.head(EXPLORE_HEAD_ROWS).to_json(orient="records", date_format="iso", force_ascii=False))
+        cols = [str(c) for c in res.columns]
+        text = (f"{len(res):,} แถว {len(cols):,} คอลัมน์ ({', '.join(cols)}); {min(len(res), EXPLORE_HEAD_ROWS)} แถวแรก: "
+                + json.dumps(head, ensure_ascii=False))
+        return {"kind": "table", "rows": int(len(res)), "columns": cols, "head": head, "text": text[:EXPLORE_TEXT_MAX]}
+    return {"kind": "value", "text": str(res)[:EXPLORE_TEXT_MAX]}
+
+
+def _nonblank(v, what: str, how: str) -> str:
+    if v is None or not str(v).strip():
+        raise AidaError(f"ต้องระบุ{what} — {how}")
+    return str(v).strip()
+
+
+@_thai_errors
+def data(files=None, intake=None) -> dict:
+    """The data for exploratory mode: internal frames {"transactions", "accounts"} after the confirmed filters and
+    roles (custom roles included). df.attrs["original_names"] = {internal column: column name in the file};
+    df.attrs["warnings"] = warnings such as a changed sha256. Call as data(files, intake) or data(intake)
+    (an intake dict or the path of intake.json); with files=None the files recorded in the intake are read."""
+    if intake is None and files is not None and (
+            (isinstance(files, dict) and "roles" in files and "files" in files)
+            or (isinstance(files, (str, os.PathLike)) and str(files).lower().endswith(".json"))):
+        files, intake = None, files
+    it = _load_intake(intake)
+    base_cfg = _load_cfg(it.get("cfg"), it.get("registry_path"))[0]
+    pre = _prepare(files, it, base_cfg)
+    primary, extra = _split_roles(it["roles"])
+    tx_name = _roles_by_table(primary)[0]
+    names = {"transactions": {}, "accounts": {}}
+    for t, rmap in primary.items():
+        for col, role in rmap.items():
+            if t == tx_name:
+                names["transactions"][ROLE_TO_INTERNAL.get(role, role)] = col
+            elif role == ACCOUNT_ID_ROLE:
+                names["accounts"]["acct_id"] = col
+            elif role == "opened_at" or role.startswith("custom:"):
+                names["accounts"][role] = col
+    for t, col, role in extra:
+        names["transactions" if t == tx_name else "accounts"][role] = col
+    out = {}
+    for k, df in pre["tables"].items():
+        if k.startswith("_"):
+            continue
+        df = df.copy()
+        df.attrs["original_names"] = {c: names.get(k, {})[c] for c in df.columns if c in names.get(k, {})}
+        df.attrs["warnings"] = list(pre["warnings"])
+        out[k] = df
+    return out
+
+
+@_thai_errors
+def explore_log(question: str, code: str, result, note: str = "", intake=None) -> str:
+    """Record one exploratory analysis (spec 4.5): the question, the full code, a summary of the result (rows and
+    columns plus the first rows of a table), a note and the time. Returns "EXP-<n>", appends to EXPLORE_LOG and,
+    when `intake` (dict from confirm / run, or the path of intake.json) is given, writes explore_log.json next to
+    intake.json: {"explore": [...], "promoted": [...]}. The result is shown as "โหมดสำรวจ — ยังไม่ผ่านการรับรอง"."""
+    q = _nonblank(question, "คำถาม", "บอกว่าโหมดสำรวจนี้ตอบคำถามอะไร")
+    c = _nonblank(code, "โค้ด", "ส่งโค้ด pandas เต็มที่ใช้หาผลนี้ เพื่อให้ผู้ตรวจสอบทำซ้ำได้")
+    path = _explore_path(intake)
+    data_ = _read_explore(path) if path else {"explore": [], "promoted": []}
+    mine = data_["explore"] if path else [e for e in EXPLORE_LOG if not e.get("log_path")]
+    eid = f"EXP-{max([_explore_no(e['explore_id']) for e in mine], default=0) + 1}"
+    entry = {"explore_id": eid, "question": q, "code": str(code), "result": _result_summary(result),
+             "note": str(note or ""), "time": _now()}
+    if path:
+        data_["explore"].append(entry)
+        _write_explore(path, data_)
+    EXPLORE_LOG.append({**entry, "log_path": path})
+    return eid
+
+
+@_thai_errors
+def promote(explore_id, entity, risk, period, reason, reviewer, confidence: str = EXPLORE_MAX_CONFIDENCE,
+            intake=None) -> dict:
+    """Promote an exploratory result to a Finding row (spec 4.5): source="exploratory", Confidence never above กลาง
+    (a higher `confidence` is capped), reviewer required, risk from the Risk Library or "RX", and the permanent
+    label "จากโหมดสำรวจ". The row is saved in the `promoted` list of explore_log.json (next to intake.json) so
+    run(files, intake) merges it into Findings, the Exploratory sheet and the Dashboard in this and later runs."""
+    rv = _nonblank(reviewer, "ผู้ตรวจสอบ (reviewer)", "ระบุชื่อผู้ตรวจสอบที่สั่งเลื่อนก่อนเลื่อนเป็น Finding")
+    if risk != "RX" and risk not in RISK_LIBRARY:
+        raise AidaError(f"ไม่รู้จักความเสี่ยง '{risk}' — เลือกจาก Risk Library ({', '.join(RISK_LIBRARY)}) "
+                        "หรือใช้ RX สำหรับความเสี่ยงที่ไม่มีในคลัง แล้วเรียกใหม่")
+    ent = _nonblank(entity, "entity (บัญชี/ผู้ชำระ/ผู้ขาย)", "ระบุรหัสของสิ่งที่ผลสำรวจชี้")
+    why = _nonblank(reason, "เหตุผลที่เลื่อน", "อธิบายว่าทำไมผลนี้ควรทบทวนต่อ (ใช้ถ้อยคำไม่กล่าวหา)")
+    if confidence not in CONF_RANK:
+        raise AidaError(f"confidence ต้องเป็น ต่ำ / กลาง / สูง (ได้รับ {confidence!r}) — Finding จากโหมดสำรวจสูงสุดได้ {EXPLORE_MAX_CONFIDENCE}")
+    conf = min(confidence, EXPLORE_MAX_CONFIDENCE, key=CONF_RANK.get)
+    path = _explore_path(intake)
+    if path:
+        found = [e for e in _read_explore(path)["explore"] if e["explore_id"] == explore_id]
+    else:
+        found = [e for e in reversed(EXPLORE_LOG) if e["explore_id"] == explore_id][:1]
+        path = found[0].get("log_path") if found else None
+    if not found:
+        raise AidaError(f"ไม่พบ {explore_id} ในบันทึกโหมดสำรวจ — เรียก explore_log(...) ก่อน หรือส่ง intake= ของชุดข้อมูลเดียวกัน")
+    data_ = _read_explore(path) if path else {"explore": [], "promoted": []}
+    n = sum(1 for p in data_["promoted"] if p["explore_id"] == explore_id)
+    row = {"finding_id": f"FND-{explore_id}" + (f"-{n + 1}" if n else ""), "entity_type": "entity", "entity_id": ent,
+           "risk": risk, "period": str(period).strip() if period is not None and str(period).strip() else "-",
+           "evidence_ids": [], "skill_families": ["exploratory"], "exposure": None, "confidence": conf,
+           "materiality": "ไม่ได้ประเมิน", "priority": conf, "review_status": "รอ Human Review",
+           "review_reason": f"{EXPLORE_LABEL} ({EXPLORE_NOT_CERTIFIED}) — เหตุผลที่ผู้ตรวจสอบเลื่อน: {why}",
+           "network_id": None, "member_accts": [], "record_refs": [], "data_ref_complete": False, "internal_amount": None,
+           "source": "exploratory", "source_label": EXPLORE_LABEL, "explore_id": explore_id, "reviewer": rv,
+           "promote_reason": why, "promoted_at": _now()}
+    if path:
+        data_["promoted"].append(row)
+        _write_explore(path, data_)
+    return row
+
+
+def _explore_state(it: dict) -> tuple:
+    """(entries, promoted rows) saved next to this intake, in a fixed order."""
+    d = _read_explore(_explore_path(it))
+    ents = sorted(d["explore"], key=lambda e: _explore_no(e["explore_id"]))
+    prom = sorted(d["promoted"], key=lambda p: (_explore_no(p["explore_id"]), p["finding_id"]))
+    return ents, prom
+
+
+def _explore_frame(ents: list, prom: list) -> pd.DataFrame:
+    by = {}
+    for p in prom:
+        by.setdefault(p["explore_id"], []).append(p)
+    rows = []
+    for e in ents:
+        ps = by.get(e["explore_id"], [])
+        rows.append((e["explore_id"], e["question"], e["code"], e["result"]["text"], e.get("note", ""), e["time"],
+                     "ใช่" if ps else "ไม่", "; ".join(dict.fromkeys(p["reviewer"] for p in ps)),
+                     "; ".join(p["promote_reason"] for p in ps), "; ".join(p["finding_id"] for p in ps)))
+    return pd.DataFrame(rows, columns=EXPLORE_COLUMNS)
+
+
+def _promoted_frame(prom: list, dtype) -> pd.DataFrame:
+    cols = FINDING_COLUMNS + FINDING_WORK_COLUMNS + FINDING_SOURCE_COLUMNS
+    lab = ENTITY_LABELS.get(dtype, {})
+    rows = [{**p, "entity_type": lab.get(p["entity_type"], p["entity_type"])} for p in prom]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def _roles_text(r) -> str:
+    return ", ".join(_role_list(r)) or "ไม่ใช้"
+
+
+def _intake_frames(it: dict) -> dict:
+    """Intake_Review, Data_Dictionary and Data_Request (spec 6) from the confirmed intake."""
+    br, rk = it.get("brief") or {}, it["risks"]
+    rows = []
+
+    def add(section, item, detail=""):
+        rows.append((section, str(item), str(detail)))
+    add("บริบท", "บริบทงาน", br.get("context") or "ไม่ระบุ")
+    add("บริบท", "ไฟล์", "; ".join(f"{t} ({m['file']}{' ชีต ' + m['sheet'] if m.get('sheet') else ''})" for t, m in it["files"].items()))
+    nrows = {}
+    for p in it.get("profile", []):
+        nrows[p["table"]] = p["n_rows"]
+    add("บริบท", "จำนวนแถวก่อนใช้ตัวกรอง", ", ".join(f"{t} {n:,} แถว" for t, n in nrows.items()))
+    if it.get("dataset_type"):
+        add("บริบท", "ประเภทข้อมูลที่ engine เห็น", f"{it['dataset_type']} ({TYPE_TEXT[it['dataset_type']]})")
+    for c in rk.get("concerns", []):
+        if c["risk_id"]:
+            add("Risk Concern", c["concern"], f"จับคู่กับ {c['risk_id']} {_risk_name(c['risk_id'])} (โหมดรับรอง)")
+        else:
+            add("Risk Concern", c["concern"], f"ไม่มีใน Risk Library — วิเคราะห์ในโหมดสำรวจ ({EXPLORE_NOT_CERTIFIED})")
+    for s in it.get("sufficiency", []):
+        add("ความพอเพียง", f"{s['risk_id']} {_risk_name(s['risk_id'])}",
+            f"{SUFF_ICON[s['status']]} {s['status']} — {_dedup_text(s['reason'])}"
+            + (f" | การ์ดที่รันได้: {', '.join(s['runnable_checks'])}" if s["runnable_checks"] else ""))
+    chosen = set(rk.get("requested", [])) | set(rk.get("added", []))
+    for s in it.get("suggested_risks", []):
+        add("ความเสี่ยงที่แนะนำ", f"{s['risk_id']} {s['name_th']}",
+            s["why_th"] + (" | ผู้ตรวจสอบเลือกเพิ่มแล้ว" if s["risk_id"] in chosen else " | ยังไม่ได้เพิ่ม"))
+    add("คำตอบผู้ตรวจสอบ", "ผู้ยืนยัน", it.get("reviewer") or "ไม่ระบุ")
+    add("คำตอบผู้ตรวจสอบ", "ยืนยันเมื่อ", it.get("confirmed_at") or "-")
+    add("คำตอบผู้ตรวจสอบ", "ความเสี่ยงที่ขอ", ", ".join(rk.get("requested", [])) or "ไม่มี")
+    add("คำตอบผู้ตรวจสอบ", "ความเสี่ยงที่เพิ่มหลังคำแนะนำ", ", ".join(rk.get("added", [])) or "ไม่มี")
+    for t, rmap in it["roles"].items():
+        for c, r in rmap.items():
+            add("คำตอบผู้ตรวจสอบ", f"บทบาท {t}.{c}", _roles_text(r))
+    for f in it.get("filters", []):
+        add("คำตอบผู้ตรวจสอบ", "ตัวกรอง", f"{f['column']} {f['op']} {f['value']}")
+    for k, v in (it.get("org_values") or {}).items():
+        add("คำตอบผู้ตรวจสอบ", f"ค่าขององค์กร {k}", f"{v!r} (แทนค่ามาตรฐาน AIDA-14 เฉพาะ run นี้)")
+    mat = it.get("materiality") or {}
+    add("คำตอบผู้ตรวจสอบ", "Materiality", f"แบบ {mat.get('type', 'ไม่ระบุ')}" + (
+        f" ฐาน {mat['amount']:,.2f} {mat.get('basis', '')}" if mat.get("type") in ("ก", "ข") and _num_value(mat.get("amount")) is not None else ""))
+    review = pd.DataFrame(rows, columns=["section", "item", "detail"])
+    dd = []
+    for p in it.get("profile", []):
+        t, c = p["table"], p["column"]
+        cv = it.get("code_values", {}).get(f"{t}.{c}") or {}
+        dd.append((t, c, (it.get("columns", {}).get(t) or {}).get(c, ""), _roles_text(it["roles"].get(t, {}).get(c)),
+                   ", ".join(f"{a} = {b}" for a, b in cv.items()), it.get("reviewer") or "ไม่ระบุ", it.get("confirmed_at") or "-"))
+    dic = pd.DataFrame(dd, columns=["table", "column", "meaning", "role", "code_values", "confirmed_by", "confirmed_at"])
+    req = []
+    for s in it.get("sufficiency", []):
+        for r in s["data_request"]:
+            req.append((len(req) + 1, s["risk_id"], r))
+    if not req:
+        req = [(1, "-", "ไม่มี — ข้อมูลพอสำหรับความเสี่ยงที่ขอ")]
+    return {"intake_review": review, "data_dictionary": dic,
+            "data_request": pd.DataFrame(req, columns=["no", "risk_id", "request"])}
 
 
 # ---- Intake Review text (spec 4.3 step 4) ----

@@ -60,7 +60,10 @@ main{padding:16px;max-width:1280px}section{display:none}section.on{display:block
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px}.card b{display:block;font-size:24px}
 .wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;background:var(--card);font-size:13px}
 th,td{border:1px solid var(--line);padding:5px 7px;text-align:left;vertical-align:top}th{background:var(--head)}
-td{max-width:520px;overflow-wrap:break-word}tr.click{cursor:pointer}tr.click:hover{background:#eaf3ff}
+td{max-width:520px;overflow-wrap:break-word}
+.badge{display:inline-block;background:var(--warnbg);color:var(--warn);border:1px solid #e9a94b;border-radius:10px;padding:0 8px;font-size:12px;font-weight:600;white-space:nowrap}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--head);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:12px;margin:4px 0}
+.xp{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:10px}.xp h4{margin:0 0 4px;font-size:14px}tr.click{cursor:pointer}tr.click:hover{background:#eaf3ff}
 .note{color:var(--mute);font-size:13px}.warn{color:var(--warn);background:var(--warnbg);padding:6px 10px;border-radius:6px}
 select,.pager button{font:inherit;margin:4px 6px 8px 0}.refs{font-family:monospace;font-size:12px;overflow-wrap:anywhere}
 .legend span{display:inline-flex;align-items:center;margin:0 14px 6px 0}.dot{width:12px;height:12px;border-radius:50%;margin-right:5px}
@@ -93,12 +96,16 @@ const LABEL = {finding_id: "รหัส Finding", entity_type: "ประเภ
   missing: "ข้อมูลที่ขาด", item: "รายการ", detail: "รายละเอียด", name: "ชื่อความเสี่ยง", findings: "จำนวน Finding",
   run_id: "รหัสการรัน", timestamp: "เวลา", stage: "ขั้นตอน", status: "สถานะ", recipe_version: "เวอร์ชันการ์ด",
   registry_version: "เวอร์ชัน Registry", pack_version: "เวอร์ชัน Pack", input_sha256: "ค่า hash ของไฟล์ (sha256)",
-  account: "บัญชี", role: "บทบาทในเครือข่าย", finding_ids: "Finding ที่เกี่ยวข้อง"};
+  account: "บัญชี", role: "บทบาทในเครือข่าย", finding_ids: "Finding ที่เกี่ยวข้อง", source_label: "ที่มา", section: "หัวข้อ",
+  table: "ตาราง", column: "คอลัมน์", meaning: "ความหมาย", code_values: "ความหมายของค่ารหัส", confirmed_by: "ผู้ยืนยัน",
+  confirmed_at: "วันที่ยืนยัน", no: "ลำดับ", risk_id: "ความเสี่ยง", request: "ข้อมูลที่ควรขอเพิ่ม"};
 const RISK = {R1: "การเคลื่อนย้ายเงินผิดปกติ", R2: "รูปแบบบัญชีรับ-ส่งต่อเงิน (สอดคล้องกับ Mule Account pattern)",
   R3: "กลุ่มบัญชีที่มีธุรกรรมเชื่อมโยงกัน (Mule network)", R4: "ความผิดปกติของคู่ค้า (Counterparty)"};
 const ROLE = {mule: ["mule — สอดคล้องกับ Mule Account pattern", "#c2410c"],
   collector: ["collector — รับเงินจากหลายบัญชีในกลุ่ม", "#6d28d9"],
   feeder: ["feeder — ส่งเงินให้หลายบัญชีในกลุ่ม", "#0f766e"], other: ["บทบาทอื่น", "#64748b"]};
+Object.assign(RISK, D.risk_names || {});
+const IS_E = !("data_type" in D) || D.data_type === "E"; // Mule Networks / Money Flow only for data type E (or older bundles)
 const $ = id => document.getElementById(id);
 const esc = v => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const fmt = v => typeof v === "number" ? v.toLocaleString("th-TH", {maximumFractionDigits: 2})
@@ -113,7 +120,7 @@ function tbl(el, rows, cols, click, page) {
   let h = '<div class="wrap"><table><tr>' + cols.map(c => '<th title="' + esc(c) + '">' + esc(LABEL[c] || c) + "</th>").join("") + "</tr>";
   rows.slice(page * PAGE, (page + 1) * PAGE).forEach((r, i) => {
     h += "<tr" + (click ? ' class="click" data-i="' + (page * PAGE + i) + '"' : "") + ">" +
-      cols.map(c => "<td>" + esc(fmt(r[c])) + "</td>").join("") + "</tr>";
+      cols.map(c => "<td>" + (c === "source_label" && r[c] ? '<span class="badge">' + esc(r[c]) + "</span>" : esc(fmt(r[c]))) + "</td>").join("") + "</tr>";
   });
   if (!rows.length) h += '<tr><td colspan="' + cols.length + '" class="note">ไม่มีรายการ</td></tr>';
   h += "</table></div>";
@@ -135,14 +142,14 @@ function summary() {
   const card = (t, v) => '<div class="card">' + esc(t) + "<b>" + esc(v) + "</b></div>";
   let h = '<div class="cards">' + card("Finding ทั้งหมด", F.length) +
     ["สูง", "กลาง", "ต่ำ"].map(p => card("Priority " + p, P[p] || 0)).join("") +
-    card("เครือข่าย (Mule network)", D.mule_networks.length) + card("การ์ดที่รัน / Skip", (pl.Run || 0) + " / " + (pl.Skip || 0)) + "</div>";
+    (IS_E ? card("เครือข่าย (Mule network)", D.mule_networks.length) : "") + card("การ์ดที่รัน / Skip", (pl.Run || 0) + " / " + (pl.Skip || 0)) + "</div>";
   h += "<h3>Finding ตามความเสี่ยง</h3><div id='sR'></div>";
   h += '<p class="note">ทุก Finding มีสถานะ "รอ Human Review" — Priority มาจาก Confidence (จำนวนกลุ่มวิธีวิเคราะห์ที่ให้สัญญาณตรงกัน' +
     " และความครบของแหล่งข้อมูล) ร่วมกับ Materiality (ยอดเงินที่เกี่ยวข้องเทียบกับฐานที่ผู้ใช้ยืนยัน) ตาม AIDA-14</p>";
-  h += '<p class="warn">' + esc(D.limits) + "</p>" + (D.card_notes || []).concat(D.flow_notes).map(n => '<p class="warn">' + esc(n) + "</p>").join("");
+  h += (D.limits ? '<p class="warn">' + esc(D.limits) + "</p>" : "") + (D.card_notes || []).concat(D.flow_notes).map(n => '<p class="warn">' + esc(n) + "</p>").join("");
   h += "<h3>Analysis Plan (Run / Skip พร้อมเหตุผล)</h3><div id='sP'></div><h3>Materiality</h3><div id='sM'></div>";
   $("sum").innerHTML = h;
-  tbl($("sR"), Object.keys(RISK).map(r => ({risk: r, name: RISK[r], findings: Rk[r] || 0})), ["risk", "name", "findings"]);
+  tbl($("sR"), (D.risk_names ? Object.keys(Rk).sort() : Object.keys(RISK)).map(r => ({risk: r, name: RISK[r], findings: Rk[r] || 0})), ["risk", "name", "findings"]);
   tbl($("sP"), D.plan, ["recipe_id", "decision", "reason", "missing"]);
   tbl($("sM"), D.materiality, ["item", "value", "detail"]);
 }
@@ -153,7 +160,8 @@ function findings() {
   const go = () => {
     const p = $("fP").value, r = $("fR").value;
     const rows = D.findings.filter(f => (p === "ทั้งหมด" || f.priority === p) && (r === "ทั้งหมด" || f.risk === r));
-    tbl($("fT"), rows, ["finding_id", "entity_type", "entity_id", "risk", "period", "exposure", "confidence", "materiality", "priority", "network_id", "review_reason"], showFinding);
+    tbl($("fT"), rows, ["finding_id", "entity_type", "entity_id", "risk", "period", "exposure", "confidence", "materiality", "priority", "network_id", "review_reason"]
+      .concat(D.findings.some(f => f.source_label) ? ["source_label"] : []), showFinding);
     $("fD").innerHTML = '<p class="note">คลิกแถวเพื่อดู Evidence และ record_refs</p>';
   };
   $("fP").onchange = go; $("fR").onchange = go; go();
@@ -162,7 +170,8 @@ function showFinding(f) {
   showTab("fnd");
   const ids = new Set(f.evidence_ids || []), ev = D.evidence.filter(e => ids.has(e.evidence_id));
   $("fD").innerHTML = "<h3>" + esc(f.finding_id) + " · " + esc(f.entity_id) + " · " + esc(RISK[f.risk] || f.risk) + "</h3><p>" +
-    esc(f.review_status) + " — " + esc(f.review_reason) + "</p><div id='fE'></div><h3>record_refs (tx_id) " +
+    esc(f.review_status) + " — " + esc(f.review_reason) + (f.source_label ? ' <span class="badge">' + esc(f.source_label) + "</span> ยังไม่ผ่านการรับรอง" : "") +
+    "</p><div id='fE'></div><h3>record_refs (tx_id) " +
     (f.record_refs || []).length + " รายการ</h3><div class='refs'>" + esc((f.record_refs || []).join(", ")) + "</div>";
   tbl($("fE"), ev, ["evidence_id", "recipe_id", "skill_family", "period", "metric", "value", "threshold", "explanation", "record_refs"]);
   $("fD").scrollIntoView({block: "nearest"});
@@ -231,9 +240,35 @@ function flows() {
   $("tS").onchange = go; go();
 }
 
+function intake() {
+  const I = D.intake;
+  let h = '<p class="note">สรุปสิ่งที่ผู้ตรวจสอบยืนยันก่อนวิเคราะห์ (Intake) — ตัวเลขและข้อความมาจาก engine</p>' +
+    "<h3>Intake Review</h3><div id='iR'></div><h3>Data Dictionary</h3><div id='iD'></div><h3>Data Request</h3><div id='iQ'></div>" +
+    '<h3>โหมดสำรวจ <span class="badge">จากโหมดสำรวจ</span> ยังไม่ผ่านการรับรอง</h3>';
+  const X = D.exploratory || [];
+  h += X.length ? X.map(x => '<div class="xp"><h4>' + esc(x.explore_id) + " · " + esc(x.question) + (x.promoted === "ใช่" ? " · เลื่อนเป็น Finding โดย " +
+    esc(x.promoted_by) + " (" + esc(x.promoted_finding) + ")" : "") + "</h4><pre>" + esc(x.code) + '</pre><p class="note">ผล: ' + esc(x.result_summary) +
+    "</p>" + (x.note ? '<p class="note">หมายเหตุ: ' + esc(x.note) + "</p>" : "") + (x.promote_reason ? '<p class="note">เหตุผลที่เลื่อน: ' + esc(x.promote_reason) +
+    "</p>" : "") + '<p class="note">เวลา ' + esc(x.time) + "</p></div>").join("") : '<p class="note">ไม่มีการวิเคราะห์ในโหมดสำรวจ</p>';
+  $("intake").innerHTML = h;
+  tbl($("iR"), I.review, ["section", "item", "detail"]);
+  tbl($("iD"), I.dictionary, ["table", "column", "meaning", "role", "code_values", "confirmed_by", "confirmed_at"]);
+  tbl($("iQ"), I.requests, ["no", "risk_id", "request"]);
+}
+if (D.intake) {
+  const b = document.createElement("button"), s = document.createElement("section");
+  b.dataset.tab = "intake"; b.textContent = "Intake"; s.id = "intake";
+  document.querySelector('nav button[data-tab="sum"]').after(b); $("sum").after(s);
+}
+if (!IS_E) {
+  document.querySelectorAll('nav button[data-tab="net"], nav button[data-tab="flow"], #net, #flow').forEach(e => e.remove());
+  document.querySelector("h1").textContent = "AIDA · ข้อสังเกตที่ควรตรวจสอบเพิ่มเติมจากข้อมูลรายการ";
+}
 $("meta").textContent = "run_id " + D.run_id + " · Registry v" + D.registry_version + " · รูปแบบวันที่ที่ใช้แปลง " + ((D.prep || {}).date_format || "-");
 document.querySelectorAll("nav button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
-summary(); findings(); networks(); flows();
+if (D.intake) intake();
+summary(); findings();
+if (IS_E) { networks(); flows(); }
 tbl($("log"), D.run_log, ["run_id", "timestamp", "stage", "status", "detail", "recipe_id", "recipe_version", "registry_version", "pack_version", "input_sha256"]);
 </script>
 </body>
