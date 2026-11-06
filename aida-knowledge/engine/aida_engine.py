@@ -709,6 +709,10 @@ def beh_spike(tables: dict, cfg: dict) -> pd.DataFrame:
 # ---- TEMP-OFFHOURS ----
 def temp_offhours(tables: dict, cfg: dict) -> pd.DataFrame:
     t = base_tx(tables)
+    if len(t) and (t["ts"] == t["ts"].dt.normalize()).all():
+        # date only (every time is 00:00): the time of day is unknown, so nothing can be called off-hours
+        card_note(tables, "TEMP-OFFHOURS", "1.1", "คอลัมน์วันที่มีเฉพาะวัน ไม่มีเวลาของรายการ จึงตัดสินรายการนอกเวลาทำการไม่ได้")
+        return evidence_rows("TEMP-OFFHOURS", "1.1", "5.4 Temporal", "R1", "TEMP.OFF_HOURS", pd.DataFrame(), cfg)
     oh, k, share = cfg["TEMP.OFF_HOURS"], cfg["TEMP.OFF_HOURS.MIN_TX"], cfg["TEMP.OFF_HOURS.MIN_SHARE"]
     hhmm = t["ts"].dt.strftime("%H:%M")
     off = (hhmm < oh["start"]) | (hhmm >= oh["end"])
@@ -2342,9 +2346,7 @@ RISK_LIBRARY = {
     "G-R1": _risk("ยอดโดดเด่น",
                   "รายการหรือบัญชีที่ยอดโดดเด่นหรือถี่ผิดปกติเมื่อเทียบกับพฤติกรรมปกติของตนเองและของกลุ่ม",
                   ["ยอดโดดเด่น", "ยอดสูงผิดปกติ", "ยอดผิดปกติ", "outlier amount", "unusual amount", "amount outlier"],
-                  # NEEDS_CONTEXT: the checks now run on C/A, but STAT-MAD flags normal rows there (log-uniform
-                  # amounts), contradicting the answer keys, so G-R1 stays E-only until that is decided
-                  ["E"], ["STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE"], _GENR, 1, 100),
+                  ["E", "C", "A"], ["STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE"], _GENR, 1, 100),
     "G-R2": _risk("ช่วงสิ้นงวด",
                   "รายการกระจุกตัวในช่วงสิ้นเดือนหรือสิ้นงวดบัญชีมากกว่าปกติ",
                   ["ช่วงสิ้นงวด", "สิ้นงวด", "สิ้นเดือน", "ปิดงวด", "period end", "period-end", "month end", "cut-off"],

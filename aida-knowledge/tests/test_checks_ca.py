@@ -118,6 +118,26 @@ class ChecksCA(unittest.TestCase):
         self.assertEqual(set(e.CHECKS["STAT-MAD"]["requires"]), {"record_id", "date", "entity", "amount"})
         self.assertEqual(set(e.CHECKS["TEMP-OFFHOURS"]["requires"]), {"record_id", "date", "entity"})
 
+    def test_every_runnable_check_flags_only_answer_key_ids(self):
+        """Normal rows trip no certified check: on C and A each runnable check flags only ids named in the key."""
+        e = engine()
+        for name in ("C", "A"):
+            tables, key = dataset(name)
+            plan = e.plan_checks(tables, cfg()).set_index("recipe_id")
+            ran = 0
+            for cid, spec in e.CHECKS.items():
+                if plan.loc[cid, "decision"] != "Run":
+                    continue
+                ran += 1
+                ev = spec["func"]({k: v.copy() for k, v in tables.items()}, cfg())
+                flagged = set(ev["entity_id"].astype(str)) if len(ev) else set()
+                self.assertLessEqual(flagged, set(key["recipes"].get(cid, [])), (name, cid, sorted(flagged)[:8]))
+            self.assertGreaterEqual(ran, 10)
+
+    def test_offhours_needs_time_of_day(self):
+        tables, _ = dataset("A")  # dates only: every time is 00:00
+        self.assertEqual(len(engine().CHECKS["TEMP-OFFHOURS"]["func"](tables, cfg())), 0)
+
     def test_checks_skip_reason_names_missing_roles(self):
         e = engine()
         tables, _ = dataset("A")

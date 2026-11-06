@@ -5,8 +5,9 @@ data; the planted cases and the answer key are the same for every seed.
 
 Normal data design (why no check fires on it):
 - 200 contracts HP-0001..HP-0200, one borrower each, 8 months (2026-01..08), one instalment a month. Instalments are
-  stratified log-uniform over 1,000-100,000 (two whole decades), so the first digits follow Benford's law; cents are
-  random, so no amount is round and no amount repeats three times for the same borrower in a month.
+  stratified Benford (1,000-39,999, see _instalments), so the first digits follow Benford's law and no amount is
+  a modified-z outlier; an instalment is the same every month, so the monthly total of a borrower is flat (no
+  spike), and no amount is round or repeats three times for the same borrower in a month.
 - Due day 10-14. A normal payment is made 4-6 days before or 4-8 days after the due day (never 0-2 days before),
   so every payment date falls on day 4-24 of its month: outside every period-end window.
 - The payer is the borrower, except 10 contracts paid by their own third party (TP01..TP10): one contract each.
@@ -130,7 +131,7 @@ def _answer_key():
             "concern_risks": "concern 3 (payer accounts receiving unusual transfers) is a data type E risk, R1; it "
                              "needs deposit/transfer transactions the file does not have, hence \"ไม่พอ\" and a data "
                              "request",
-            "benford": "the instalments are stratified log-uniform so first digits follow Benford (MAD < 0.006)",
+            "benford": "the instalments are stratified Benford (1,000-39,999) so first digits follow Benford (MAD < 0.006) and no amount is a modified-z outlier",
         },
         "tables": {"payments": TABLES["payments"], "contracts": TABLES["contracts"]},
     }
@@ -143,12 +144,18 @@ def _fix_round(values):
     return values
 
 
+def _instalments(n, rng):
+    """Stratified-Benford instalments (first digit follows the law exactly): digits 1-3 in 10,000-39,999, digits
+    4-9 in 1,000-9,999. The largest is under 40,000, so no instalment is a modified-z outlier of the whole file."""
+    lg = (np.arange(n) + 0.5) / n
+    rng.shuffle(lg)
+    return np.array([10 ** ((4 if int(10 ** g) <= 3 else 3) + g) for g in lg])
+
+
 def make(seed: int = SEED):
     """Return (frames, answer_key)."""
     rng = np.random.default_rng(seed)
-    inst = 10 ** (3 + 2 * (np.arange(N) + 0.5) / N)
-    rng.shuffle(inst)
-    inst = _fix_round(np.round(inst, 2))
+    inst = _fix_round(np.round(_instalments(N, rng), 2))
     due_day = rng.integers(10, 15, N)
     cids = [f"HP-{i:04d}" for i in range(1, N + 1)]
     third = {f"HP-{i:04d}": f"TP{k:02d}" for k, i in enumerate(THIRD_PARTY, start=1)}

@@ -280,6 +280,11 @@ class Plan(unittest.TestCase):
             # date-only data: G-R3 needs a time of day
             self.assertEqual(e.assess_sufficiency(["G-R3"], roles, prof, cfg()).iloc[0]["status"], "ไม่พอ")
         self.assertEqual(engine().RISK_LIBRARY["G-R3"]["data_types"], ["E", "C", "A"])
+        self.assertEqual(engine().RISK_LIBRARY["G-R1"]["data_types"], ["E", "C", "A"])
+        for n in "CA":
+            _, roles, _, tab, prof = load(n)
+            r = e.assess_sufficiency(["G-R1"], roles, prof, cfg(), tab).iloc[0]
+            self.assertEqual(r["status"], "พร้อม", (n, r["reason"]))
 
     def test_plan_run_skip_reasons(self):
         e = engine()

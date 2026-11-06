@@ -63,7 +63,7 @@
     "refunds": "negative pay_amount rows are refunds (about 2 % of the rows); they are not findings, they are why \"ยอดชำระสุทธิ\" conflicts with the data",
     "suggested_risks": "C-R3 is the only library risk with a planted case that the auditor did not request (duplicate payment + refunds); G-R3 would need time of day, which payments lack; G-R1/G-R2/G-R4 have no planted case in C",
     "concern_risks": "concern 3 (payer accounts receiving unusual transfers) is a data type E risk, R1; it needs deposit/transfer transactions the file does not have, hence \"ไม่พอ\" and a data request",
-    "benford": "the instalments are stratified log-uniform so first digits follow Benford (MAD < 0.006)"
+    "benford": "the instalments are stratified Benford (1,000-39,999) so first digits follow Benford (MAD < 0.006) and no amount is a modified-z outlier"
   },
   "tables": {
     "payments": [

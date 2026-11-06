@@ -91,7 +91,7 @@
     "entities": "DUP-PAY and SPLIT-LIMIT / FOR-* / GEN-* name the vendor (vendor_id); SOD-SAME-USER the user (created_by = approved_by); the duplicate finding is keyed by invoice number",
     "period": "findings of a pattern over several periods carry the latest period of the data, 2026-08; INV-7781 carries 2026-04 and the split payments 2026-06",
     "DUP-PAY": "V-031 only: same vendor, invoice and amount within DUP.WINDOW_DAYS. V-045's 3 x 48,000 have the same vendor and amount within the window but different invoice numbers (not a duplicate)",
-    "FOR-ROUND": "V-120: 40 of 40 payments round. V-045 has 3 round payments of about 50 (6 %)",
+    "FOR-ROUND": "V-120: 40 of 40 payments round. V-045 has 3 round payments of about 27 (11 %)",
     "FOR-BENFORD": "V-099 is the only vendor with >= FOR.BENFORD.MIN_N (1,000) payments; the whole file is within the acceptable MAD (< 0.012)",
     "suggested_risks": "library risks the data supports (roles present) and that have a planted case, minus the two the auditor asked for: A-R3, A-R4, G-R2, G-R4. G-R3 would need time of day (date only), G-R1 has no planted case"
   },
