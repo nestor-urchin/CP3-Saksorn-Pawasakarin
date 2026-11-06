@@ -1391,3 +1391,469 @@ def load_registry(path_or_text: str) -> dict:
     if not isinstance(config, dict):
         raise ValueError("Machine Config ใน AIDA-14 ต้องเป็น JSON object")
     return config
+
+
+# ---- column profiling, role suggestion, description checks (spec 4.1, 4.3 step 2) ----
+PROFILE_COLUMNS = ["table", "column", "dtype_guess", "n_rows", "null_pct", "unique_pct", "min", "max", "top5",
+                   "samples", "patterns", "relations", "join_match", "neg_count", "dup_count"]
+PROFILE_SAMPLE = 5000       # values inspected for pattern detection (deterministic sample)
+PROFILE_MAX_REL_COLS = 8    # columns of one kind compared pairwise / in triples
+RE_THAI_CHAR = re.compile(r"[฀-๿]")
+RE_PAT_ACCOUNT = r"^(?:[A-Za-z]{1,4}[-_]?\d{3,}|\d{6,12})$"
+RE_PAT_CODE = r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,14}$"
+UNKNOWN_ROLE = "ไม่ทราบ"
+
+ROLE_SYNONYMS = {
+    "record_id": ["id", "txid", "txnid", "trxid", "transactionid", "transactionno", "transactionnumber", "trnno",
+                  "trnid", "recordid", "recordno", "paymentid", "payid", "rowid", "รหัสรายการ", "เลขที่รายการ",
+                  "เลขรายการ", "รหัสธุรกรรม", "เลขที่ธุรกรรม"],
+    "date": ["date", "ts", "dt", "timestamp", "datetime", "txdate", "txndate", "trandate", "trndate", "trndt",
+             "transactiondate", "paydate", "paymentdate", "postingdate", "postdate", "txtime", "วันที่", "วันเวลา",
+             "วันที่ทำรายการ", "วันที่รายการ", "วันที่ชำระ", "วันที่โอน", "เวลาทำรายการ"],
+    "amount": ["amount", "amt", "value", "txamt", "trnamt", "txnamount", "transactionamount", "paymentamount",
+               "payamount", "netamount", "netamt", "ยอดเงิน", "จำนวนเงิน", "ยอด", "ยอดสุทธิ", "ยอดชำระ", "มูลค่า",
+               "ยอดโอน"],
+    "entity": ["fromacct", "fromaccount", "sender", "srcacct", "sourceaccount", "accountfrom", "acctfr", "frmacc",
+               "accfrom", "borrower", "borrowerid", "customer", "customerid", "vendor", "vendorid", "supplier",
+               "supplierid", "payee", "acctid", "accountid", "accountno", "accountnumber", "บัญชีต้นทาง",
+               "บัญชีผู้โอน", "ผู้โอน", "ผู้กู้", "ลูกค้า", "ผู้ขาย", "เลขที่บัญชี", "รหัสบัญชี", "รหัสผู้ขาย",
+               "เจ้าหนี้"],
+    "counterparty": ["toacct", "toaccount", "receiver", "beneficiary", "destacct", "destinationaccount",
+                     "accountto", "acctto", "accto", "payer", "payerid", "payor", "counterparty", "cpty",
+                     "บัญชีปลายทาง", "บัญชีผู้รับ", "ผู้รับ", "ผู้รับโอน", "ผู้ชำระ", "ผู้ชำระเงิน", "คู่รายการ",
+                     "คู่ค้า"],
+    "contract": ["contract", "contractid", "contractno", "loanid", "loanno", "loanaccount", "policy", "policyno",
+                 "cardno", "สัญญา", "เลขที่สัญญา", "เลขสัญญา", "กรมธรรม์", "เลขที่กรมธรรม์", "บัตร"],
+    "category": ["category", "categ", "txtype", "trantype", "transactiontype", "expensetype", "glcode", "หมวด",
+                 "หมวดหมู่", "ประเภท", "ประเภทรายการ"],
+    "channel": ["channel", "chnl", "chan", "branch", "branchcode", "branchid", "brcd", "ช่องทาง", "สาขา",
+                "รหัสสาขา"],
+    "created_by": ["createdby", "creator", "maker", "entryby", "preparedby", "createuser", "crtby", "inputby",
+                   "ผู้บันทึก", "ผู้สร้าง", "ผู้ทำรายการ", "ผู้จัดทำ"],
+    "approved_by": ["approvedby", "approver", "checker", "authorizedby", "authby", "apprby", "apvby", "ผู้อนุมัติ",
+                    "ผู้อนุมัติรายการ"],
+    "document_no": ["documentno", "docno", "docnumber", "invoiceno", "invoicenumber", "invoice", "invno", "refno",
+                    "reference", "receiptno", "เลขที่เอกสาร", "เลขเอกสาร", "เลขที่ใบแจ้งหนี้", "ใบแจ้งหนี้",
+                    "เลขที่ใบกำกับ", "เลขอ้างอิง"],
+    "limit": ["limit", "creditlimit", "credlimit", "approvallimit", "installment", "instalment",
+              "installmentamount", "scheduledamount", "วงเงิน", "ค่างวด", "ยอดค่างวด"],
+    "due_date": ["duedate", "due", "duedt", "maturitydate", "paymentduedate", "วันครบกำหนด", "วันที่ครบกำหนด",
+                 "กำหนดชำระ", "วันกำหนดชำระ"],
+    "opened_at": ["openedat", "opendate", "openeddate", "opendt", "accountopendate", "วันเปิดบัญชี",
+                  "วันที่เปิดบัญชี", "วันเปิด", "วันที่เปิด", "วันที่ทำสัญญา"],
+}
+# preset -> {column name: role}; used only to propose roles, the auditor confirms
+PRESETS = {
+    "E": {"tx_id": "record_id", "ts": "date", "from_acct": "entity", "to_acct": "counterparty", "amount": "amount",
+          "channel": "channel", "acct_id": "entity", "opened_at": "opened_at"},
+    "C": {"payment_id": "record_id", "pay_date": "date", "pay_amount": "amount", "borrower_id": "entity",
+          "payer_id": "counterparty", "contract_id": "contract", "due_date": "due_date",
+          "installment_amount": "limit", "channel": "channel", "category": "category"},
+    "A": {"payment_id": "record_id", "pay_date": "date", "amount": "amount", "vendor_id": "entity",
+          "invoice_no": "document_no", "created_by": "created_by", "approved_by": "approved_by",
+          "approval_limit": "limit", "category": "category", "channel": "channel", "po_no": "contract"},
+}
+ROLE_CONF_DEFAULT = (0.8, 0.5)
+LEVEL_HIGH, LEVEL_MID, LEVEL_LOW = "สูง", "กลาง", "ต่ำ"
+
+
+def _norm_name(s) -> str:
+    return re.sub(r"[\s_\-./()\[\]:]+", "", str(s).strip().lower())
+
+
+def _tokens(s) -> set:
+    return {t for t in re.split(r"[^0-9a-zA-Zก-๙]+", str(s).lower()) if t}
+
+
+_SYN_INDEX = None
+def _syn_index():
+    global _SYN_INDEX
+    if _SYN_INDEX is None:
+        _SYN_INDEX = [(_norm_name(w), role) for role, words in ROLE_SYNONYMS.items() for w in words]
+    return _SYN_INDEX
+
+
+def match_role(text):
+    """(role, strength) for a column name or a free-text description, or (None, 0).
+
+    strength: "exact" (whole text equals a synonym), "token" (a word equals one) or "part" (contains one,
+    synonyms of 4+ ASCII or 3+ Thai characters only). The longest synonym wins.
+    """
+    whole, toks = _norm_name(text), {_norm_name(t) for t in _tokens(text)}
+    best = (0, None, None)
+    for syn, role in _syn_index():
+        if not syn:
+            continue
+        thai = bool(RE_THAI_CHAR.search(syn))
+        if whole == syn:
+            cand = (len(syn) + 200, role, "exact")
+        elif syn in toks:
+            cand = (len(syn) + 100, role, "token")
+        elif len(syn) >= (3 if thai else 4) and syn in whole:
+            cand = (len(syn), role, "part")
+        else:
+            continue
+        if cand[0] > best[0]:
+            best = cand
+    return (best[1], best[2]) if best[1] else (None, 0)
+
+
+def _num_text(s: pd.Series):
+    """Numeric view of a text column, or None when it is not (mostly) numbers or looks like zero-padded ids."""
+    t = s.astype(str).str.strip()
+    if t.str.match(r"^0\d").mean() > 0.05 or t.str.match(r"^\d{10,}$").mean() > 0.5:
+        return None  # zero-padded or long all-digit values are identifiers, not amounts
+    n = pd.to_numeric(t.str.replace(",", "", regex=False), errors="coerce")
+    return n if n.notna().mean() >= 0.95 else None
+
+
+def _valid_date_text(x) -> bool:
+    p = date_parts(x)
+    if not p:
+        return False
+    kind, a, b, y, _ = p
+    if kind == "slash":
+        return 1 <= a <= 31 and 1 <= b <= 31 and (a <= 12 or b <= 12)
+    if kind == "iso" and not 1900 <= y <= 2700:
+        return False
+    return 1 <= a <= 31 and 1 <= b <= 12
+
+
+def _parse_dates(s: pd.Series) -> pd.Series:
+    """Datetime series from dates written dd/mm, ISO, Thai month names and/or Buddhist Era years (B1 rules)."""
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s.dt.tz_localize(None) if getattr(s.dt, "tz", None) is not None else s
+    txt = s.astype(str).str.strip()
+    mp = {}
+    for u in txt[s.notna()].unique():
+        p = date_parts(u)
+        if p is None or not _valid_date_text(u):
+            continue
+        kind, a, b, y, rest = p
+        if kind == "slash" and b > 12 >= a:
+            a, b = b, a
+        try:
+            mp[u] = pd.Timestamp(iso_text(a, b, y, rest))
+        except (ValueError, OverflowError):
+            pass
+    return pd.to_datetime(txt.map(mp), errors="coerce")
+
+
+def _top_value(v):
+    return v.item() if hasattr(v, "item") else v
+
+
+def _profile_one(table: str, col: str, s: pd.Series) -> tuple:
+    """(row dict, aux dict with the typed views used for relations and join checks)."""
+    n = len(s)
+    nn = s.dropna()
+    row = {"table": table, "column": col, "n_rows": n, "null_pct": round(100.0 * (n - len(nn)) / n, 2) if n else 0.0,
+           "unique_pct": 0.0, "min": None, "max": None, "top5": [], "samples": [], "patterns": [],
+           "relations": [], "join_match": None, "neg_count": 0, "dup_count": 0}
+    aux = {"kind": "empty", "num": None, "dt": None, "text": None}
+    if nn.empty:
+        row["dtype_guess"] = "empty"
+        return row, aux
+    nun = int(nn.nunique())
+    row["unique_pct"] = round(100.0 * nun / len(nn), 2)
+    row["dup_count"] = int(len(nn) - nun)
+    row["top5"] = [(str(_top_value(k)), int(v)) for k, v in nn.value_counts().head(5).items()]
+    row["samples"] = [str(v) for v in nn.head(3)]
+    pats = []
+    is_num = pd.api.types.is_numeric_dtype(s) and not pd.api.types.is_bool_dtype(s)
+    is_dt = pd.api.types.is_datetime64_any_dtype(s)
+    sample = nn if len(nn) <= PROFILE_SAMPLE else nn.sample(PROFILE_SAMPLE, random_state=0)
+    num = nn.astype("float64") if is_num else None
+    txt = None
+    if not is_num and not is_dt:
+        txt = sample.astype(str).str.strip()
+        if _num_text(nn) is not None:
+            num = _num_text(nn)
+    if is_dt or (txt is not None and num is None):
+        if is_dt:
+            share, has_time = 1.0, bool((nn.dt.normalize() != nn).any())
+        else:
+            valid = {u: _valid_date_text(u) for u in txt.unique()}
+            share = txt.map(valid).mean()
+            has_time = any(valid[u] and RE_TIME.search(date_parts(u)[4] or "") for u in valid)
+        if share >= 0.8:
+            pats += ["date"] + (["datetime"] if has_time else [])
+            aux["dt"] = _parse_dates(s)
+            d = aux["dt"].dropna()
+            aux["kind"] = "date"
+            if len(d):
+                row["min"], row["max"] = str(d.min()), str(d.max())
+    if aux["kind"] != "date" and num is not None:
+        aux["kind"], aux["num"] = "number", num.reindex(s.index) if not is_num else s.astype("float64")
+        v = num.dropna()
+        row["min"], row["max"] = _top_value(v.min()), _top_value(v.max())
+        row["neg_count"] = int((v < 0).sum())
+        if row["neg_count"]:
+            pats.append("negative")
+        whole = bool((v == np.floor(v)).all())
+        pats.append("integer" if whole else "decimal")
+        if whole and is_num and (v.abs().between(1e12, 1e13 - 1)).all():
+            pats.append("thai_id13")
+    elif aux["kind"] != "date":
+        aux["kind"], aux["text"] = "text", nn.astype(str).str.strip()
+        t = aux["text"]
+        row["min"], row["max"] = str(t.min()), str(t.max())
+        if txt.str.match(r"^\d{13}$").mean() >= 0.9:
+            pats.append("thai_id13")
+        elif txt.str.match(RE_PAT_ACCOUNT).mean() >= 0.9:
+            pats.append("account_like")
+        elif txt.str.match(RE_PAT_CODE).mean() >= 0.9 and (nun <= 30 or nun / len(nn) <= 0.5):
+            pats.append("code")
+        if txt.map(lambda x: bool(RE_THAI_CHAR.search(x))).mean() >= 0.5:
+            pats.append("thai_text")
+    row["patterns"] = pats
+    row["dtype_guess"] = {"date": "date", "number": "number", "text": "text"}[aux["kind"]]
+    return row, aux
+
+
+def _relations(cols: dict) -> dict:
+    """{column: [relation text]} between the columns of one table. `cols`: name -> (kind, typed series)."""
+    out = {c: [] for c in cols}
+    nums = [c for c, (k, v) in cols.items() if k == "number" and v.nunique() > 2][:PROFILE_MAX_REL_COLS]
+    dates = [c for c, (k, v) in cols.items() if k == "date"][:PROFILE_MAX_REL_COLS]
+    texts = [c for c, (k, v) in cols.items() if k == "text" and v.nunique() > 1][:PROFILE_MAX_REL_COLS]
+    order = list(cols)
+    # C = A - B: the largest column is the total, the later of the other two is the result
+    mag = {c: float(cols[c][1].abs().mean()) for c in nums}
+    for i in range(len(nums)):
+        for j in range(i + 1, len(nums)):
+            for k in range(j + 1, len(nums)):
+                a, c, b = sorted((nums[i], nums[j], nums[k]), key=lambda x: -mag[x])
+                if order.index(c) < order.index(b):
+                    b, c = c, b
+                f = pd.concat([cols[a][1], cols[b][1], cols[c][1]], axis=1).dropna()
+                if len(f) == 0:
+                    continue
+                head = f.head(2000)
+                if not np.isclose(head.iloc[:, 0] - head.iloc[:, 1], head.iloc[:, 2], atol=0.01).all():
+                    continue
+                ok = np.isclose(f.iloc[:, 0] - f.iloc[:, 1], f.iloc[:, 2], atol=0.01).mean()
+                if ok >= 0.98 and not np.isclose(f.iloc[:, 0], f.iloc[:, 2], atol=0.01).mean() > 0.9 \
+                        and (f.iloc[:, 1] != 0).mean() > 0.1:
+                    out[c].append(f"{c} = {a} − {b}")
+    for group in (nums, dates):
+        for i, x in enumerate(group):
+            for y in group[i + 1:]:
+                f = pd.concat([cols[x][1], cols[y][1]], axis=1).dropna()
+                if len(f) == 0:
+                    continue
+                a, b = f.iloc[:, 0], f.iloc[:, 1]
+                for lo, hi, ln, hn in ((x, y, a, b), (y, x, b, a)):
+                    if (ln <= hn).mean() >= 0.999 and (ln < hn).any():
+                        out[lo].append(f"{lo} ≤ {hi}")
+                eq = float((a == b).mean())
+                if 0.5 <= eq:
+                    out[x].append(f"{x} == {y} in {eq * 100:.0f}%")
+    for i, x in enumerate(texts):
+        for y in texts[i + 1:]:
+            f = pd.concat([cols[x][1], cols[y][1]], axis=1).dropna()
+            if len(f):
+                eq = float((f.iloc[:, 0] == f.iloc[:, 1]).mean())
+                if eq >= 0.5:
+                    out[x].append(f"{x} == {y} in {eq * 100:.0f}%")
+    return out
+
+
+def _norm_key(u: pd.Series) -> set:
+    t = u.str.strip().str.casefold().str.lstrip("0")
+    return set(t.where(t != "", "0"))
+
+
+def _key_values(aux: dict):
+    s = aux["text"] if aux["kind"] == "text" else aux["num"]
+    s = s.dropna()
+    if aux["kind"] == "number":
+        if not (s == np.floor(s)).all():
+            return None
+        s = s.astype("int64")
+    return s.astype(str).drop_duplicates()
+
+
+def _join_matches(rows: list, auxs: list) -> None:
+    cands = []
+    for i, (r, a) in enumerate(zip(rows, auxs)):
+        if a["kind"] in ("text", "number") and "date" not in r["patterns"] and "decimal" not in r["patterns"]:
+            u = _key_values(a)
+            if u is not None and len(u) >= 3:
+                cands.append((i, u, set(u), _norm_key(u)))
+    for i, u, raw, norm in cands:
+        best = None
+        for i2, u2, raw2, norm2 in cands:
+            if rows[i2]["table"] == rows[i]["table"]:
+                continue
+            r_pct, n_pct = 100.0 * len(raw & raw2) / len(raw), 100.0 * len(norm & norm2) / len(norm)
+            if n_pct >= 20 and (best is None or n_pct > best["normalized"]):
+                best = {"with": f"{rows[i2]['table']}.{rows[i2]['column']}", "raw": round(r_pct, 1),
+                        "normalized": round(n_pct, 1)}
+        rows[i]["join_match"] = best
+
+
+def profile_columns(frames: dict) -> pd.DataFrame:
+    """One row per (table, column): type guess, null/unique %, range, top-5, samples, patterns, relations, join_match.
+
+    Percentages are 0-100. join_match is None or {"with": "table.column", "raw": % of this column's distinct
+    values found exactly in the other column, "normalized": the same after strip / case / leading-zero removal}.
+    """
+    rows, auxs = [], []
+    for tname, df in frames.items():
+        t_rows, t_cols = [], {}
+        for col in df.columns:
+            r, a = _profile_one(str(tname), str(col), df[col])
+            t_rows.append(r)
+            auxs.append(a)
+            if a["kind"] in ("number", "date", "text"):
+                t_cols[str(col)] = (a["kind"], a["num"] if a["kind"] == "number" else
+                                    a["dt"] if a["kind"] == "date" else a["text"])
+        rel = _relations(t_cols) if len(t_cols) > 1 else {}
+        for r in t_rows:
+            r["relations"] = rel.get(r["column"], [])
+        rows += t_rows
+    _join_matches(rows, auxs)
+    return pd.DataFrame(rows, columns=PROFILE_COLUMNS)
+
+
+def _role_thresholds(cfg) -> tuple:
+    """(high, medium) from cfg["INTAKE.ROLE_CONF"]: a dict {"สูง": 0.8, "กลาง": 0.5} or the text
+    "สูง ≥ 0.8 / กลาง ≥ 0.5" (as load_registry yields it); defaults when the key is absent or unreadable."""
+    v = (cfg or {}).get("INTAKE.ROLE_CONF")
+    hi, mid = ROLE_CONF_DEFAULT
+    try:
+        if isinstance(v, dict):
+            hi, mid = float(v.get("สูง", v.get("high", hi))), float(v.get("กลาง", v.get("medium", mid)))
+        elif isinstance(v, str):
+            m1, m2 = re.search(r"สูง\D*?([0-9.]+)", v), re.search(r"กลาง\D*?([0-9.]+)", v)
+            hi, mid = float(m1[1]) if m1 else hi, float(m2[1]) if m2 else mid
+    except (TypeError, ValueError):
+        hi, mid = ROLE_CONF_DEFAULT
+    return hi, mid
+
+
+def _level(conf: float, thr: tuple) -> str:
+    return LEVEL_HIGH if conf >= thr[0] else LEVEL_MID if conf >= thr[1] else LEVEL_LOW
+
+
+def _brief_text(brief, table, col):
+    if not brief:
+        return None
+    return brief.get(f"{table}.{col}", brief.get(col))
+
+
+def _profile_check(role, prow) -> tuple:
+    """(confidence adjustment, Thai note) from whether the data looks like the proposed role."""
+    pats, dtype, uniq = prow["patterns"], prow["dtype_guess"], prow["unique_pct"]
+    if role in ("date", "due_date", "opened_at") and dtype != "date":
+        return -0.4, "แต่ค่าในคอลัมน์ไม่ใช่รูปแบบวันที่"
+    if role in ("amount", "limit") and dtype != "number":
+        return -0.4, "แต่ค่าในคอลัมน์ไม่ใช่ตัวเลข"
+    if role == "record_id" and uniq < 99:
+        return -0.3, f"แต่ค่าซ้ำกัน (ไม่ซ้ำ {uniq:.1f}%)"
+    return 0.0, ""
+
+
+def suggest_roles(profile: pd.DataFrame, brief_columns=None, preset=None, cfg=None) -> pd.DataFrame:
+    """Propose a role per column: auditor's description > preset > name dictionary > data pattern.
+
+    Never guesses blindly: a cryptic name with no description and no strong pattern gets "ไม่ทราบ".
+    Columns: table, column, role, confidence (0-1), level (สูง/กลาง/ต่ำ), reason (Thai), source.
+    """
+    thr = _role_thresholds(cfg)
+    preset_map = {_norm_name(k): v for k, v in PRESETS.get(preset, {}).items()} if preset else {}
+    out = []
+    for _, p in profile.iterrows():
+        table, col = p["table"], p["column"]
+        role, conf, src, reason = UNKNOWN_ROLE, 0.0, "profile", ""
+        said = _brief_text(brief_columns, table, col)
+        r_b, st_b = (None, 0)
+        if said is not None:
+            r_b = said.strip() if str(said).strip() in ROLE_TO_INTERNAL or str(said).strip().startswith("custom:") \
+                else match_role(said)[0]
+            st_b = "exact"
+        if r_b:
+            role, conf, src = r_b, 0.95, "brief"
+            reason = f"ตามคำอธิบายของผู้ตรวจสอบ: \"{said}\""
+        elif _norm_name(col) in preset_map:
+            role, conf, src = preset_map[_norm_name(col)], 0.9, "preset"
+            reason = f"ชื่อคอลัมน์ตรงกับรูปแบบมาตรฐานของข้อมูลประเภท {preset}"
+        else:
+            r_s, st = match_role(col)
+            if r_s:
+                role, src = r_s, "synonym"
+                conf = {"exact": 0.85, "token": 0.7, "part": 0.6}[st]
+                adj, note = _profile_check(role, p)
+                conf = max(0.0, conf + adj)
+                reason = f"ชื่อคอลัมน์ \"{col}\" สื่อถึงบทบาท {role}" + (f" {note} — ควรยืนยัน" if note else "")
+            elif "thai_id13" in p["patterns"]:
+                role, conf, src = "entity", 0.4, "profile"
+                reason = "ค่าเป็นเลข 13 หลักรูปแบบเลขประจำตัวประชาชน จึงอาจเป็นรหัสผู้ทำรายการ — ควรยืนยัน"
+            else:
+                reason = (f"ชื่อคอลัมน์ \"{col}\" ไม่สื่อความหมาย และรูปแบบข้อมูลไม่ชี้บทบาทชัดเจน — "
+                          "ขอให้ผู้ตรวจสอบระบุความหมาย")
+                if said is not None:
+                    reason = f"คำอธิบาย \"{said}\" ยังจับคู่กับบทบาทใดไม่ได้ — ขอให้ระบุเพิ่มเติม"
+        out.append({"table": table, "column": col, "role": role, "confidence": round(conf, 2),
+                    "level": _level(conf, thr) if role != UNKNOWN_ROLE else LEVEL_LOW, "reason": reason,
+                    "source": src})
+    res = pd.DataFrame(out, columns=["table", "column", "role", "confidence", "level", "reason", "source"])
+    # one column per role in a table: keep the most confident guess (auditor's own choices are never touched)
+    for (t, r), g in res[(res["role"] != UNKNOWN_ROLE) & (res["source"] != "brief")].groupby(["table", "role"]):
+        taken = res[(res["table"] == t) & (res["role"] == r) & (res["source"] == "brief")]
+        keep = None if len(taken) else g["confidence"].idxmax()
+        for idx in g.index:
+            if idx != keep:
+                res.loc[idx, ["role", "confidence", "level", "source"]] = [UNKNOWN_ROLE, 0.0, LEVEL_LOW, "profile"]
+                res.loc[idx, "reason"] = f"มีหลายคอลัมน์ที่อาจเป็นบทบาท {r} — ขอให้ผู้ตรวจสอบเลือกคอลัมน์ที่ใช้"
+    return res.reset_index(drop=True)
+
+
+NET_WORDS = ("สุทธิ", "net", "ไม่ติดลบ", "เป็นบวก", "positive", "nonnegative")
+UNIQUE_WORDS = ("unique", "ไม่ซ้ำ", "primarykey", "เลขที่รายการ", "รหัสรายการ")
+
+
+def check_descriptions(profile: pd.DataFrame, brief_columns=None) -> list:
+    """Descriptions that disagree with the data: [{table, column, said, observed, question}] in Thai."""
+    out = []
+    if not brief_columns:
+        return out
+    for _, p in profile.iterrows():
+        said = _brief_text(brief_columns, p["table"], p["column"])
+        if said is None:
+            continue
+        low, n = str(said).lower(), max(int(p["n_rows"]), 1)
+        role = match_role(said)[0]
+        item = lambda obs, q: out.append({"table": p["table"], "column": p["column"], "said": said,
+                                          "observed": obs, "question": q})
+        if any(w in low for w in NET_WORDS) and p["neg_count"] > 0:
+            item(f"พบค่าติดลบ {p['neg_count']:,} แถว ({100.0 * p['neg_count'] / n:.1f}%)",
+                 "ค่าติดลบเหล่านี้เป็นรายการคืนเงินหรือปรับปรุงที่ตั้งใจให้มีหรือไม่ หรือควรทบทวนคำอธิบายคอลัมน์")
+        if (role == "record_id" or any(w in low for w in UNIQUE_WORDS)) and p["dup_count"] > 0:
+            item(f"พบค่าซ้ำ {p['dup_count']:,} แถว (ไม่ซ้ำ {p['unique_pct']:.1f}%)",
+                 "ค่าซ้ำเกิดจากการส่งออกข้อมูลซ้ำหรือเป็นหลายรายการที่ใช้รหัสเดียวกัน ช่วยยืนยันว่าควรใช้คอลัมน์ใดเป็นรหัสรายการ")
+        if role in ("date", "due_date", "opened_at") and p["dtype_guess"] != "date":
+            item(f"ค่าในคอลัมน์ไม่อยู่ในรูปแบบวันที่ (ตัวอย่าง: {', '.join(p['samples'])})",
+                 "รูปแบบวันที่ในไฟล์เป็นอย่างไร (เช่น วัน/เดือน/ปี พ.ศ.) เพื่อให้แปลงได้ถูกต้อง")
+        if role in ("amount", "limit") and p["dtype_guess"] not in ("number", "empty"):
+            item(f"ค่าในคอลัมน์ไม่ใช่ตัวเลข (ตัวอย่าง: {', '.join(p['samples'])})",
+                 "คอลัมน์นี้เป็นยอดเงินจริงหรือไม่ และมีสัญลักษณ์หรือข้อความปนอยู่หรือเปล่า")
+    return out
+
+
+def detect_dataset_type(profile: pd.DataFrame):
+    """"E" (transactions between accounts), "C" (loan payments), "A" (accounts payable) or None, from the
+    roles the column names point to. Contract + due date -> C; created/approved by or document no -> A;
+    entity + counterparty + date + amount -> E."""
+    if profile is None or len(profile) == 0:
+        return None
+    roles = {match_role(c)[0] for c in profile["column"]} - {None}
+    if {"contract", "due_date"} <= roles:
+        return "C"
+    if {"approved_by", "created_by"} & roles and ("document_no" in roles or "amount" in roles) \
+            and "counterparty" not in roles:
+        return "A"
+    if {"entity", "counterparty", "date", "amount"} <= roles:
+        return "E"
+    return None
