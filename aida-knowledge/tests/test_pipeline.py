@@ -1,7 +1,7 @@
 """Tests for the pipeline recipe cards in AIDA-19 (PREP-MAP, PROF-PROFILE, GATE-CAPABILITY,
 UNIFY-FINDINGS, ASSESS-CMP, SELECT-AUTO-TRACE, LOG-RUN).
 
-Cards are loaded with load_recipes exactly as Copilot's Code Interpreter would run them
+Cards come from the engine via tests/_engine (helpers from test_recipes), as Copilot's Code Interpreter runs them
 (helpers from test_recipes). The whole-chain test starts from the raw sample CSVs read as
 text, so PREP-MAP's type coercion is exercised too.
 """

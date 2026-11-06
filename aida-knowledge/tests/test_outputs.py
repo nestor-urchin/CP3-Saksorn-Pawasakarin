@@ -17,6 +17,7 @@ from pathlib import Path
 import openpyxl
 import pandas as pd
 
+import _engine
 import test_pipeline as tp
 import test_recipes as tr
 from test_recipes import CFG, KNOWLEDGE, answer_key
@@ -35,12 +36,8 @@ DATA_RE = re.compile(r'<script id="aida-data" type="application/json">(.*?)</scr
 
 
 def template() -> str:
-    """The ```html block of AIDA-16, as Copilot retrieves it from Knowledge."""
-    text = (KNOWLEDGE / "AIDA-16-output-templates.md").read_text(encoding="utf-8")
-    m = re.search(r"^```html\n(.*?)^```$", text, re.S | re.M)
-    if not m:
-        raise AssertionError("AIDA-16 has no ```html block")
-    return m.group(1)
+    """The dashboard template, as the engine carries it (identical to the AIDA-16 html block)."""
+    return _engine.engine().DASHBOARD_TEMPLATE
 
 
 def build_bundle(chain=None, cfg=CFG, materiality=1_000_000.0):

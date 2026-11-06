@@ -1,6 +1,6 @@
 """Tests for the analysis recipe cards (AIDA-18) and CORE-EVIDENCE (AIDA-19).
 
-Cards are loaded with tools/extract_recipes.load_recipes exactly as Copilot's Code
+Cards are loaded from the engine (tests/_engine.recipes) exactly as Copilot's Code
 Interpreter would run them, then run on the sample data. Each card must flag at
 least the planted accounts in answer_key["recipes"][ID] and no normal ("A...")
 account.
@@ -18,7 +18,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
-from extract_recipes import load_recipes  # noqa: E402
+import _engine  # noqa: E402
 from validate_pack import parse_machine_config  # noqa: E402
 
 KNOWLEDGE = ROOT / "knowledge"
@@ -36,8 +36,7 @@ _CACHE = {}
 
 def recipes():
     if "r" not in _CACHE:
-        _CACHE["r"] = load_recipes([KNOWLEDGE / "AIDA-19-pipeline-recipes.md",
-                                    KNOWLEDGE / "AIDA-18-analysis-recipes.md"])
+        _CACHE["r"] = _engine.recipes()
     return _CACHE["r"]
 
 
