@@ -98,6 +98,10 @@ class Concerns(unittest.TestCase):
         self.assertEqual(m[3]["concern"], "พนักงานลาออกบ่อย")
         self.assertEqual(m[0]["mode"], "รับรอง")
 
+    def test_ascii_synonyms_match_whole_words(self):
+        m = engine().match_concerns(["an episode of sleep", "SoD conflict", "possible sod issue", "period-end spike"])
+        self.assertEqual([x["risk_id"] for x in m], [None, "A-R3", "A-R3", "G-R2"])
+
     def test_match_never_drops_and_is_deterministic(self):
         e = engine()
         cs = ["x", "", "  ", "ผู้ขายกระจุกตัว", "unknown thing"] * 3
@@ -163,6 +167,21 @@ class Sufficiency(unittest.TestCase):
         self.assertTrue(r["runnable_checks"])
         self.assertGreater(n, 0)
 
+    def test_join_threshold_comes_from_cfg(self):
+        e = engine()
+        frames, roles, _, _, _ = load("E")
+        acc = frames["accounts"].copy()
+        acc["acct_id"] = [f"Z{i:05d}" if i % 10 == 0 else a for i, a in enumerate(acc["acct_id"])]  # ~90% match
+        prof = e.profile_columns({"transactions": frames["transactions"], "accounts": acc})
+        jm = prof[(prof.table == "transactions") & (prof.column == "from_acct")]["join_match"].iloc[0]
+        rate = jm["normalized"]
+        self.assertTrue(70 < rate < 99, rate)
+        lenient = {**cfg(), "INTAKE.JOIN_MIN_PCT": (rate - 1) / 100}
+        strict = {**cfg(), "INTAKE.JOIN_MIN_PCT": (rate + 1) / 100}
+        self.assertEqual(e.assess_sufficiency(["R1"], roles, prof, lenient).iloc[0]["status"], "พร้อม")
+        self.assertEqual(e.assess_sufficiency(["R1"], roles, prof, strict).iloc[0]["status"], "บางส่วน")
+        self.assertIn("INTAKE.JOIN_MIN_PCT", cfg())
+
     def test_time_of_day_needed_for_offhours(self):
         e = engine()
         frames, roles, _, _, _ = load("E")
@@ -225,6 +244,43 @@ class Suggest(unittest.TestCase):
 
 
 class Plan(unittest.TestCase):
+    def test_plan_carries_data_volume_skips(self):
+        e = engine()
+        frames, roles, _, tables, profile = load("E")
+        p = e.plan(["R1", "R4"], roles, profile, cfg(), tables).set_index("check_id")
+        self.assertEqual(p.loc["STAT-MAD", "decision"], "Run")
+        # STAT-MAD: every group smaller than GATE.SAMPLE.MIN
+        c = {**cfg(), "GATE.SAMPLE.MIN": 10 ** 6}
+        p = e.plan(["R1"], roles, profile, c, tables).set_index("check_id")
+        self.assertEqual(p.loc["STAT-MAD", "decision"], "Skip")
+        self.assertIn("GATE.SAMPLE.MIN", p.loc["STAT-MAD", "reason"])
+        # the same wording as gate_volume
+        self.assertEqual(p.loc["STAT-MAD", "reason"], e.gate_volume(tables, c)["STAT-MAD"])
+        # a one-month file has no baseline for BEH-SPIKE / CPTY-NEW-LARGE
+        tx = tables["transactions"].copy()
+        tx = tx[pd.to_datetime(tx["ts"]).dt.strftime("%Y-%m") == "2026-01"]
+        p = e.plan(["R1", "R4"], roles, profile, cfg(), {**tables, "transactions": tx}).set_index("check_id")
+        self.assertEqual(p.loc["BEH-SPIKE", "decision"], "Skip")
+        self.assertEqual(p.loc["CPTY-NEW-LARGE", "decision"], "Skip")
+        df = e.assess_sufficiency(["R1"], roles, profile, cfg(), {**tables, "transactions": tx}).iloc[0]
+        self.assertEqual(df["status"], "บางส่วน")
+        self.assertIn("BEH-SPIKE", df["skipped_checks"])
+        # loan / AP data uses the same rules
+        _, roles_a, _, tab_a, prof_a = load("A")
+        p = e.plan(["G-R1"], roles_a, prof_a, {**cfg(), "GATE.SAMPLE.MIN": 10 ** 7}, tab_a).set_index("check_id")
+        self.assertNotIn("STAT-MAD", p.index[p.decision == "Run"])
+
+    def test_general_checks_run_on_c_and_a(self):
+        e = engine()
+        for n in "CA":
+            _, roles, _, tab, prof = load(n)
+            p = e.plan_checks(tab, cfg()).set_index("recipe_id")
+            for cid in ("STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE", "TEMP-OFFHOURS"):
+                self.assertEqual(p.loc[cid, "decision"], "Run", (n, cid))
+            # date-only data: G-R3 needs a time of day
+            self.assertEqual(e.assess_sufficiency(["G-R3"], roles, prof, cfg()).iloc[0]["status"], "ไม่พอ")
+        self.assertEqual(engine().RISK_LIBRARY["G-R3"]["data_types"], ["E", "C", "A"])
+
     def test_plan_run_skip_reasons(self):
         e = engine()
         _, roles, _, _, profile = load("C")

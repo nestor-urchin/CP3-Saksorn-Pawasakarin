@@ -149,6 +149,7 @@ Priority = ตาราง Confidence × Materiality แล้ว **ปรับ
 | `DUE.MIN_PERIODS = 3` | จำนวนงวดขั้นต่ำของสัญญาที่ใช้ประเมิน DUE-NEAR | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
 | `PAYER.MIN_CONTRACTS = 3` | ผู้ชำระที่ไม่ใช่ entity ของสัญญา ชำระสัญญาที่ต่างกันตั้งแต่กี่สัญญา (PAYER-MULTI) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
 | `INTAKE.ROLE_CONF = สูง ≥ 0.8 / กลาง ≥ 0.5` | เกณฑ์ความมั่นใจของการเสนอบทบาทคอลัมน์ (suggest_roles) ที่ต่ำกว่าค่ากลางเป็นระดับต่ำ | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `INTAKE.JOIN_MIN_PCT = 90%` | สัดส่วนขั้นต่ำของรหัสในตารางธุรกรรมที่ต้องเชื่อมกับตารางรองได้ (เช่น opened_at ในตาราง accounts/contracts) ต่ำกว่านี้ความพร้อมของข้อมูลเป็น "บางส่วน" (assess_sufficiency) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
 | `TEMP.PERIOD_END.MIN_TX = 3` | จำนวนรายการขั้นต่ำของ entity ในช่วงสิ้นงวด (`TEMP.PERIOD_END.WINDOW`) ของงวดนั้น จึงนับเป็นสัญญาณ (GEN-PERIOD-END) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
 | `TEMP.PERIOD_END.MIN_SHARE = 50%` | สัดส่วนขั้นต่ำของรายการช่วงสิ้นงวดต่อรายการทั้งหมดของ entity ในงวดนั้น (ต้องครบทั้งจำนวนและสัดส่วน) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
 | `FOR.ROUND.MIN_SHARE = 50%` | สัดส่วนขั้นต่ำของยอดกลม (`FOR.ROUND.UNIT`) ต่อรายการทั้งหมดของ entity จึงนับเป็นสัญญาณ (FOR-ROUND ใช้ `GATE.SAMPLE.MIN` เป็นจำนวนรายการขั้นต่ำของ entity) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
@@ -204,6 +205,7 @@ JSON ก้อนเดียวนี้คือค่าที่ recipe อ�
   "DUE.MIN_PERIODS": 3,
   "PAYER.MIN_CONTRACTS": 3,
   "INTAKE.ROLE_CONF": {"สูง": 0.8, "กลาง": 0.5},
+  "INTAKE.JOIN_MIN_PCT": 0.9,
   "ASSESS.CLEARLY_TRIVIAL": 0.05,
   "ASSESS.PRIORITY": {
     "สูง": {"สูง": "สูง", "กลาง": "กลาง", "ต่ำ": "ต่ำ"},
@@ -218,7 +220,7 @@ JSON ก้อนเดียวนี้คือค่าที่ recipe อ�
 |---|---|---|
 | 1.0 | 2026-11-03 | ฉบับแรก: ค่ามาตรฐานทั่วไปทุก skill |
 | 1.1 | 2026-11-03 | เพิ่มหมวด 11 (MULE / CPTY / FLOW รวม `MULE.DWELL_MIN_PAIRS`, `MULE.NEW_ACCT_MIN_TX`), `BEH.VELOCITY.SD_FLOOR`, `NET.CYCLE.MAX_PATHS` (ต่อเดือน), `FLOW.MAX_TRAIL_ROWS`, `TEMP.OFF_HOURS.MIN_TX`, `TEMP.OFF_HOURS.MIN_SHARE`, `REGISTRY.VERSION` และ Machine Config JSON สำหรับ recipe (ไม่เปลี่ยนค่าเดิม) |
-| 1.2 | 2026-11-06 | เพิ่มหมวด 12 สำหรับการ์ดใหม่ของ engine (`DUP.WINDOW_DAYS`, `SPLIT.WINDOW_DAYS`, `SPLIT.MIN_TX`, `DUE.NEAR_DAYS`, `DUE.MIN_SHARE`, `DUE.MIN_PERIODS`, `PAYER.MIN_CONTRACTS`, `INTAKE.ROLE_CONF`, `TEMP.PERIOD_END.MIN_TX`, `TEMP.PERIOD_END.MIN_SHARE`, `FOR.ROUND.MIN_SHARE`) และเพิ่มค่า `FOR.*`, `CONC.*`, `TEMP.PERIOD_END.WINDOW` เดิมเข้า Machine Config (ค่าเดิมไม่เปลี่ยน; แก้ข้อความ `FOR.THRESHOLD_AVOID.BAND` เป็น 90%–99.99% เท่านั้น) |
+| 1.2 | 2026-11-06 | เพิ่มหมวด 12 สำหรับการ์ดใหม่ของ engine (`DUP.WINDOW_DAYS`, `SPLIT.WINDOW_DAYS`, `SPLIT.MIN_TX`, `DUE.NEAR_DAYS`, `DUE.MIN_SHARE`, `DUE.MIN_PERIODS`, `PAYER.MIN_CONTRACTS`, `INTAKE.ROLE_CONF`, `INTAKE.JOIN_MIN_PCT`, `TEMP.PERIOD_END.MIN_TX`, `TEMP.PERIOD_END.MIN_SHARE`, `FOR.ROUND.MIN_SHARE`) และเพิ่มค่า `FOR.*`, `CONC.*`, `TEMP.PERIOD_END.WINDOW` เดิมเข้า Machine Config (ค่าเดิมไม่เปลี่ยน; แก้ข้อความ `FOR.THRESHOLD_AVOID.BAND` เป็น 90%–99.99% เท่านั้น) |
 
 ## ข้อห้าม (Guardrails)
 - ห้ามนำเสนอค่าในไฟล์นี้ว่าเป็นนโยบายที่องค์กรอนุมัติแล้ว — ต้องแจ้งว่าเป็นค่ามาตรฐานทุกครั้ง

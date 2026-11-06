@@ -33,6 +33,15 @@ def clean_tx(tx: pd.DataFrame) -> pd.DataFrame:
     t["tx_id"] = t["tx_id"].astype(str)
     t = t[(t["from_acct"] != t["to_acct"]) & (t["amount"] > 0) & t["ts"].notna()]
     return t.assign(period=t["ts"].dt.strftime("%Y-%m")).sort_values("ts", kind="mergesort")
+def base_tx(tables: dict) -> pd.DataFrame:
+    """Clean transactions for the checks that read only entity, date and amount (STAT-MAD, BEH-VELOCITY,
+    BEH-SPIKE, TEMP-OFFHOURS). With a counterparty column and no contract column (transfers, data type E) it is
+    clean_tx, exactly as in B1; otherwise (loan payments, accounts payable, or no counterparty) self-pairs are
+    kept, because a borrower paying their own loan is normal data."""
+    tx = tables["transactions"]
+    if "to_acct" in tx.columns and "contract" not in tx.columns:
+        return clean_tx(tx)
+    return _gen_tx(tables)
 def one_per_month(f: pd.DataFrame) -> pd.DataFrame:
     if f.empty:
         return f
@@ -317,8 +326,10 @@ def gate_capability(tables: dict, cfg: dict) -> pd.DataFrame:
 
 
 # ---- GATE-VOLUME ----
-def gate_volume(tables: dict, cfg: dict) -> dict:
-    t = clean_tx(tables["transactions"])
+def vol_baseline(t: pd.DataFrame, cfg: dict) -> dict:
+    """Data-volume skips shared by gate_volume (type E) and the C1 plan (any data type): checks that read each
+    entity's own history (BEH-VELOCITY, BEH-SPIKE, CPTY-PROFILE, CPTY-NEW-LARGE) and STAT-MAD's group size.
+    `t` is clean_tx / base_tx output. Keys are check ids, values the Thai reason."""
     if t.empty:
         return {r: "ไม่มีรายการที่วิเคราะห์ได้หลังตัดรายการโอนเข้าบัญชีตัวเอง ยอด ≤ 0 และรายการที่ไม่มีวันเวลา"
                 for r in GATE_CARDS}
@@ -338,6 +349,15 @@ def gate_volume(tables: dict, cfg: dict) -> dict:
     if int(grp.value_counts().max()) < cfg["GATE.SAMPLE.MIN"]:
         out["STAT-MAD"] = (f"ทุกกลุ่ม channel มีรายการน้อยกว่า GATE.SAMPLE.MIN ({cfg['GATE.SAMPLE.MIN']} รายการ{k}) "
                            "จึงคำนวณ Modified Z-Score ไม่ได้")
+    return out
+
+
+def gate_volume(tables: dict, cfg: dict) -> dict:
+    t = clean_tx(tables["transactions"])
+    out = vol_baseline(t, cfg)
+    if t.empty:
+        return out
+    k = " ค่ามาตรฐานจาก AIDA-14 ปรับได้ตามบริบทองค์กร"
     src, fmin = int(t.groupby("to_acct")["from_acct"].nunique().max()), cfg["NET.FUNNEL"]["min_sources"]
     if src < fmin:
         out["NET-FUNNEL"] = f"ไม่มีบัญชีใดรับเงินจากแหล่งครบ {fmin} แหล่ง (สูงสุด {src} แหล่ง) ตาม NET.FUNNEL{k}"
@@ -614,7 +634,7 @@ def out_dashboard(bundle: dict, template: str, path: str, cfg: dict) -> str:
 
 # ---- STAT-MAD ----
 def stat_mad(tables: dict, cfg: dict) -> pd.DataFrame:
-    t = clean_tx(tables["transactions"])
+    t = base_tx(tables)
     lim, n_min = cfg["STAT.MAD.THRESHOLD"], cfg["GATE.SAMPLE.MIN"]
     if "channel" in t.columns:
         t["grp"] = "ช่องทาง " + t["channel"].fillna("ไม่ระบุ").astype(str)
@@ -643,7 +663,7 @@ def stat_mad(tables: dict, cfg: dict) -> pd.DataFrame:
 
 # ---- BEH-VELOCITY ----
 def beh_velocity(tables: dict, cfg: dict) -> pd.DataFrame:
-    t = clean_tx(tables["transactions"])
+    t = base_tx(tables)
     need = cfg["BEH.BASELINE.MIN_PERIODS"]["velocity_days"]
     k, floor = cfg["BEH.DEVIATION"], cfg["BEH.VELOCITY.SD_FLOOR"]
     d = (t.assign(day=t["ts"].dt.strftime("%Y-%m-%d"))
@@ -666,7 +686,7 @@ def beh_velocity(tables: dict, cfg: dict) -> pd.DataFrame:
 
 # ---- BEH-SPIKE ----
 def beh_spike(tables: dict, cfg: dict) -> pd.DataFrame:
-    t = clean_tx(tables["transactions"])
+    t = base_tx(tables)
     need = cfg["BEH.BASELINE.MIN_PERIODS"]["spike_months"]
     k = cfg["BEH.DEVIATION"]
     d = (t.groupby(["from_acct", "period"])
@@ -688,7 +708,7 @@ def beh_spike(tables: dict, cfg: dict) -> pd.DataFrame:
 
 # ---- TEMP-OFFHOURS ----
 def temp_offhours(tables: dict, cfg: dict) -> pd.DataFrame:
-    t = clean_tx(tables["transactions"])
+    t = base_tx(tables)
     oh, k, share = cfg["TEMP.OFF_HOURS"], cfg["TEMP.OFF_HOURS.MIN_TX"], cfg["TEMP.OFF_HOURS.MIN_SHARE"]
     hhmm = t["ts"].dt.strftime("%H:%M")
     off = (hhmm < oh["start"]) | (hhmm >= oh["end"])
@@ -2217,14 +2237,14 @@ _GEN = ["record_id", "date", "amount", "entity"]
 _ALL = ["E", "C", "A"]
 CHECKS = {
     # migrated B1 cards (data type E; the general risks apply to any data type)
-    "STAT-MAD": _spec(stat_mad, "R1", "5.1 Statistical", B1_ROLES, ["STAT.MAD.THRESHOLD", "GATE.SAMPLE.MIN"], ["E"],
+    "STAT-MAD": _spec(stat_mad, "R1", "5.1 Statistical", _GEN, ["STAT.MAD.THRESHOLD", "GATE.SAMPLE.MIN"], _ALL,
                       ["channel"], ["G-R1"]),
-    "BEH-VELOCITY": _spec(beh_velocity, "R1", "5.3 Behavioral", B1_ROLES,
-                          ["BEH.DEVIATION", "BEH.BASELINE.MIN_PERIODS", "BEH.VELOCITY.SD_FLOOR"], ["E"], [], ["G-R1"]),
-    "BEH-SPIKE": _spec(beh_spike, "R1", "5.3 Behavioral", B1_ROLES, ["BEH.DEVIATION", "BEH.BASELINE.MIN_PERIODS"],
-                       ["E"], [], ["G-R1"]),
-    "TEMP-OFFHOURS": _spec(temp_offhours, "R1", "5.4 Temporal", B1_ROLES,
-                           ["TEMP.OFF_HOURS", "TEMP.OFF_HOURS.MIN_TX", "TEMP.OFF_HOURS.MIN_SHARE"], ["E"], [], ["G-R3"]),
+    "BEH-VELOCITY": _spec(beh_velocity, "R1", "5.3 Behavioral", _GEN,
+                          ["BEH.DEVIATION", "BEH.BASELINE.MIN_PERIODS", "BEH.VELOCITY.SD_FLOOR"], _ALL, [], ["G-R1"]),
+    "BEH-SPIKE": _spec(beh_spike, "R1", "5.3 Behavioral", _GEN, ["BEH.DEVIATION", "BEH.BASELINE.MIN_PERIODS"],
+                       _ALL, [], ["G-R1"]),
+    "TEMP-OFFHOURS": _spec(temp_offhours, "R1", "5.4 Temporal", ["record_id", "date", "entity"],
+                           ["TEMP.OFF_HOURS", "TEMP.OFF_HOURS.MIN_TX", "TEMP.OFF_HOURS.MIN_SHARE"], _ALL, [], ["G-R3"]),
     "NET-CYCLE": _spec(net_cycle, "R1", "5.9 Network", B1_ROLES, ["NET.CYCLE", "NET.CYCLE.MAX_PATHS"], ["E"]),
     "NET-FUNNEL": _spec(net_funnel, "R1", "5.9 Network", B1_ROLES, ["NET.FUNNEL"], ["E"]),
     "MULE-DWELL": _spec(mule_dwell, "R1", "5.4 Temporal", B1_ROLES, ["MULE.DWELL_HOURS", "MULE.DWELL_MIN_PAIRS"], ["E"]),
@@ -2279,7 +2299,7 @@ def plan_checks(tables: dict, cfg: dict = None) -> pd.DataFrame:
 # RISK_LIBRARY is the data the engine computes with; AIDA-18 will describe the same risks in prose for matching.
 # A risk's checks are not typed in twice by hand: tests require them to equal the CHECKS entries whose "risk" or
 # "risk_alt" names the risk.
-JOIN_OK_PCT = 90.0          # a joined master table (opened_at) must match >= this % (normalized) of its keys
+# a joined master table (opened_at) must match >= cfg["INTAKE.JOIN_MIN_PCT"] (AIDA-14, 90%) of the transaction keys
 JOIN_ROLES = ("opened_at",)  # roles that normally live in a secondary table joined by the entity id
 NEEDS_TIME_CHECKS = {"TEMP-OFFHOURS"}  # checks that read the time of day, not only the date
 TYPE_TEXT = {"E": "รายการโอนเงินระหว่างบัญชี", "C": "รับชำระค่างวดสินเชื่อ", "A": "จ่ายเงินเจ้าหนี้"}
@@ -2322,8 +2342,9 @@ RISK_LIBRARY = {
     "G-R1": _risk("ยอดโดดเด่น",
                   "รายการหรือบัญชีที่ยอดโดดเด่นหรือถี่ผิดปกติเมื่อเทียบกับพฤติกรรมปกติของตนเองและของกลุ่ม",
                   ["ยอดโดดเด่น", "ยอดสูงผิดปกติ", "ยอดผิดปกติ", "outlier amount", "unusual amount", "amount outlier"],
-                  ["E"], ["STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE"], _B1, 1, 100,
-                  {"counterparty": REQ_TRANSFERS, "_data_type": REQ_TRANSFERS}),
+                  # NEEDS_CONTEXT: the checks now run on C/A, but STAT-MAD flags normal rows there (log-uniform
+                  # amounts), contradicting the answer keys, so G-R1 stays E-only until that is decided
+                  ["E"], ["STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE"], _GENR, 1, 100),
     "G-R2": _risk("ช่วงสิ้นงวด",
                   "รายการกระจุกตัวในช่วงสิ้นเดือนหรือสิ้นงวดบัญชีมากกว่าปกติ",
                   ["ช่วงสิ้นงวด", "สิ้นงวด", "สิ้นเดือน", "ปิดงวด", "period end", "period-end", "month end", "cut-off"],
@@ -2331,8 +2352,8 @@ RISK_LIBRARY = {
     "G-R3": _risk("นอกเวลาทำการ",
                   "รายการที่เกิดนอกเวลาทำการหรือวันหยุดเป็นสัดส่วนสูง (ต้องมีเวลาของรายการ ไม่ใช่เฉพาะวันที่)",
                   ["นอกเวลาทำการ", "นอกเวลางาน", "วันหยุด", "off-hours", "off hours", "after hours", "after-hours"],
-                  ["E"], ["TEMP-OFFHOURS"], _B1, 1, 100, {"date": REQ_TIME, "_time": REQ_TIME,
-                                                          "counterparty": REQ_TRANSFERS, "_data_type": REQ_TRANSFERS}),
+                  ["E", "C", "A"], ["TEMP-OFFHOURS"], ["record_id", "date", "entity"], 1, 100,
+                  {"date": REQ_TIME, "_time": REQ_TIME}),
     "G-R4": _risk("ตัวเลขผิดธรรมชาติ",
                   "การกระจายตัวเลขหลักแรกผิดจาก Benford ยอดกลมหรือยอดซ้ำถี่ผิดปกติ ซึ่งอาจเกิดจากการกำหนดตัวเลข "
                   "ไม่ใช่ธุรกรรมจริง",
@@ -2384,6 +2405,17 @@ def _norm_concern(s) -> str:
     return "".join(str(s).casefold().split())
 
 
+def _syn_in(syn: str, concern) -> bool:
+    """Does the concern contain the synonym? Thai: substring with whitespace removed (Thai is written without
+    spaces). ASCII: whole words only (single-spaced, case-folded), so "sod" does not match "episode"."""
+    if syn.isascii():
+        words = " ".join(syn.casefold().split())
+        text = " ".join(str(concern).casefold().split())
+        return bool(words) and re.search(r"(?<![a-z0-9])" + re.escape(words) + r"(?![a-z0-9])", text) is not None
+    n = _norm_concern(syn)
+    return bool(n) and n in _norm_concern(concern)
+
+
 def match_concerns(concerns: list) -> list:
     """Risk Concern text -> Risk Library. Each concern gives {concern, risk_id, matched_by, mode}. A concern matches
     the risk whose synonym (Thai or English, case and whitespace ignored) it contains; the longest synonym wins,
@@ -2391,12 +2423,12 @@ def match_concerns(concerns: list) -> list:
     (exploratory mode). Every concern is returned, in order."""
     out = []
     for c in concerns:
-        text, best = _norm_concern(c), None
+        best = None
         for rid, lib in RISK_LIBRARY.items():
             for syn in lib["synonyms"]:
-                n = _norm_concern(syn)
-                if n and n in text and (best is None or len(n) > best[0]):
-                    best = (len(n), rid, syn)
+                n = len(_norm_concern(syn))
+                if _syn_in(syn, c) and (best is None or n > best[0]):
+                    best = (n, rid, syn)
         out.append({"concern": c, "risk_id": best[1] if best else None, "matched_by": best[2] if best else None,
                     "mode": "รับรอง" if best else "สำรวจ"})
     return out
@@ -2438,13 +2470,15 @@ def _months_between(lo, hi) -> int:
     return (hi.year - lo.year) * 12 + hi.month - lo.month + 1
 
 
-def _intake_ctx(roles_confirmed: dict, profile=None, tables=None) -> dict:
+def _intake_ctx(roles_confirmed: dict, profile=None, tables=None, cfg: dict = None) -> dict:
     """What sufficiency needs to know: the roles present, the dataset type, rows and months of the transaction
     table, whether the date carries a time of day, and how well each secondary table joins. Taken from the
-    profile when given, else from the internal tables."""
+    profile when given, else from the internal tables. With tables, also the data-volume skips of the checks
+    (what gate_volume did in B1) and with cfg the join threshold."""
     tx_name, tx_roles, others = _roles_by_table(roles_confirmed)
     ctx = {"roles": set(tx_roles), "dtype": _type_from_roles(set(tx_roles), profile), "rows": None, "months": None,
-           "has_time": None, "joins": {}}
+           "has_time": None, "joins": {}, "vol": {},
+           "join_min": 100.0 * cfg["INTAKE.JOIN_MIN_PCT"] if cfg else 100.0 * 0.9}
     if profile is not None and len(profile) and tx_name is not None:
         pt = profile[profile["table"] == tx_name]
         if len(pt):
@@ -2462,7 +2496,7 @@ def _intake_ctx(roles_confirmed: dict, profile=None, tables=None) -> dict:
                     jm = j.iloc[0]["join_match"] if len(j) else None
                     ok = isinstance(jm, dict) and str(jm["with"]).startswith(f"{tname}.")
                     ctx["joins"][role] = (tname, float(jm["normalized"]) if ok else 0.0)
-    elif tables is not None and "transactions" in tables:
+    if profile is None and tables is not None and "transactions" in tables:
         tx = tables["transactions"]
         ctx["rows"] = int(len(tx))
         if "ts" in tx.columns:
@@ -2470,7 +2504,23 @@ def _intake_ctx(roles_confirmed: dict, profile=None, tables=None) -> dict:
             if len(ts):
                 ctx["months"] = _months_between(ts.min(), ts.max())
                 ctx["has_time"] = bool((ts != ts.dt.normalize()).any())
+    if tables is not None and cfg and "transactions" in tables:
+        ctx["vol"] = _volume_skips(tables, cfg)
     return ctx
+
+
+def _volume_skips(tables: dict, cfg: dict) -> dict:
+    """{check id: Thai reason} for checks the data is too thin for (same conditions and wording as gate_volume):
+    B1 transfer data uses gate_volume itself; other data types use the entity-history / group-size conditions."""
+    tx = tables["transactions"]
+    try:
+        if "to_acct" in tx.columns and "contract" not in tx.columns:
+            out = gate_volume(tables, cfg)
+        else:
+            out = vol_baseline(base_tx(tables), cfg)
+    except (KeyError, ValueError):  # a role the volume rules read is missing: the role rule already skips the check
+        return {}
+    return {c: r for c, r in out.items() if c in CHECKS}
 
 
 def _missing_text(miss: list) -> str:
@@ -2493,6 +2543,8 @@ def _check_state(cid: str, ctx: dict, lib: dict) -> tuple:
     if cid in NEEDS_TIME_CHECKS and ctx["has_time"] is False:
         return (False, "คอลัมน์วันที่มีเฉพาะวัน ไม่มีเวลาของรายการ ซึ่งการ์ดนี้ต้องใช้ดูรายการนอกเวลาทำการ จึงรันไม่ได้ "
                        "— ขอข้อมูลที่มีเวลาของรายการเพิ่ม", "เวลาของรายการ", "time")
+    if cid in ctx["vol"]:
+        return False, ctx["vol"][cid], "ปริมาณข้อมูลไม่พอ", "volume"
     return True, "มีบทบาทคอลัมน์ที่ต้องใช้ครบ", "-", ""
 
 
@@ -2538,14 +2590,16 @@ def _assess_one(rid: str, ctx: dict) -> dict:
                 f"ข้อมูลประเภท{'/'.join(TYPE_TEXT[t] for t in lib['data_types'])}ที่ตรงกับความเสี่ยงนี้")
         elif kind == "time":
             ask(lib["request_if_missing"].get("_time") or REQ_TIME)
+        elif kind == "volume":
+            ask("ข้อมูลช่วงเวลายาวขึ้นหรือจำนวนรายการต่อบัญชี/กลุ่มมากขึ้น เพื่อให้สร้าง baseline หรือคำนวณได้")
         elif kind == "role":
             for r in [r for r in CHECKS[cid]["requires"] if r not in ctx["roles"]]:
                 ask(lib["request_if_missing"].get(r) or f"คอลัมน์{ROLE_TEXT.get(r, r)} (บทบาท {r}) ของรายการ")
     for role in lib["join_roles"]:
-        if role in ctx["joins"] and ctx["joins"][role][1] < JOIN_OK_PCT and run:
+        if role in ctx["joins"] and ctx["joins"][role][1] < ctx["join_min"] and run:
             tname, rate = ctx["joins"][role]
             reasons.append(f"บทบาท {role} อยู่ในตาราง {tname} ซึ่งเชื่อมกับรายการได้เพียง {rate:.1f}% ของรหัส "
-                           f"(ต่ำกว่า {JOIN_OK_PCT:.0f}%) ผลที่ใช้ {role} จึงอาจไม่ครบ — ตรวจรูปแบบรหัสบัญชีของสองตาราง")
+                           f"(ต่ำกว่า {ctx['join_min']:.0f}% ตาม INTAKE.JOIN_MIN_PCT) ผลที่ใช้ {role} จึงอาจไม่ครบ — ตรวจรูปแบบรหัสบัญชีของสองตาราง")
             if status == "พร้อม":
                 status = "บางส่วน"
     if status == "บางส่วน" and skipped:
@@ -2557,12 +2611,14 @@ def _assess_one(rid: str, ctx: dict) -> dict:
     return {"status": status, "run": run, "skipped": skipped, "request": req, "reason": " | ".join(reasons)}
 
 
-def assess_sufficiency(risk_ids: list, roles_confirmed: dict, profile: pd.DataFrame, cfg: dict = None) -> pd.DataFrame:
+def assess_sufficiency(risk_ids: list, roles_confirmed: dict, profile: pd.DataFrame, cfg: dict,
+                       tables: dict = None) -> pd.DataFrame:
     """Is the data enough for each requested risk? status: พร้อม (all checks can run) / บางส่วน (some checks skipped,
-    or a joined table such as opened_at matches under JOIN_OK_PCT) / ไม่พอ (no check can run, a minimum role or
+    or a joined table such as opened_at matches under cfg["INTAKE.JOIN_MIN_PCT"], or too little data for a check
+    when `tables` (internal columns) is given) / ไม่พอ (no check can run, a minimum role or
     minimum data is missing, or the data type is not the one the risk needs). data_request lists what to ask for.
     `roles_confirmed` is {table: {column: role}}; `profile` is profile_columns output."""
-    ctx = _intake_ctx(roles_confirmed, profile)
+    ctx = _intake_ctx(roles_confirmed, profile, tables, cfg)
     rows = []
     for rid in risk_ids:
         if rid not in RISK_LIBRARY:
@@ -2573,10 +2629,11 @@ def assess_sufficiency(risk_ids: list, roles_confirmed: dict, profile: pd.DataFr
                                        "reason"])
 
 
-def plan(risk_ids: list, roles_confirmed: dict, profile: pd.DataFrame, cfg: dict = None) -> pd.DataFrame:
+def plan(risk_ids: list, roles_confirmed: dict, profile: pd.DataFrame, cfg: dict, tables: dict = None) -> pd.DataFrame:
     """Run / Skip per check for the confirmed risks (replaces gate_capability for C1 runs): check_id, decision,
-    reason, missing. A check runs when any requested risk can run it; a Skip reason is Thai and says what is missing."""
-    ctx = _intake_ctx(roles_confirmed, profile)
+    reason, missing. A check runs when any requested risk can run it; a Skip reason is Thai and says what is missing.
+    With `tables` it also carries gate_capability's data-dependent skips (STAT-MAD group size, baseline length)."""
+    ctx = _intake_ctx(roles_confirmed, profile, tables, cfg)
     rows = {}
     for rid in risk_ids:
         if rid not in RISK_LIBRARY:
@@ -2588,7 +2645,7 @@ def plan(risk_ids: list, roles_confirmed: dict, profile: pd.DataFrame, cfg: dict
             if cid in a["run"] and a["status"] != "ไม่พอ":
                 note = "มีบทบาทคอลัมน์ที่ต้องใช้ครบและปริมาณข้อมูลผ่านเกณฑ์"
                 for role in CHECKS[cid]["optional"]:
-                    if role in ctx["joins"] and ctx["joins"][role][1] < JOIN_OK_PCT:
+                    if role in ctx["joins"] and ctx["joins"][role][1] < ctx["join_min"]:
                         note += f" (แต่ {role} เชื่อมกับรายการได้เพียง {ctx['joins'][role][1]:.1f}%)"
                 rows[cid] = ("Run", note, "-")
             elif cid in a["skipped"]:
@@ -2602,7 +2659,7 @@ def suggest_risks(requested_ids: list, roles_confirmed: dict, tables: dict, cfg:
     """Risks in the library that the data supports (status พร้อม or บางส่วน) and that were not requested, each with
     `preview` = the number of distinct entities its checks flag, counted by actually running the checks on `tables`
     (internal columns). Risks with preview 0 are not suggested. Sorted by preview desc, then risk_id."""
-    ctx = _intake_ctx(roles_confirmed, None, tables)
+    ctx = _intake_ctx(roles_confirmed, None, tables, cfg)
     ask = set(requested_ids or [])
     out = []
     for rid, lib in RISK_LIBRARY.items():

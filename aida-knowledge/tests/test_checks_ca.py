@@ -111,7 +111,12 @@ class ChecksCA(unittest.TestCase):
         self.assertEqual(e.CHECKS["CPTY-PROFILE"]["risk"], "R4")
         self.assertIn("G-R1", e.CHECKS["STAT-MAD"]["risk_alt"])
         self.assertIn("G-R3", e.CHECKS["TEMP-OFFHOURS"]["risk_alt"])
-        self.assertEqual(set(e.CHECKS["STAT-MAD"]["requires"]), {"record_id", "date", "entity", "counterparty", "amount"})
+        # the four general checks read only entity / date / amount (no counterparty) and apply to every data type
+        for cid in ("STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE", "TEMP-OFFHOURS"):
+            self.assertNotIn("counterparty", e.CHECKS[cid]["requires"])
+            self.assertEqual(set(e.CHECKS[cid]["data_types"]), {"E", "C", "A"})
+        self.assertEqual(set(e.CHECKS["STAT-MAD"]["requires"]), {"record_id", "date", "entity", "amount"})
+        self.assertEqual(set(e.CHECKS["TEMP-OFFHOURS"]["requires"]), {"record_id", "date", "entity"})
 
     def test_checks_skip_reason_names_missing_roles(self):
         e = engine()
