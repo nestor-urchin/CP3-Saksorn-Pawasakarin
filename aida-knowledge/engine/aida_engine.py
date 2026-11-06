@@ -3,6 +3,9 @@
 One file; pandas, numpy, openpyxl and the standard library only (no network libraries).
 Every threshold is read from the AIDA-14 Machine Config dict passed as `cfg`.
 """
+import datetime
+import functools
+import hashlib
 import json
 import os
 import re
@@ -571,7 +574,8 @@ def out_workbook(bundle: dict, path: str, cfg: dict) -> str:
     b, p = bundle, bundle.get("prep") or {}
     readme = [OUT_BANNER, f"run_id: {b['run_id']} | Registry version: {cfg['REGISTRY.VERSION']}", OUT_LIMITS,
               f"รูปแบบวันที่ที่ใช้แปลง: {p.get('date_format', '-')} | แปลงปี พ.ศ.: {'ใช่' if p.get('be_converted') else 'ไม่'}"
-              f" | วันและเดือน ≤ 12 ทั้งคู่ {p.get('ambiguous_dates', 0)} รายการ", *b.get("card_notes", []), *b["flow_notes"],
+              f" | วันและเดือน ≤ 12 ทั้งคู่ {p.get('ambiguous_dates', 0)} รายการ", *b.get("org_notes", []),
+              *b.get("card_notes", []), *b["flow_notes"],
               "วิธีอ่านไฟล์ (sheet ตามลำดับ):"] + [f"{k}: {v}" for k, v in OUT_SHEETS.items()]
     f = b["findings"]
     fnd = f[FINDING_COLUMNS].assign(member_accts=f["member_accts"], reviewer=None, disposition=None, review_date=None)
@@ -1523,6 +1527,25 @@ def match_role(text):
     return (best[1], best[2]) if best[1] else (None, 0)
 
 
+def match_description(text):
+    """Role named by a free-text column description, or None. Unlike a column name, a description is a phrase whose
+    head noun comes first ("จำนวนเงินที่จ่ายจริงต่อใบแจ้งหนี้" is an amount, not an invoice number): the synonym that
+    starts earliest wins, then the longest. A description equal to a synonym is matched as match_role does."""
+    role, strength = match_role(text)
+    if strength == "exact" or role is None:
+        return role
+    whole, toks = _norm_name(text), {_norm_name(t) for t in _tokens(text)}
+    best = None
+    for syn, r in _syn_index():
+        thai = bool(RE_THAI_CHAR.search(syn))
+        if not syn or (syn not in toks and len(syn) < (3 if thai else 4)):
+            continue
+        pos = whole.find(syn)
+        if pos >= 0 and (best is None or (pos, -len(syn)) < best[:2]):
+            best = (pos, -len(syn), r)
+    return best[2] if best else role
+
+
 def _num_text(s: pd.Series):
     """Numeric view of a text column, or None when it is not (mostly) numbers or looks like zero-padded ids."""
     t = s.astype(str).str.strip()
@@ -1796,7 +1819,7 @@ def suggest_roles(profile: pd.DataFrame, brief_columns=None, preset=None, cfg=No
         r_b, st_b = (None, 0)
         if said is not None:
             r_b = said.strip() if str(said).strip() in ROLE_TO_INTERNAL or str(said).strip().startswith("custom:") \
-                else match_role(said)[0]
+                else match_description(said)
             st_b = "exact"
         if r_b:
             role, conf, src = r_b, 0.95, "brief"
@@ -1849,7 +1872,7 @@ def check_descriptions(profile: pd.DataFrame, brief_columns=None) -> list:
         if said is None:
             continue
         low, n = str(said).lower(), max(int(p["n_rows"]), 1)
-        role = match_role(said)[0]
+        role = match_description(said)
         item = lambda obs, q: out.append({"table": p["table"], "column": p["column"], "said": said,
                                           "observed": obs, "question": q})
         if any(w in low for w in NET_WORDS) and p["neg_count"] > 0:
@@ -2686,3 +2709,1187 @@ def suggest_risks(requested_ids: list, roles_confirmed: dict, tables: dict, cfg:
                         f"สอดคล้องกับ pattern นี้เบื้องต้น (ยังไม่ใช่ข้อสรุป ควรตรวจสอบเพิ่มเติม)", len(seen)))
     df = pd.DataFrame(out, columns=["risk_id", "name_th", "why_th", "preview"])
     return df.sort_values(["preview", "risk_id"], ascending=[False, True], kind="mergesort").reset_index(drop=True)
+
+
+# ---- orchestration: inspect -> confirm -> run, intake.json, trace, mapping profiles (spec 4.3, 4.6, 5) ----
+class AidaError(ValueError):
+    """An error for the auditor: the message is Thai and says how to fix the problem (never a raw traceback)."""
+
+
+INTAKE_VERSION = 1
+REGISTRY_FILE = "AIDA-14-configuration-registry.md"
+CONFIRM_LINE = "ยืนยันทั้งหมด หรือแก้เฉพาะข้อ ⚠️ ❓ D แล้วเริ่มวิเคราะห์"
+COL_ICON = {"ok": "✅", "conflict": "⚠️", "guess": "❓", "unknown": "⚪"}
+SUFF_ICON = {"พร้อม": "✅", "บางส่วน": "🟡", "ไม่พอ": "❌"}
+NO_ROLE = ("", "ไม่ใช้", "none", "None", UNKNOWN_ROLE)
+MATERIALITY_TYPES = ("ก", "ข", "ไม่ระบุ")
+FILTER_OPS = ("==", "!=", "in", "not in", ">", ">=", "<", "<=", "between")
+DATE_ROLES = ("date", "due_date", "opened_at")
+SIG_PATTERNS = ("date", "datetime", "thai_id13", "account_like", "thai_text")  # stable patterns a mapping compares
+MULE_STAGE = ["MULE-PATTERN", "MULE-CROSS-TX", "MULE-NETWORK"]  # read the Evidence of the cards before them
+# entity_type names of a Finding per data type (the checks say entity / counterparty / account)
+ENTITY_LABELS = {"C": {"entity": "borrower", "account": "borrower", "counterparty": "payer"},
+                 "A": {"entity": "vendor", "account": "vendor", "counterparty": "payee"}}
+# Evidence of these checks on the same entity and period as the key check is the same pattern (equal split amounts
+# repeat and are round): it joins that Finding instead of making a second one (AIDA-01 one entity, one Finding)
+ABSORB_C1 = {"SPLIT-LIMIT": ("FOR-REPEAT", "FOR-ROUND")}
+OUT_NAMES = {"workbook": "AIDA-workbook.xlsx", "dashboard": "AIDA-dashboard.html", "csv_dir": "network"}
+EXCLUDE_WORDS = ("ตัด", "ไม่รวม", "ยกเว้น", "เอาออก", "exclude", "remove", "drop")
+NO_FILTER_WORDS = ("ไม่ต้องตัด", "ไม่ต้องกรอง", "ไม่ตัดรายการ", "no filter")
+RE_CODE_VALUE = re.compile(r"(?<![0-9A-Za-z])([0-9A-Za-z]{1,6})\s*=\s*([^,;/\n]+)")
+
+
+def _thai_errors(fn):
+    """Public API wrapper: every failure reaches the auditor as an AidaError with a Thai message."""
+    @functools.wraps(fn)
+    def wrap(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except AidaError:
+            raise
+        except (ValueError, KeyError) as e:
+            msg = str(e.args[0]) if e.args else str(e)
+            if RE_THAI_CHAR.search(msg):
+                raise AidaError(msg) from None
+            raise AidaError(f"{fn.__name__}: ข้อมูลหรือค่าที่ส่งเข้ามาไม่ถูกต้อง ({type(e).__name__}: {msg}) — ตรวจไฟล์ "
+                            "บทบาทคอลัมน์ และ intake แล้วเรียกใหม่") from None
+        except OSError as e:
+            raise AidaError(f"{fn.__name__}: อ่านหรือเขียนไฟล์ไม่ได้ ({e.strerror or e}: {e.filename or ''}) — ตรวจว่า"
+                            "ไฟล์มีอยู่ เปิดได้ และโฟลเดอร์ output เขียนได้ แล้วเรียกใหม่") from None
+        except Exception as e:  # noqa: BLE001 - the auditor never sees a raw traceback
+            raise AidaError(f"{fn.__name__}: เกิดข้อผิดพลาดภายใน engine ({type(e).__name__}: {e}) — ตรวจไฟล์และ intake "
+                            "แล้วลองใหม่ หรือส่งข้อความนี้ให้ผู้ดูแล AIDA") from None
+    return wrap
+
+
+def _plain(o):
+    """JSON-safe copy: numpy / pandas scalars -> Python, NaN -> None, tuples / sets -> lists."""
+    if isinstance(o, dict):
+        return {str(k): _plain(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_plain(v) for v in o]
+    if isinstance(o, (set, frozenset)):
+        return sorted(_plain(v) for v in o)
+    if isinstance(o, np.ndarray):
+        return [_plain(v) for v in o.tolist()]
+    if isinstance(o, (pd.Timestamp, datetime.datetime, datetime.date)):
+        return None if pd.isna(o) else o.isoformat()
+    if isinstance(o, np.generic):
+        o = o.item()
+    if isinstance(o, float) and (np.isnan(o) or np.isinf(o)):
+        return None
+    if o is pd.NaT or o is None:
+        return None
+    return o
+
+
+def _now() -> str:
+    return datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def default_registry_path():
+    """AIDA-14 next to the engine (Knowledge), in ../knowledge (repo) or in the working folder; None if absent."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for d in (os.environ.get("AIDA_REGISTRY_DIR"), here, os.path.join(here, "..", "knowledge"), os.getcwd(),
+              os.path.join(os.getcwd(), "knowledge")):
+        if d and os.path.isfile(os.path.join(d, REGISTRY_FILE)):
+            return os.path.abspath(os.path.join(d, REGISTRY_FILE))
+    return None
+
+
+def _load_cfg(cfg=None, registry_path=None) -> tuple:
+    """(Machine Config dict, registry path or None). A cfg dict passed in wins; else AIDA-14 is read."""
+    if cfg is not None:
+        if not isinstance(cfg, dict):
+            raise AidaError("cfg ต้องเป็น dict ของ Machine Config (AIDA-14) — หรือไม่ส่ง cfg เพื่อให้ engine อ่าน AIDA-14 เอง")
+        return {k: v for k, v in cfg.items() if k != "_RUN"}, None
+    path = registry_path if registry_path and os.path.isfile(str(registry_path)) else default_registry_path()
+    if path is None:
+        raise AidaError(f"ไม่พบไฟล์ {REGISTRY_FILE} — วางไฟล์ AIDA-14 ไว้ในโฟลเดอร์เดียวกับ aida_engine.py หรือส่ง "
+                        "registry_path='<ที่อยู่ไฟล์ AIDA-14>' แล้วเรียกใหม่")
+    return load_registry(path), os.path.abspath(path)
+
+
+def _sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _read_csv_text(path: str) -> pd.DataFrame:
+    last = None
+    for enc in ("utf-8-sig", "cp874"):  # UTF-8 (with or without BOM), then Thai Windows
+        try:
+            return pd.read_csv(path, dtype=str, encoding=enc)
+        except UnicodeDecodeError as e:
+            last = e
+        except pd.errors.EmptyDataError:
+            raise AidaError(f"ไฟล์ '{os.path.basename(path)}' ว่าง — ส่งไฟล์ที่มีหัวคอลัมน์และข้อมูล") from None
+    raise AidaError(f"อ่านไฟล์ '{os.path.basename(path)}' ไม่ได้ (encoding ไม่ใช่ UTF-8 หรือ TIS-620/cp874: {last}) — "
+                    "บันทึกไฟล์เป็น CSV UTF-8 แล้วส่งใหม่")
+
+
+def _file_items(files) -> list:
+    if files is None:
+        raise AidaError("ยังไม่ได้ส่งไฟล์ข้อมูล — ส่ง files เป็น dict {ชื่อตาราง: ที่อยู่ไฟล์} หรือ list ของที่อยู่ไฟล์")
+    if isinstance(files, (str, os.PathLike)):
+        files = [files]
+    if isinstance(files, dict):
+        return [(str(k), str(v)) for k, v in files.items()]
+    return [(os.path.splitext(os.path.basename(str(p)))[0], str(p)) for p in files]
+
+
+def _read_files(files) -> tuple:
+    """({table: text DataFrame}, {table: {path, file, sheet, sha256}}). Everything is read as text (dtype=str) so
+    codes such as leading zeros survive; XLSX gives one table per sheet named <stem>.<sheet>."""
+    frames, meta = {}, {}
+    for name, path in _file_items(files):
+        if not os.path.isfile(path):
+            raise AidaError(f"ไม่พบไฟล์ '{path}' — ตรวจชื่อและที่อยู่ไฟล์ (หรือแนบไฟล์ใหม่) แล้วเรียกอีกครั้ง")
+        sha, ext = _sha256(path), os.path.splitext(path)[1].lower()
+        if ext in (".xlsx", ".xlsm"):
+            try:
+                sheets = pd.read_excel(path, sheet_name=None, dtype=str, engine="openpyxl")
+            except Exception as e:  # noqa: BLE001
+                raise AidaError(f"เปิดไฟล์ Excel '{os.path.basename(path)}' ไม่ได้ ({e}) — บันทึกเป็น .xlsx ใหม่หรือส่งเป็น CSV") from None
+            parts = [(f"{name}.{sh}", sh, df) for sh, df in sheets.items()]
+        elif ext in (".csv", ".txt", ""):
+            parts = [(name, None, _read_csv_text(path))]
+        else:
+            raise AidaError(f"ไม่รองรับไฟล์ชนิด '{ext}' ({os.path.basename(path)}) — ส่งเป็น .csv หรือ .xlsx")
+        for tname, sheet, df in parts:
+            if tname in frames:
+                raise AidaError(f"มีตารางชื่อ '{tname}' ซ้ำกัน — ตั้งชื่อตารางให้ไม่ซ้ำ (ส่ง files เป็น dict {{ชื่อ: ไฟล์}})")
+            df = df.copy()
+            df.columns = [str(c).strip() for c in df.columns]
+            frames[tname] = df
+            meta[tname] = {"path": os.path.abspath(path), "file": os.path.basename(path), "sheet": sheet, "sha256": sha}
+    if not frames:
+        raise AidaError("ไม่มีตารางข้อมูลในไฟล์ที่ส่งมา — ตรวจว่าไฟล์มีข้อมูลอย่างน้อย 1 ตาราง")
+    return frames, meta
+
+
+def _data_ref(meta: dict) -> str:
+    return "; ".join(f"chat:{m['file']}#{t}|sha256:{m['sha256']}" for t, m in meta.items())
+
+
+def _input_sha(meta: dict) -> str:
+    shas = sorted({(m["file"], m["sha256"]) for m in meta.values()})
+    return shas[0][1] if len(shas) == 1 else "; ".join(f"{f}:{s}" for f, s in shas)
+
+
+def _role_list(r) -> list:
+    if r is None:
+        return []
+    return [str(x).strip() for x in (r if isinstance(r, (list, tuple)) else [r]) if str(x).strip() not in NO_ROLE]
+
+
+def _certified(roles: list) -> list:
+    return [r for r in roles if not r.startswith("custom:")]
+
+
+def _split_roles(roles: dict) -> tuple:
+    """({table: {column: primary role}}, [(table, column, extra custom role)]) from intake roles (a role or a list)."""
+    primary, extra = {}, []
+    for t, rmap in roles.items():
+        primary[t] = {}
+        for c, r in rmap.items():
+            lst = _role_list(r)
+            if not lst:
+                continue
+            cert = _certified(lst)
+            main = cert[0] if cert else lst[0]
+            primary[t][c] = main
+            extra += [(t, c, x) for x in lst if x != main]
+    return {t: m for t, m in primary.items() if m}, extra
+
+
+def _internal(frames: dict, roles: dict) -> tuple:
+    """Role adapter for intake roles: (internal tables, tx table name). Unmapped columns are dropped (to_internal);
+    a custom role confirmed next to a certified one on the same column is added as its own column."""
+    primary, extra = _split_roles(roles)
+    tables = to_internal(frames, primary)
+    tx_name = _roles_by_table(primary)[0]
+    for t, c, r in extra:
+        target = "transactions" if t == tx_name else "accounts"
+        if target in tables:
+            tables[target][r] = frames[t][c]
+    return tables, tx_name
+
+
+def _prep_internal(tables: dict, cfg: dict) -> dict:
+    """B1 PREP-MAP on the internal frames (dates incl. พ.ศ. / dd/mm / Thai months, amounts, ids), plus due_date and
+    limit with the same rules."""
+    t = prep_map({k: v for k, v in tables.items() if k in ("transactions", "accounts")}, None, cfg)
+    tx = t["transactions"]
+    if "due_date" in tx.columns:
+        tx["due_date"], _ = to_naive_ts(tx["due_date"])
+    if "limit" in tx.columns:
+        lim = tx["limit"].map(lambda x: x.replace(",", "").replace("฿", "").strip() if isinstance(x, str) else x)
+        tx["limit"] = pd.to_numeric(lim, errors="coerce").astype(float)
+    if "contract" in tx.columns or "to_acct" not in tx.columns:
+        t["_prep"]["excluded_self"] = 0  # base_tx keeps borrower == payer rows: normal for loan / AP data
+    return t
+
+
+def _find_columns(frames: dict, name: str) -> list:
+    """[(table, column)] a filter / answer column name refers to: "table.column" or a column name."""
+    name = str(name)
+    exact = [(t, name[len(t) + 1:]) for t in frames if name.startswith(t + ".") and name[len(t) + 1:] in frames[t].columns]
+    if exact:
+        return exact[:1]
+    return [(t, name) for t, df in frames.items() if name in df.columns]
+
+
+def _num_value(v):
+    """A number from an int / float / text such as "1,000", "80%"; None when it is not one."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        return v.item() if isinstance(v, np.generic) else v
+    if isinstance(v, str):
+        s = v.replace(",", "").replace("฿", "").strip()
+        pct = s.endswith("%")
+        try:
+            x = float(s.rstrip("%"))
+        except ValueError:
+            return None
+        x = x / 100 if pct else x
+        return int(x) if x.is_integer() and not pct and "." not in s else x
+    return None
+
+
+def _filter_mask(s: pd.Series, op: str, value, as_date: bool) -> pd.Series:
+    txt = s.where(s.notna(), "").astype(str).str.strip()
+    if op in ("==", "!="):
+        m = txt == str(value).strip()
+        return m if op == "==" else ~m
+    if op in ("in", "not in"):
+        m = txt.isin([str(v).strip() for v in value])
+        return m if op == "in" else ~m
+    if as_date:
+        col = to_naive_ts(s)[0]
+        vals = to_naive_ts(pd.Series(value if isinstance(value, list) else [value], dtype=object))[0].tolist()
+    else:
+        col = pd.to_numeric(txt.str.replace(",", "", regex=False), errors="coerce")
+        vals = [_num_value(v) for v in (value if isinstance(value, list) else [value])]
+    if op == "between":
+        lo, hi = vals
+        if as_date and isinstance(hi, pd.Timestamp) and hi == hi.normalize():
+            hi = hi + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)  # a date as the upper bound takes the whole day
+        return (col >= lo) & (col <= hi)
+    v = vals[0]
+    return {">": col > v, ">=": col >= v, "<": col < v, "<=": col <= v}[op]
+
+
+def _is_date_col(table: str, col: str, roles: dict, profile_rows: list) -> bool:
+    if set(_role_list(roles.get(table, {}).get(col))) & set(DATE_ROLES):
+        return True
+    return any(p["table"] == table and p["column"] == col and p["dtype_guess"] == "date" for p in profile_rows)
+
+
+def _check_filters(filters, frames: dict, roles: dict, profile_rows: list) -> list:
+    out = []
+    for i, f in enumerate(filters or [], 1):
+        if not isinstance(f, dict) or not {"column", "op", "value"} <= set(f):
+            raise AidaError(f"ตัวกรองข้อ {i} ต้องเป็น {{'column': ชื่อคอลัมน์, 'op': เครื่องหมาย, 'value': ค่า}} — แก้แล้วยืนยันอีกครั้ง")
+        col, op, val = f["column"], str(f["op"]).strip(), f["value"]
+        if op == "=":
+            op = "=="
+        if op not in FILTER_OPS:
+            raise AidaError(f"ตัวกรองข้อ {i}: ไม่รู้จักเครื่องหมาย '{op}' — ใช้ได้เฉพาะ {', '.join(FILTER_OPS)}")
+        if not _find_columns(frames, col):
+            raise AidaError(f"ตัวกรองข้อ {i}: ไม่พบคอลัมน์ '{col}' ในไฟล์ — ระบุชื่อคอลัมน์ตามไฟล์ (หรือ ตาราง.คอลัมน์)")
+        if op == "between" and not (isinstance(val, (list, tuple)) and len(val) == 2):
+            raise AidaError(f"ตัวกรองข้อ {i}: between ต้องมีค่า [ต่ำสุด, สูงสุด] 2 ค่า เช่น ['2026-01-01', '2026-08-31']")
+        if op in ("in", "not in") and not isinstance(val, (list, tuple)):
+            raise AidaError(f"ตัวกรองข้อ {i}: {op} ต้องมีค่าเป็นรายการ เช่น ['C', 'X']")
+        if op in (">", ">=", "<", "<=", "between"):
+            t, c = _find_columns(frames, col)[0]
+            vals = list(val) if isinstance(val, (list, tuple)) else [val]
+            if _is_date_col(t, c, roles, profile_rows):
+                bad = [v for v in vals if pd.isna(to_naive_ts(pd.Series([v], dtype=object))[0].iloc[0])]
+            else:
+                bad = [v for v in vals if _num_value(v) is None]
+            if bad:
+                raise AidaError(f"ตัวกรองข้อ {i}: ค่า {bad} ของคอลัมน์ '{col}' เทียบไม่ได้ (ไม่ใช่วันที่หรือตัวเลข) — แก้ค่าแล้วยืนยันอีกครั้ง")
+        out.append({"column": col, "op": op, "value": list(val) if isinstance(val, tuple) else val})
+    return out
+
+
+def _apply_filters(frames: dict, filters: list, roles: dict, profile_rows: list) -> tuple:
+    """(filtered frames, [Thai log line per filter]) — the frames are copies, the files are never changed."""
+    frames, log = dict(frames), []
+    for f in filters or []:
+        for t, c in _find_columns(frames, f["column"]):
+            df = frames[t]
+            keep = _filter_mask(df[c], f["op"], f["value"], _is_date_col(t, c, roles, profile_rows))
+            frames[t] = df[keep.fillna(False).astype(bool)]
+            log.append(f"ตัวกรอง {t}.{c} {f['op']} {f['value']}: ตัดออก {int((~keep.fillna(False).astype(bool)).sum()):,} "
+                       f"จาก {len(df):,} แถว เหลือ {len(frames[t]):,} แถว")
+    return frames, log
+
+
+def _code_values(desc, prow) -> dict:
+    """{code: meaning} written in a column description ("P = บันทึกแล้ว, C = ยกเลิก") for codes found in the column."""
+    if not desc:
+        return {}
+    seen = {str(v) for v, _ in prow.get("top5", [])} | {str(v) for v in prow.get("samples", [])}
+    return {m[1]: m[2].strip() for m in RE_CODE_VALUE.finditer(str(desc)) if m[1] in seen and m[2].strip()}
+
+
+def _propose_filters(conditions: list, frames: dict) -> list:
+    """Each condition -> {condition, filter or None, rows_removed, note}. Only "<column> = <value>" is converted
+    (with ตัด / ไม่รวม / exclude -> !=); anything else is left for the auditor to state."""
+    out = []
+    for text in conditions or []:
+        low, item = str(text).lower(), {"condition": text, "filter": None, "rows_removed": None, "note": ""}
+        if any(w in low for w in NO_FILTER_WORDS):
+            item["note"] = "ไม่ต้องใช้ตัวกรอง"
+            out.append(item)
+            continue
+        for t, df in frames.items():
+            for c in df.columns:
+                m = re.search(rf"(?<![0-9A-Za-z_ก-๙]){re.escape(c)}\s*(==|=|!=|≠|<>)\s*['\"]?([^\s'\"(),]+)", str(text))
+                if not m or item["filter"] is not None:
+                    continue
+                vals = set(df[c].dropna().astype(str).str.strip())
+                if m[2] not in vals:
+                    continue
+                op = "!=" if m[1] in ("!=", "≠", "<>") or any(w in low for w in EXCLUDE_WORDS) else "=="
+                hit = df[c].where(df[c].notna(), "").astype(str).str.strip() == m[2]
+                item["filter"] = {"column": c, "op": op, "value": m[2]}
+                item["rows_removed"] = int(hit.sum() if op == "!=" else (~hit).sum())
+                item["table"] = t
+        if item["filter"] is None and not item["note"]:
+            item["note"] = "ยังแปลงเป็นตัวกรองไม่ได้ — ขอให้ระบุคอลัมน์และค่า (เช่น คอลัมน์วันที่ between [วันเริ่ม, วันสิ้นสุด]) หรือยืนยันว่าไม่ต้องกรอง"
+        out.append(item)
+    return out
+
+
+def _signature(profile_rows: list) -> dict:
+    return {f"{p['table']}.{p['column']}": {"dtype": p["dtype_guess"],
+                                            "patterns": sorted(x for x in p["patterns"] if x in SIG_PATTERNS)}
+            for p in profile_rows}
+
+
+def _sig_text(s: dict) -> str:
+    return s["dtype"] + (f" ({', '.join(s['patterns'])})" if s["patterns"] else "")
+
+
+def _table_pairs(old_tables: list, new_tables: list) -> dict:
+    """mapping table -> new table: same name, else the only unmatched table on each side."""
+    pairs = {t: t for t in old_tables if t in new_tables}
+    rest_old = [t for t in old_tables if t not in pairs]
+    rest_new = [t for t in new_tables if t not in pairs.values()]
+    if len(rest_old) == 1 and len(rest_new) == 1:
+        pairs[rest_old[0]] = rest_new[0]
+    return pairs
+
+
+def _mapping_changes(m: dict, profile_rows: list) -> tuple:
+    """(changes {added, removed, changed_pattern} as "table.column", mapping table -> new table)."""
+    new_sig = _signature(profile_rows)
+    old_sig = m.get("signature", {})
+    old_tables = sorted({k.rsplit(".", 1)[0] for k in old_sig} | set(m.get("roles", {})))
+    new_tables = sorted({p["table"] for p in profile_rows})
+    pairs = _table_pairs(old_tables, new_tables)
+    moved = {}
+    for k, v in old_sig.items():
+        t, c = k.rsplit(".", 1)
+        moved[f"{pairs.get(t, t)}.{c}"] = v
+    added = sorted(k for k in new_sig if k not in moved)
+    removed = sorted(k for k in moved if k not in new_sig)
+    changed = sorted(k for k in new_sig if k in moved and moved[k] != new_sig[k])
+    return {"added": added, "removed": removed, "changed_pattern": changed}, pairs, moved
+
+
+def _risk_order(ids: list) -> list:
+    seen = []
+    for r in ids:
+        if r and r not in seen:
+            seen.append(r)
+    return seen
+
+
+def _profile_records(profile: pd.DataFrame) -> list:
+    return _plain(profile.to_dict(orient="records"))
+
+
+def _col_status(table, col, role, source, conflicts) -> str:
+    if (table, col) in conflicts:
+        return "conflict"
+    if role == UNKNOWN_ROLE or not role:
+        return "unknown"
+    if source in ("brief", "mapping", "auditor"):
+        return "ok"
+    return "guess"
+
+
+@_thai_errors
+def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_path: str = None) -> dict:
+    """Everything in spec 4.3 step 2: read files as text (CSV / every XLSX sheet), sha256 and data_ref, B1 date and
+    amount parsing, profile, suggest_roles, check_descriptions, match_concerns, assess_sufficiency, suggest_risks
+    and plan -> {"intake": draft, "review_th": Thai Intake Review A-E, "changes": mapping changes or None}.
+    `brief` = {context, columns {col: meaning}, conditions [..], concerns [..], materiality}; `mapping` = a mapping
+    profile (path or dict from save_mapping): its roles, meanings, filters and org values are reused and only the
+    columns that were added, removed or changed pattern are asked about."""
+    base_cfg, reg_path = _load_cfg(cfg, registry_path)
+    brief = dict(brief or {})
+    m = load_mapping(mapping) if mapping is not None else None
+    frames, meta = _read_files(files)
+    profile = profile_columns(frames)
+    prows = _profile_records(profile)
+    bcols = brief.get("columns") or {}
+    preset = detect_dataset_type(profile)
+    sug = suggest_roles(profile, bcols, preset, base_cfg)
+    conflicts = check_descriptions(profile, bcols)
+    cset = {(c["table"], c["column"]) for c in conflicts}
+    changes, roles, cols_meaning, codes = None, {}, {}, {}
+    suggestions = []
+    if m is not None:
+        changes, pairs, old_sig = _mapping_changes(m, prows)
+        new_sig = _signature(prows)
+        for t_old, rmap in m.get("roles", {}).items():
+            t = pairs.get(t_old, t_old)
+            for c, r in rmap.items():
+                if f"{t}.{c}" in new_sig:
+                    roles.setdefault(t, {})[c] = r
+        for t_old, cm in m.get("columns", {}).items():
+            t = pairs.get(t_old, t_old)
+            cols_meaning[t] = {c: v for c, v in cm.items() if f"{t}.{c}" in new_sig}
+        for k, v in m.get("code_values", {}).items():
+            t_old, c = k.rsplit(".", 1)
+            if f"{pairs.get(t_old, t_old)}.{c}" in new_sig:
+                codes[f"{pairs.get(t_old, t_old)}.{c}"] = v
+    for _, s in sug.iterrows():
+        t, c, k = s["table"], s["column"], f"{s['table']}.{s['column']}"
+        if m is not None and k not in changes["added"]:
+            r = roles.get(t, {}).get(c)
+            st = "conflict" if k in changes["changed_pattern"] else ("ok" if r else "unchanged")
+            reason = (f"รูปแบบข้อมูลเปลี่ยนจาก {_sig_text(old_sig[k])} เป็น {_sig_text(_signature(prows)[k])} — "
+                      "ช่วยยืนยันว่ายังเป็นบทบาทเดิม" if st == "conflict" else "ใช้ค่าเดิมจาก mapping profile")
+            suggestions.append({"table": t, "column": c, "role": r if r else UNKNOWN_ROLE, "confidence": 1.0,
+                                "level": LEVEL_HIGH, "reason": reason, "source": "mapping", "status": st})
+            continue
+        role, src = s["role"], s["source"]
+        taken = {x for cc, x in roles.get(t, {}).items() if cc != c for x in _role_list(x)}
+        if m is not None and role in taken:
+            role, src = UNKNOWN_ROLE, "profile"
+            s = {**s, "reason": f"บทบาท {s['role']} ใช้กับคอลัมน์อื่นตาม mapping แล้ว — ขอให้ระบุความหมายของคอลัมน์ใหม่นี้"}
+        if role != UNKNOWN_ROLE:
+            roles.setdefault(t, {})[c] = role
+        suggestions.append({"table": t, "column": c, "role": role, "confidence": float(s["confidence"]),
+                            "level": s["level"], "reason": s["reason"], "source": src,
+                            "status": _col_status(t, c, role, src, cset)})
+    for p in prows:  # meanings and code values from the brief (the mapping's are kept for unchanged columns)
+        said = _brief_text(bcols, p["table"], p["column"])
+        if said is not None:
+            cols_meaning.setdefault(p["table"], {})[p["column"]] = said
+            cv = _code_values(said, p)
+            if cv:
+                codes[f"{p['table']}.{p['column']}"] = cv
+    matched = match_concerns(brief.get("concerns") or [])
+    requested = _risk_order([x["risk_id"] for x in matched])
+    if not matched and m is not None:
+        requested = _risk_order(m.get("risks", []))
+    exploratory = [x["concern"] for x in matched if x["risk_id"] is None]
+    proposals = _propose_filters(brief.get("conditions") or [], frames)
+    filters = list(m.get("filters", [])) if m is not None else [p["filter"] for p in proposals if p["filter"]]
+    if m is not None:
+        filters = [f for f in filters if _find_columns(frames, f["column"])]
+    org = dict(m.get("org_values", {})) if m is not None else {}
+    notes, tables, suff, sugg, pl, prep, status = [], None, None, None, None, {}, None
+    primary, _ = _split_roles(roles)
+    run_cfg = {**base_cfg, **_merge_org(org, base_cfg), "_RUN": {"run_id": "INSPECT", "data_ref": _data_ref(meta)}}
+    try:
+        tables, _ = _internal(frames, roles)
+        tables = _prep_internal(tables, run_cfg)
+        prep = tables["_prep"]
+        status = prof_profile(tables, run_cfg)[1]
+    except ValueError as e:
+        notes.append(f"ยังแปลงข้อมูลตามบทบาทที่เสนอไม่ได้: {e}")
+        tables = None
+    dtype = _type_from_roles(set(_roles_by_table(primary)[1]) if primary else set(), profile)
+    suff = assess_sufficiency(requested, primary, profile, run_cfg, tables)
+    pl = plan(requested, primary, profile, run_cfg, tables)
+    if tables is not None:
+        sugg = suggest_risks(requested, primary, {k: v for k, v in tables.items() if k != "_prep"}, run_cfg)
+    else:
+        sugg = pd.DataFrame(columns=["risk_id", "name_th", "why_th", "preview"])
+    it = {
+        "intake_version": INTAKE_VERSION, "status": "draft", "created_at": _now(), "engine_version": __version__,
+        "registry_version": str(base_cfg.get("REGISTRY.VERSION", REGISTRY_VERSION)), "registry_path": reg_path,
+        "cfg": base_cfg if cfg is not None else None,
+        "files": meta, "data_ref": _data_ref(meta), "input_sha256": _input_sha(meta), "brief": _plain(brief),
+        "dataset_type": dtype, "roles": roles, "role_suggestions": _plain(suggestions), "columns": cols_meaning,
+        "code_values": codes, "filters": filters, "filter_proposals": _plain(proposals), "org_values": org,
+        "risks": {"requested": requested, "added": [], "exploratory": exploratory, "concerns": _plain(matched)},
+        "materiality": dict(brief.get("materiality") or {"type": "ไม่ระบุ"}), "reviewer": m.get("confirmed_by") if m else None,
+        "description_conflicts": _plain(conflicts), "sufficiency": _plain(suff.to_dict(orient="records")),
+        "suggested_risks": _plain(sugg.to_dict(orient="records")), "plan": _plain(pl.to_dict(orient="records")),
+        "profile": prows, "signature": _signature(prows), "prep": _plain({k: v for k, v in prep.items()
+                                                                          if k != "opened_at_info"}),
+        "profile_status": status, "notes": notes, "changes": changes,
+        "mapping": {"confirmed_by": m.get("confirmed_by"), "confirmed_at": m.get("confirmed_at")} if m else None}
+    it = _plain(it)
+    return {"intake": it, "review_th": _review_text(it), "changes": changes}
+
+
+def _merge_org(org: dict, cfg: dict) -> dict:
+    """Org values as cfg entries: a dict value is merged into the standard dict (only the keys given change)."""
+    out = {}
+    for k, v in (org or {}).items():
+        out[k] = {**cfg[k], **v} if isinstance(cfg.get(k), dict) and isinstance(v, dict) else v
+    return out
+
+
+def _check_org_values(org, cfg: dict) -> dict:
+    if not org:
+        return {}
+    if not isinstance(org, dict):
+        raise AidaError("org_values ต้องเป็น {ชื่อ key ตาม AIDA-14: ค่า} เช่น {'DUP.WINDOW_DAYS': 5}")
+    examples = ", ".join(k for k in ("DUP.WINDOW_DAYS", "SPLIT.MIN_TX", "CONC.SINGLE_ENTITY_SHARE") if k in cfg)
+    out = {}
+    for k, v in org.items():
+        if k not in cfg or k.startswith("_") or k == "REGISTRY.VERSION":
+            raise AidaError(f"ไม่รู้จักค่าเกณฑ์ '{k}' ใน Machine Config ของ AIDA-14 — ใช้ชื่อ key ตาม AIDA-14 เท่านั้น "
+                            f"(เช่น {examples}) แก้ชื่อแล้วยืนยันอีกครั้ง")
+        std = cfg[k]
+        bad = AidaError(f"ค่าขององค์กร '{k}' = {v!r} ใช้ไม่ได้: ค่ามาตรฐาน AIDA-14 คือ {std!r} — ระบุค่าชนิดเดียวกัน "
+                        f"(ตัวเลข / ข้อความ / dict ที่มี key เดียวกัน) แล้วยืนยันอีกครั้ง")
+        if isinstance(std, bool):
+            if not isinstance(v, bool):
+                raise bad
+        elif isinstance(std, (int, float)):
+            v = _num_value(v)
+            if v is None:
+                raise bad
+        elif isinstance(std, dict):
+            if not isinstance(v, dict) or not set(v) <= set(std):
+                raise bad
+            v = {kk: (_num_value(vv) if isinstance(std[kk], (int, float)) and not isinstance(std[kk], bool) else vv)
+                 for kk, vv in v.items()}
+            if any(x is None for x in v.values()):
+                raise bad
+        elif isinstance(std, str):
+            if not isinstance(v, str):
+                raise bad
+        elif isinstance(std, list) and not isinstance(v, list):
+            raise bad
+        out[k] = v
+    return out
+
+
+def _answer_roles(answer, frames_cols: dict) -> dict:
+    """{table: {column: role list}} from a nested {table: {column: role}} or flat {column / table.column: role}."""
+    out = {}
+    if not answer:
+        return out
+    if not isinstance(answer, dict):
+        raise AidaError("roles ต้องเป็น {คอลัมน์: บทบาท} หรือ {ตาราง: {คอลัมน์: บทบาท}}")
+    nested = all(isinstance(v, dict) for v in answer.values())
+    items = []
+    if nested:
+        for t, rmap in answer.items():
+            if t not in frames_cols:
+                raise AidaError(f"ไม่พบตาราง '{t}' ในไฟล์ที่ inspect — ใช้ชื่อตาราง {', '.join(frames_cols)}")
+            items += [(t, c, r) for c, r in rmap.items()]
+    else:
+        for name, r in answer.items():
+            hits = _find_columns({t: pd.DataFrame(columns=cs) for t, cs in frames_cols.items()}, name)
+            if not hits:
+                raise AidaError(f"ไม่พบคอลัมน์ '{name}' ในไฟล์ — ใช้ชื่อคอลัมน์ตามไฟล์ (หรือ ตาราง.คอลัมน์) แล้วยืนยันอีกครั้ง")
+            items += [(t, c, r) for t, c in hits]
+    for t, c, r in items:
+        if c not in frames_cols[t]:
+            raise AidaError(f"ไม่พบคอลัมน์ '{c}' ในตาราง '{t}' — ใช้ชื่อคอลัมน์ตามไฟล์ แล้วยืนยันอีกครั้ง")
+        lst = _role_list(r)
+        for x in lst:
+            if x not in ROLE_TO_INTERNAL and not (x.startswith("custom:") and len(x) > 7):
+                raise AidaError(f"ไม่รู้จักบทบาท '{x}' ของคอลัมน์ '{c}' — ใช้ได้เฉพาะ {', '.join(ROLES)} หรือ "
+                                "custom:<ชื่อ> หรือ 'ไม่ใช้'")
+        cert = _certified(lst)
+        if len(cert) > 1:
+            raise AidaError(f"คอลัมน์ '{c}' ในตาราง '{t}' ถูกกำหนดหลายบทบาทรับรอง ({', '.join(cert)}) — หนึ่งคอลัมน์มีบทบาท"
+                            "รับรองได้บทบาทเดียว (เพิ่ม custom:<ชื่อ> ได้) เลือกบทบาทเดียวแล้วยืนยันอีกครั้ง")
+        if len(set(lst)) != len(lst):
+            raise AidaError(f"คอลัมน์ '{c}' มีบทบาทซ้ำกันในรายการ ({', '.join(lst)}) — ระบุแต่ละบทบาทครั้งเดียว")
+        out.setdefault(t, {})[c] = lst
+    return out
+
+
+def _dup_targets(t: str, rmap: dict) -> None:
+    by = {}
+    for c, r in rmap.items():
+        for x in _role_list(r):
+            by.setdefault(x, []).append(c)
+    for role, cols in by.items():
+        if len(cols) > 1:
+            raise AidaError(f"บทบาท {role} ถูกกำหนดให้หลายคอลัมน์ในตาราง '{t}' ({', '.join(cols)}) — แต่ละบทบาทใช้ได้"
+                            f"คอลัมน์เดียวต่อตาราง: เลือกคอลัมน์เดียวเป็น {role} แล้วกำหนดคอลัมน์อื่นเป็นบทบาทอื่น "
+                            "หรือ custom:<ชื่อ> หรือ 'ไม่ใช้' แล้วยืนยันอีกครั้ง")
+
+
+def _final_roles(draft: dict, explicit: dict) -> dict:
+    """Draft roles overridden by the auditor's answers. Answers are checked for duplicate role targets first; a role
+    the auditor gives a column is taken away from the column the draft had proposed for it."""
+    for t, rmap in explicit.items():
+        _dup_targets(t, rmap)
+    roles = {t: {c: (list(r) if isinstance(r, list) else r) for c, r in rmap.items()} for t, rmap in draft.items()}
+    for t, rmap in explicit.items():
+        cur = roles.setdefault(t, {})
+        for c, lst in rmap.items():
+            for other in [o for o in cur if o != c and o not in rmap and set(_role_list(cur[o])) & set(lst)]:
+                del cur[other]
+            if lst:
+                cur[c] = lst[0] if len(lst) == 1 else lst
+            else:
+                cur.pop(c, None)
+    roles = {t: rmap for t, rmap in roles.items() if rmap}
+    for t, rmap in roles.items():
+        _dup_targets(t, rmap)
+    tx_name, tx_roles, _ = _roles_by_table(_split_roles(roles)[0])
+    if tx_name is None or "record_id" not in tx_roles:
+        raise AidaError("ยังไม่ได้กำหนดบทบาท record_id (รหัสรายการ) ให้คอลัมน์ในตารางธุรกรรม — record_id บังคับ "
+                        "เพื่ออ้างอิงรายการต้นทาง: กำหนดคอลัมน์รหัสรายการเป็น record_id แล้วยืนยันอีกครั้ง")
+    return roles
+
+
+def _check_materiality(m) -> dict:
+    if not m:
+        return {"type": "ไม่ระบุ", "amount": None, "basis": ""}
+    if not isinstance(m, dict):
+        raise AidaError("Materiality ต้องเป็น {'type': 'ก' | 'ข' | 'ไม่ระบุ', 'amount': ฐานเป็นตัวเลข, 'basis': คำอธิบาย}")
+    t = str(m.get("type", "ไม่ระบุ")).replace("แบบ", "").strip().rstrip(".").strip() or "ไม่ระบุ"
+    if t not in MATERIALITY_TYPES:
+        raise AidaError(f"Materiality type '{m.get('type')}' ใช้ไม่ได้ — เลือก ก. / ข. / ไม่ระบุ แล้วยืนยันอีกครั้ง")
+    if t == "ไม่ระบุ":
+        return {"type": t, "amount": None, "basis": str(m.get("basis", "") or "")}
+    amt = _num_value(m.get("amount"))
+    if amt is None or amt <= 0:
+        raise AidaError(f"Materiality แบบ {t}. ต้องมี amount (ฐาน Materiality เป็นจำนวนเงินมากกว่า 0) — ระบุ amount "
+                        "หรือเลือก 'ไม่ระบุ' แล้วยืนยันอีกครั้ง")
+    return {"type": t, "amount": amt, "basis": str(m.get("basis", "") or "")}
+
+
+@_thai_errors
+def confirm(intake: dict, answers: dict = None, path: str = "intake.json", cfg: dict = None) -> dict:
+    """Apply the auditor's answers to a draft intake and write intake.json (self-sufficient for run()).
+    answers: roles {col: role} or {table: {col: role}} (a role may be a list: one certified role + custom roles;
+    'ไม่ใช้' removes), filters [{column, op, value}], org_values {AIDA-14 KEY: value}, add_risks [risk_id],
+    materiality {type ก|ข|ไม่ระบุ, amount, basis}, reviewer, columns {col: meaning}, code_values {table.col: {..}}.
+    Duplicate role targets, unknown roles / columns / keys / risk ids are rejected with a Thai message."""
+    if not isinstance(intake, dict) or "files" not in intake or "roles" not in intake:
+        raise AidaError("intake ไม่ครบ — ส่ง intake ที่ได้จาก inspect(...)['intake']")
+    a = dict(answers or {})
+    known = {"roles", "filters", "org_values", "add_risks", "materiality", "reviewer", "columns", "code_values"}
+    extra = sorted(set(a) - known)
+    if extra:
+        raise AidaError(f"ไม่รู้จักคำตอบ {', '.join(extra)} — ใช้ได้เฉพาะ {', '.join(sorted(known))}")
+    base_cfg = _load_cfg(cfg if cfg is not None else intake.get("cfg"), intake.get("registry_path"))[0]
+    frames_cols = {}
+    for p in intake.get("profile", []):
+        frames_cols.setdefault(p["table"], []).append(p["column"])
+    roles = _final_roles(intake["roles"], _answer_roles(a.get("roles"), frames_cols))
+    fake = {t: pd.DataFrame(columns=cs) for t, cs in frames_cols.items()}
+    filters = _check_filters(a["filters"] if "filters" in a else intake.get("filters", []), fake, roles,
+                             intake.get("profile", []))
+    org = _check_org_values({**intake.get("org_values", {}), **(a.get("org_values") or {})}, base_cfg)
+    add = _risk_order(list(a.get("add_risks") or []))
+    for r in add:
+        if r not in RISK_LIBRARY:
+            raise AidaError(f"ไม่รู้จักรหัสความเสี่ยง '{r}' ใน Risk Library — เลือกจาก {', '.join(RISK_LIBRARY)} "
+                            "(ความเสี่ยงที่ไม่มีในคลังใช้โหมดสำรวจ) แล้วยืนยันอีกครั้ง")
+    mat = _check_materiality(a.get("materiality") if "materiality" in a else intake.get("materiality"))
+    cols = {t: dict(v) for t, v in intake.get("columns", {}).items()}
+    for k, v in (a.get("columns") or {}).items():
+        for t, c in _find_columns(fake, k) or []:
+            cols.setdefault(t, {})[c] = v
+    codes = {**intake.get("code_values", {}), **(a.get("code_values") or {})}
+    it = dict(intake)
+    requested = list(intake["risks"]["requested"])
+    it.update(status="confirmed", confirmed_at=_now(), roles=roles, filters=filters, org_values=org,
+              materiality=mat, reviewer=str(a.get("reviewer") or intake.get("reviewer") or "ไม่ระบุ"),
+              columns=cols, code_values=codes,
+              risks={**intake["risks"], "added": [r for r in add if r not in requested]},
+              registry_version=str(base_cfg.get("REGISTRY.VERSION", REGISTRY_VERSION)), engine_version=__version__)
+    it = _plain(it)
+    folder = os.path.dirname(os.path.abspath(path))
+    os.makedirs(folder, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(it, fh, ensure_ascii=False, indent=2)
+    return it
+
+
+def _load_intake(intake) -> dict:
+    if isinstance(intake, (str, os.PathLike)):
+        p = str(intake)
+        if not os.path.isfile(p):
+            raise AidaError(f"ไม่พบไฟล์ intake '{p}' — เรียก confirm(...) เพื่อสร้าง intake.json หรือระบุที่อยู่ไฟล์ให้ถูก")
+        try:
+            with open(p, encoding="utf-8") as fh:
+                intake = json.load(fh)
+        except json.JSONDecodeError as e:
+            raise AidaError(f"ไฟล์ intake '{p}' ไม่ใช่ JSON ที่ถูกต้อง ({e.msg}) — สร้างใหม่ด้วย confirm(...)") from None
+    if not isinstance(intake, dict) or intake.get("status") != "confirmed":
+        raise AidaError("intake ยังไม่ได้ยืนยัน — เรียก confirm(intake, answers) ก่อน แล้วจึงเรียก run / trace")
+    return intake
+
+
+def _prepare(files, it: dict, cfg: dict) -> dict:
+    """Read the files again, compare sha256 with the intake, apply filters, role adapter and B1 parsing."""
+    if files is None:
+        files = {}
+        for t, m in it["files"].items():
+            files.setdefault(t if not m.get("sheet") else t.rsplit(".", 1)[0], m["path"])
+    frames, meta = _read_files(files)
+    warnings, events = [], []
+    for t, m in it["files"].items():
+        if t not in meta:
+            if t in it["roles"]:
+                raise AidaError(f"ไม่พบตาราง '{t}' ในไฟล์ที่ส่งมา — ส่งไฟล์ชุดเดียวกับตอน inspect/confirm "
+                                f"({m['file']}) หรือ inspect/confirm ใหม่")
+            continue
+        if meta[t]["sha256"] != m["sha256"]:
+            warnings.append(f"ไฟล์ของตาราง {t} ({meta[t]['file']}) เปลี่ยนไปจากตอนยืนยัน Intake (sha256 ไม่ตรง: เดิม "
+                            f"{m['sha256'][:12]}… ตอนนี้ {meta[t]['sha256'][:12]}…) — ผลอาจต่างจาก Intake Review; "
+                            "ถ้าตั้งใจใช้ไฟล์ใหม่ให้เรียก inspect และ confirm ใหม่")
+    events += [{"stage": 2, "status": "REVIEW", "detail": w} for w in warnings]
+    events.append({"stage": 2, "status": "OK", "detail": f"อ่านไฟล์ {len(meta):,} ตาราง: " + "; ".join(
+        f"{t} {len(frames[t]):,} แถว (sha256 {m['sha256'][:12]}…)" for t, m in meta.items())})
+    frames, flog = _apply_filters(frames, it.get("filters", []), it["roles"], it.get("profile", []))
+    events += [{"stage": 2, "status": "OK", "detail": x} for x in flog]
+    tables, tx_name = _internal(frames, it["roles"])
+    tables = _prep_internal(tables, cfg)
+    return {"frames": frames, "meta": meta, "tables": tables, "tx_name": tx_name, "warnings": warnings,
+            "events": events, "filter_log": flog}
+
+
+def _run_cfg(it: dict, base_cfg: dict, meta: dict) -> tuple:
+    org = _merge_org(it.get("org_values", {}), base_cfg)
+    core = json.dumps(_plain({k: it.get(k) for k in ("roles", "filters", "org_values", "risks", "materiality")}),
+                      ensure_ascii=False, sort_keys=True) + "|" + _input_sha(meta)
+    run_id = "RUN-" + hashlib.sha256(core.encode("utf-8")).hexdigest()[:10].upper()
+    cfg = {**base_cfg, **org, "_RUN": {"run_id": run_id, "data_ref": _data_ref(meta), "input_sha256": _input_sha(meta),
+                                       "pack_version": __version__}}
+    notes = [f"ค่าขององค์กร: {k} = {it['org_values'][k]!r} (แทนค่ามาตรฐาน AIDA-14 = {base_cfg[k]!r} เฉพาะ run นี้; "
+             f"ผู้ยืนยัน {it.get('reviewer') or 'ไม่ระบุ'})" for k in it.get("org_values", {})]
+    return cfg, notes
+
+
+def _risk_for(cid: str, ev_risk: str, allowed: set) -> str:
+    spec = CHECKS[cid]
+    if ev_risk in allowed:
+        return ev_risk
+    for r in [spec["risk"]] + spec["risk_alt"]:
+        if r in allowed:
+            return r
+    return ev_risk
+
+
+def _source_cols(roles_used, tx_roles: dict) -> list:
+    return [f"{tx_roles[r]} ({r})" for r in (roles_used or []) if r in tx_roles]
+
+
+def _finding_view(ev: pd.DataFrame, tx: pd.DataFrame, dtype) -> pd.DataFrame:
+    """Evidence as unify_findings should group it for C1 data: DUP-PAY with document numbers is keyed by the
+    document, FOR-REPEAT / FOR-ROUND on a SPLIT-LIMIT entity-period join that finding, and entity types take the
+    names of the data type (vendor, borrower, payer)."""
+    v = ev.copy().reset_index(drop=True)
+    if not len(v):
+        return v
+    if "document_no" in tx.columns:
+        doc_of = dict(zip(tx["tx_id"].astype(str), tx["document_no"]))
+        for i in v.index[(v["recipe_id"] == "DUP-PAY") & (v["entity_type"] == "entity")]:
+            docs = {str(doc_of.get(r)).strip() for r in ref_list(v.at[i, "record_refs"])
+                    if doc_of.get(r) is not None and not pd.isna(doc_of.get(r)) and str(doc_of.get(r)).strip()}
+            if len(docs) == 1:
+                v.at[i, "entity_type"], v.at[i, "entity_id"] = "document", docs.pop()
+    for key_check, joins in ABSORB_C1.items():
+        k = v[v["recipe_id"] == key_check]
+        risk_of = {(a, b, c): r for a, b, c, r in zip(k["entity_type"], k["entity_id"], k["period"], k["risk"])}
+        for i in v.index[v["recipe_id"].isin(list(joins))]:
+            r = risk_of.get((v.at[i, "entity_type"], v.at[i, "entity_id"], v.at[i, "period"]))
+            if r:
+                v.at[i, "risk"] = r
+    lab = ENTITY_LABELS.get(dtype, {})
+    v["entity_type"] = v["entity_type"].map(lambda x: lab.get(x, x))
+    return v
+
+
+def _plan_all(pl: pd.DataFrame) -> pd.DataFrame:
+    rows = [(r["check_id"], r["decision"], r["reason"], r["missing"]) for _, r in pl.iterrows()]
+    done = set(pl["check_id"])
+    rows += [(c, "Skip", "ไม่เกี่ยวกับความเสี่ยงที่ยืนยันใน Intake (ผู้ตรวจสอบไม่ได้ขอ) จึงไม่รัน — เพิ่มความเสี่ยงที่ใช้การ์ดนี้"
+                         "ที่จุดยืนยันแล้วรันใหม่", "ไม่ได้ขอ") for c in CHECKS if c not in done]
+    return pd.DataFrame(rows, columns=["recipe_id", "decision", "reason", "missing"])
+
+
+@_thai_errors
+def run(files, intake, out_dir: str = ".", cfg: dict = None, registry_path: str = None) -> dict:
+    """Analyse from the confirmed intake only (intake dict or the path of intake.json; nothing from earlier messages):
+    re-read the files and verify sha256 (a Thai warning when changed), filters, org values for this run only,
+    the planned checks, unified Findings, C/M/P, automatic Money Flow (E), Workbook / CSV / Dashboard and Run Log.
+    Returns {status, run_id, findings, evidence, plan, run_log, paths {workbook, csv_dir, dashboard}, warnings,
+    summary_th}."""
+    it = _load_intake(intake)
+    base_cfg = _load_cfg(cfg if cfg is not None else it.get("cfg"), registry_path or it.get("registry_path"))[0]
+    warnings = []
+    if str(base_cfg.get("REGISTRY.VERSION")) != str(it.get("registry_version")):
+        warnings.append(f"Registry AIDA-14 เป็นรุ่น {base_cfg.get('REGISTRY.VERSION')} แต่ intake ยืนยันกับรุ่น "
+                        f"{it.get('registry_version')} — ค่าเกณฑ์อาจต่างจากตอนยืนยัน")
+    if it.get("engine_version") != __version__:
+        warnings.append(f"engine รุ่น {__version__} แต่ intake สร้างด้วยรุ่น {it.get('engine_version')} — ตรวจผลเทียบกับรอบก่อน")
+    pre = _prepare(files, it, base_cfg)
+    warnings = pre["warnings"] + warnings
+    cfg_run, org_notes = _run_cfg(it, base_cfg, pre["meta"])
+    events = list(pre["events"]) + [{"stage": 2, "status": "REVIEW", "detail": w} for w in warnings[len(pre["warnings"]):]]
+    events += [{"stage": 6, "status": "OK", "detail": n} for n in org_notes]
+    tables = pre["tables"]
+    primary, _ = _split_roles(it["roles"])
+    tx_name, tx_roles, _ = _roles_by_table(primary)
+    profile_b1, status = prof_profile(tables, cfg_run)
+    events.append({"stage": 3, "status": "STOP" if status.startswith("STOP") else "OK", "detail": status,
+                   "recipe_id": "PROF-PROFILE"})
+    risk_ids = _risk_order(list(it["risks"]["requested"]) + list(it["risks"].get("added", [])))
+    events.append({"stage": 4, "status": "OK", "detail": "ความเสี่ยงที่ยืนยัน: " + (", ".join(risk_ids) or "ไม่มี")
+                   + (f"; โหมดสำรวจ: {', '.join(it['risks'].get('exploratory', []))}" if it["risks"].get("exploratory") else "")})
+    prof = profile_columns(pre["frames"])
+    dtype = _type_from_roles(set(tx_roles), prof)
+    pl = plan(risk_ids, primary, prof, cfg_run, tables) if not status.startswith("STOP") else \
+        pd.DataFrame(columns=["check_id", "decision", "reason", "missing"])
+    plan_df = _plan_all(pl)
+    for _, r in plan_df[plan_df["decision"] == "Skip"].iterrows():
+        events.append({"stage": 6, "status": "SKIP", "detail": f"{r['recipe_id']}: {r['reason']}", "recipe_id": r["recipe_id"]})
+    tr = dict(tables)
+    tr["_out"] = {}
+    evs, allowed = [], set(risk_ids)
+    runs = set(plan_df.loc[plan_df["decision"] == "Run", "recipe_id"])
+    order = [c for c in CHECKS if c in runs and c not in MULE_STAGE] + [c for c in MULE_STAGE if c in runs]
+    for cid in order:
+        if cid in MULE_STAGE:
+            tr["evidence"] = pd.concat(evs, ignore_index=True) if evs else pd.DataFrame(columns=EVIDENCE_COLUMNS)
+        try:
+            ev = CHECKS[cid]["func"](tr, cfg_run)
+        except Exception as e:  # noqa: BLE001 - one check failing does not stop the run
+            events.append({"stage": 8, "status": "SKIP", "recipe_id": cid,
+                           "detail": f"{cid}: รันไม่สำเร็จ ({type(e).__name__}: {e}) — ตรวจบทบาทและรูปแบบข้อมูลของคอลัมน์ที่การ์ดนี้ใช้"})
+            continue
+        ev = ev.copy()
+        if "roles_used" not in ev.columns:
+            ev["roles_used"] = [list(CHECKS[cid]["requires"]) for _ in range(len(ev))]
+        ev["risk"] = [_risk_for(cid, r, allowed) for r in ev["risk"]]
+        ev["source_columns"] = [_source_cols(r, tx_roles) for r in ev["roles_used"]]
+        evs.append(ev)
+        events.append({"stage": 8, "status": "OK", "detail": f"{cid}: Evidence {len(ev):,} แถว", "recipe_id": cid,
+                       "recipe_version": ev["recipe_version"].iloc[0] if len(ev) else "-"})
+    cols = EVIDENCE_COLUMNS + ["roles_used", "source_columns"]
+    evidence = pd.concat(evs, ignore_index=True)[cols] if evs else pd.DataFrame(columns=cols)
+    nets = tr["_out"].get("mule_networks")
+    view = _finding_view(evidence, tables["transactions"], dtype)
+    findings = unify_findings(view[EVIDENCE_COLUMNS] if len(view) else view, cfg_run, nets)
+    mat = it.get("materiality") or {"type": "ไม่ระบุ"}
+    m_amt = mat.get("amount") if mat.get("type") in ("ก", "ข") else None
+    basis = f"แบบ {mat['type']}. {mat.get('basis', '')}".strip() if m_amt is not None else "-"
+    assessed = assess_cmp(findings, tables["transactions"], m_amt, cfg_run)
+    events.append({"stage": 12, "status": "OK", "detail": f"Unified Findings {len(assessed):,} รายการ จาก Evidence {len(evidence):,} แถว"})
+    events.append({"stage": 15, "status": "OK", "detail": f"Confidence / Materiality / Priority ประเมินแล้ว (Materiality: "
+                   f"{'ไม่ได้ประเมิน' if m_amt is None else f'{m_amt:,.2f} {basis}'})"})
+    trails = []
+    if dtype == "E" and "to_acct" in tables["transactions"].columns and len(assessed):
+        trails = [flow_trace(tr, cfg_run, a, d, p) for a, p in select_auto_trace(assessed, cfg_run)
+                  for d in ("forward", "backward")]
+    events.append({"stage": 8, "status": "REVIEW", "detail": "รอ Human Review — ผลเป็นสัญญาณที่ต้องตรวจสอบเพิ่มเติม ไม่ใช่ข้อสรุป"})
+    log = log_run(events, cfg_run)
+    bundle = out_bundle(tr, profile_b1, plan_df, evidence, assessed, trails, log, m_amt, cfg_run, basis)
+    bundle["org_notes"] = org_notes
+    os.makedirs(out_dir, exist_ok=True)
+    paths = {"workbook": out_workbook(bundle, os.path.join(out_dir, OUT_NAMES["workbook"]), cfg_run),
+             "csv_dir": None,
+             "dashboard": out_dashboard(bundle, DASHBOARD_TEMPLATE, os.path.join(out_dir, OUT_NAMES["dashboard"]), cfg_run)}
+    if dtype == "E":
+        folder = os.path.join(out_dir, OUT_NAMES["csv_dir"])
+        out_network_csv(bundle, folder, cfg_run)
+        paths["csv_dir"] = folder
+    keep = [c for c in FINDING_COLUMNS + ["member_accts", "record_refs"] if c in assessed.columns]
+    res = {"status": "STOP" if status.startswith("STOP") else "OK", "run_id": cfg_run["_RUN"]["run_id"],
+           "findings": assessed[keep].reset_index(drop=True), "evidence": evidence, "plan": plan_df,
+           "run_log": bundle["run_log"], "paths": paths, "warnings": warnings, "org_values": dict(it.get("org_values", {}))}
+    res["summary_th"] = _summary_text(res, status, org_notes, dtype)
+    return res
+
+
+def _summary_text(res: dict, status: str, org_notes: list, dtype) -> str:
+    f, pl = res["findings"], res["plan"]
+    lines = [f"ผลการวิเคราะห์ {res['run_id']} (ข้อมูลประเภท {TYPE_TEXT.get(dtype, 'ไม่ระบุ')}): พบ Finding {len(f):,} รายการ "
+             "— เป็นสัญญาณที่ต้องตรวจสอบเพิ่มเติม ไม่ใช่ข้อสรุป"]
+    if status.startswith("STOP"):
+        lines.append(f"หยุดก่อนวิเคราะห์: {status[6:]}")
+    for rid, n in f["risk"].value_counts().sort_index().items():
+        lines.append(f"- {rid} {RISK_LIBRARY.get(rid, {}).get('name_th', '')}: {int(n):,} รายการ")
+    if len(f):
+        pr = f["priority"].value_counts()
+        lines.append("Priority: " + " / ".join(f"{k} {int(pr.get(k, 0)):,}" for k in ("สูง", "กลาง", "ต่ำ")))
+    lines.append(f"การ์ดที่รัน {int((pl['decision'] == 'Run').sum()):,} ใบ / ข้าม {int((pl['decision'] == 'Skip').sum()):,} ใบ "
+                 "(เหตุผลอยู่ใน Analysis_Plan)")
+    lines += org_notes
+    lines += [f"คำเตือน: {w}" for w in res["warnings"]]
+    lines.append("ไฟล์: " + ", ".join(f"{k} = {v}" for k, v in res["paths"].items() if v))
+    return "\n".join(lines)
+
+
+@_thai_errors
+def trace(files, intake, acct: str, direction: str = "both", period: str = None, out_dir: str = ".",
+          cfg: dict = None, registry_path: str = None) -> dict:
+    """Money Flow on request (data type E): follow `acct` forward, backward or both from the confirmed intake.
+    Returns {trails, path (CSV), summary_th}."""
+    if direction not in ("forward", "backward", "both"):
+        raise AidaError(f"direction ต้องเป็น 'forward' (เงินออก), 'backward' (เงินเข้า) หรือ 'both' (ได้รับ {direction!r})")
+    it = _load_intake(intake)
+    base_cfg = _load_cfg(cfg if cfg is not None else it.get("cfg"), registry_path or it.get("registry_path"))[0]
+    pre = _prepare(files, it, base_cfg)
+    cfg_run, _ = _run_cfg(it, base_cfg, pre["meta"])
+    tx = pre["tables"]["transactions"]
+    if "to_acct" not in tx.columns or "from_acct" not in tx.columns:
+        raise AidaError("Money Flow ต้องมีบทบาท entity (บัญชีต้นทาง) และ counterparty (บัญชีปลายทาง) — ใช้ได้กับข้อมูล"
+                        "โอนเงินระหว่างบัญชี (ประเภท E); กำหนดบทบาททั้งสองที่จุดยืนยันแล้วเรียกใหม่")
+    acct = str(acct).strip()
+    if not (tx["from_acct"].astype(str).eq(acct).any() or tx["to_acct"].astype(str).eq(acct).any()):
+        raise AidaError(f"ไม่พบบัญชี '{acct}' ในข้อมูล (หลังตัวกรอง) — ตรวจเลขบัญชีอีกครั้ง")
+    dirs = ["forward", "backward"] if direction == "both" else [direction]
+    trails = [flow_trace(pre["tables"], cfg_run, acct, d, period) for d in dirs]
+    notes = [t.attrs.get("note") for t in trails if t.attrs.get("truncated")]
+    full = [t for t in trails if len(t)]
+    df = pd.concat(full, ignore_index=True) if full else pd.DataFrame(columns=TRAIL_COLUMNS)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"trace-{re.sub(r'[^0-9A-Za-z_-]', '_', acct)}-{direction}.csv")
+    text_cols(df, no_formula).to_csv(path, index=False, encoding="utf-8-sig")
+    hops = int(df["hop"].max()) if len(df) else 0
+    summary = (f"Money Flow ของบัญชี {acct} ({direction}{', งวด ' + period if period else ''}): {len(df):,} รายการ "
+               f"{hops:,} ทอด — เป็นเส้นทางเงินที่ต้องตรวจสอบเพิ่มเติม ไม่ใช่ข้อสรุป")
+    if notes:
+        summary += " | " + " | ".join(notes)
+    return {"trails": df, "path": path, "summary_th": summary}
+
+
+@_thai_errors
+def save_mapping(intake: dict, path: str) -> str:
+    """Write a mapping profile (spec 4.6): roles, column meanings, code-value meanings, filters, org values,
+    confirmer and date, plus the column signature used to detect changes next time. `path` ending in .json is used
+    as is; a bare name gives mapping-<name>.json. Returns the path."""
+    if not isinstance(intake, dict) or intake.get("status") != "confirmed":
+        raise AidaError("บันทึก mapping ได้จาก intake ที่ยืนยันแล้วเท่านั้น — เรียก confirm(...) ก่อน")
+    p = str(path)
+    if not p.lower().endswith(".json"):
+        p = os.path.join(os.path.dirname(p), f"mapping-{os.path.basename(p)}.json")
+    data = _plain({"mapping_version": 1, "engine_version": __version__, "saved_at": _now(),
+                   "dataset_type": intake.get("dataset_type"), "roles": intake["roles"],
+                   "columns": intake.get("columns", {}), "code_values": intake.get("code_values", {}),
+                   "filters": intake.get("filters", []), "org_values": intake.get("org_values", {}),
+                   "risks": _risk_order(list(intake["risks"]["requested"]) + list(intake["risks"].get("added", []))),
+                   "confirmed_by": intake.get("reviewer"), "confirmed_at": intake.get("confirmed_at"),
+                   "signature": intake.get("signature", {})})
+    folder = os.path.dirname(os.path.abspath(p))
+    os.makedirs(folder, exist_ok=True)
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    return p
+
+
+@_thai_errors
+def load_mapping(path) -> dict:
+    """A mapping profile written by save_mapping (path or the dict itself), checked for its required parts."""
+    if isinstance(path, dict):
+        m = path
+    else:
+        p = str(path)
+        if not os.path.isfile(p):
+            raise AidaError(f"ไม่พบไฟล์ mapping '{p}' — ตรวจที่อยู่ไฟล์ (เช่น mapping-<ชื่อ>.json ใน SharePoint ของทีม)")
+        try:
+            with open(p, encoding="utf-8") as fh:
+                m = json.load(fh)
+        except json.JSONDecodeError as e:
+            raise AidaError(f"ไฟล์ mapping '{p}' ไม่ใช่ JSON ที่ถูกต้อง ({e.msg}) — บันทึกใหม่ด้วย save_mapping") from None
+    need = ("roles", "columns", "code_values", "filters", "org_values", "confirmed_by", "confirmed_at", "signature")
+    miss = [k for k in need if k not in m]
+    if miss:
+        raise AidaError(f"mapping profile ไม่ครบ (ขาด {', '.join(miss)}) — บันทึกใหม่ด้วย save_mapping(intake, ชื่อ)")
+    return m
+
+
+# ---- Intake Review text (spec 4.3 step 4) ----
+def _review_text(it: dict) -> str:
+    L = []
+    files = ", ".join(f"{t} ({m['file']}{' ชีต ' + m['sheet'] if m.get('sheet') else ''})" for t, m in it["files"].items())
+    rows = {}
+    for p in it["profile"]:
+        rows[p["table"]] = p["n_rows"]
+    L.append(f"Intake Review — ไฟล์ {len(it['files']):,} ตาราง: {files}")
+    L.append("จำนวนแถว: " + ", ".join(f"{t} {n:,} แถว" for t, n in rows.items()))
+    if it.get("dataset_type"):
+        L.append(f"ประเภทข้อมูลที่ engine เห็น: {it['dataset_type']} ({TYPE_TEXT[it['dataset_type']]})")
+    if it.get("brief", {}).get("context"):
+        L.append(f"บริบท: {it['brief']['context']}")
+    if it.get("mapping"):
+        L.append(f"ใช้ mapping profile ที่ยืนยันโดย {it['mapping'].get('confirmed_by') or 'ไม่ระบุ'} เมื่อ "
+                 f"{it['mapping'].get('confirmed_at') or '-'} — ถามเฉพาะสิ่งที่เปลี่ยน")
+    L += [""] + _review_a(it) + [""] + _review_b(it) + [""] + _review_c(it) + [""] + _review_d(it) + [""] + _review_e(it)
+    L += ["", CONFIRM_LINE]
+    return "\n".join(L)
+
+
+def _review_a(it: dict) -> list:
+    L = ["A. ความหมายคอลัมน์ (✅ ตรงกับคำอธิบาย / ⚠️ ขัดกับข้อมูล / ❓ เดาให้ช่วยยืนยัน / ⚪ ไม่ทราบ — เก็บเป็น custom หรือไม่ใช้)"]
+    conf = {(c["table"], c["column"]): c for c in it.get("description_conflicts", [])}
+    ch = it.get("changes")
+    prof = {(p["table"], p["column"]): p for p in it["profile"]}
+    if ch is not None:
+        kept = [s for s in it["role_suggestions"] if s["source"] == "mapping" and s["status"] in ("ok", "unchanged")]
+        if kept:
+            L.append(f"✅ ใช้ค่าเดิมจาก mapping {len(kept):,} คอลัมน์ (ไม่ต้องยืนยันซ้ำ): " + ", ".join(
+                f"{s['column']} → {s['role'] if s['role'] != UNKNOWN_ROLE else 'ไม่ใช้'}" for s in kept))
+        for k in ch["removed"]:
+            L.append(f"⚠️ คอลัมน์ที่หายไปจากไฟล์: {k} — การ์ดที่ใช้บทบาทของคอลัมน์นี้จะถูกข้าม ถ้าเปลี่ยนชื่อให้กำหนดบทบาทให้คอลัมน์ใหม่")
+        if not (ch["added"] or ch["removed"] or ch["changed_pattern"]):
+            L.append("ไม่มีคอลัมน์ใหม่ หาย หรือเปลี่ยนรูปแบบ")
+    for s in it["role_suggestions"]:
+        if s["source"] == "mapping" and s["status"] in ("ok", "unchanged"):
+            continue
+        icon = COL_ICON[s["status"]]
+        p = prof.get((s["table"], s["column"]), {})
+        role = s["role"] if s["role"] != UNKNOWN_ROLE else "ไม่ทราบ"
+        ex = ", ".join(p.get("samples", [])[:3])
+        line = f"{icon} {s['table']}.{s['column']} → {role}"
+        if s["role"] != UNKNOWN_ROLE:
+            line += f" (ความมั่นใจ{s['level']} {s['confidence']:.2f})"
+        line += f": {s['reason']}"
+        c = conf.get((s["table"], s["column"]))
+        if c:
+            line += f" | คำอธิบาย \"{c['said']}\" แต่{c['observed']} — {c['question']}"
+        if ex:
+            line += f" | ตัวอย่าง: {ex}"
+        if s["status"] == "unknown":
+            line += " — ระบุความหมาย หรือเก็บเป็น custom:<ชื่อ> หรือไม่ใช้"
+        L.append(line)
+    for k, v in it.get("code_values", {}).items():
+        L.append(f"✅ ค่ารหัสของ {k}: " + ", ".join(f"{a} = {b}" for a, b in v.items()))
+    for p in it["profile"]:
+        jm = p.get("join_match")
+        tx_name = _roles_by_table(_split_roles(it["roles"])[0])[0]
+        if isinstance(jm, dict) and p["table"] == tx_name and _role_list(it["roles"].get(p["table"], {}).get(p["column"])):
+            L.append(f"การเชื่อมตาราง: {p['table']}.{p['column']} พบใน {jm['with']} {jm['normalized']:.1f}% ของรหัส "
+                     f"(ตรงทุกตัวอักษร {jm['raw']:.1f}%)")
+    for n in it.get("notes", []):
+        L.append(f"⚠️ {n}")
+    return L
+
+
+def _review_b(it: dict) -> list:
+    L = ["B. ความพอเพียงตาม Risk Concern (✅ พร้อม / 🟡 บางส่วน / ❌ ไม่พอ)"]
+    suff = {s["risk_id"]: s for s in it["sufficiency"]}
+    concerns = it["risks"].get("concerns", [])
+    if not concerns and not it["risks"]["requested"]:
+        L.append("ยังไม่มี Risk Concern — ระบุสิ่งที่กังวล หรือเลือกความเสี่ยงจากข้อ D")
+    shown = set()
+    for i, c in enumerate(concerns, 1):
+        rid = c["risk_id"]
+        if rid is None:
+            L.append(f"{i}. ❓ \"{c['concern']}\" → ไม่มีในคลังความเสี่ยง (Risk Library) จะวิเคราะห์ในโหมดสำรวจ "
+                     "(ผลมีป้าย \"โหมดสำรวจ — ยังไม่ผ่านการรับรอง\")")
+            continue
+        L.append(_suff_line(f"{i}. \"{c['concern']}\" → ", rid, suff.get(rid)))
+        shown.add(rid)
+    for rid in it["risks"]["requested"]:
+        if rid not in shown:
+            L.append(_suff_line("- ", rid, suff.get(rid)))
+    req = [r for s in it["sufficiency"] for r in s["data_request"]]
+    req = _risk_order(req)
+    L.append("Data Request (ข้อมูลที่ควรขอเพิ่ม):" if req else "Data Request: ไม่มี — ข้อมูลพอสำหรับความเสี่ยงที่ขอ")
+    L += [f"  {i}. {r}" for i, r in enumerate(req, 1)]
+    return L
+
+
+def _suff_line(prefix: str, rid: str, s) -> str:
+    name = RISK_LIBRARY[rid]["name_th"]
+    if s is None:
+        return f"{prefix}{rid} {name}"
+    line = f"{prefix}{rid} {name}: {SUFF_ICON[s['status']]} {s['status']} — {_dedup_text(s['reason'])}"
+    if s["runnable_checks"]:
+        line += f" | การ์ดที่รันได้: {', '.join(s['runnable_checks'])}"
+    return line
+
+
+def _dedup_text(text: str) -> str:
+    """A reason joined from several checks, each distinct part once (in order)."""
+    out = []
+    for part in re.split(r"; | \| |: (?=การ์ดนี้)", str(text)):
+        if part and part not in out:
+            out.append(part)
+    return "; ".join(out)
+
+
+def _review_c(it: dict) -> list:
+    L = ["C. เงื่อนไขที่เข้าใจ"]
+    props = it.get("filter_proposals", [])
+    if it.get("mapping"):
+        for f in it.get("filters", []):
+            L.append(f"✅ ตัวกรองเดิมจาก mapping: {f['column']} {f['op']} {f['value']}")
+    for p in props:
+        if p["filter"]:
+            f = p["filter"]
+            L.append(f"❓ \"{p['condition']}\" → ตัวกรอง {f['column']} {f['op']} {f['value']} (ตัดออก {p['rows_removed']:,} แถว)")
+        elif p["note"] == "ไม่ต้องใช้ตัวกรอง":
+            L.append(f"✅ \"{p['condition']}\" → ไม่ต้องใช้ตัวกรอง")
+        else:
+            L.append(f"❓ \"{p['condition']}\" → {p['note']}")
+    if not props and not it.get("filters"):
+        L.append("ไม่มีเงื่อนไขหรือตัวกรอง — วิเคราะห์ทุกแถว")
+    if it.get("org_values"):
+        L += [f"ค่าขององค์กร: {k} = {v!r} (แทนค่ามาตรฐาน AIDA-14 เฉพาะ run นี้)" for k, v in it["org_values"].items()]
+    else:
+        L.append("ค่าเกณฑ์: ใช้ค่ามาตรฐาน AIDA-14 ทั้งหมด — ถ้าองค์กรมีค่าของตนเอง (เช่น DUP.WINDOW_DAYS) ระบุได้ จะติดป้าย \"ค่าขององค์กร\"")
+    L.append("ตัวเลขใน Intake Review นี้คำนวณก่อนใช้ตัวกรอง")
+    return L
+
+
+def _review_d(it: dict) -> list:
+    L = ["D. ความเสี่ยงที่แนะนำเพิ่ม (ยังไม่เพิ่มจนกว่าผู้ตรวจสอบเลือก)"]
+    if not it["suggested_risks"]:
+        L.append("ไม่มีความเสี่ยงอื่นในคลังที่ข้อมูลรองรับและพบสัญญาณเบื้องต้น")
+    for s in it["suggested_risks"]:
+        L.append(f"- {s['risk_id']} {s['name_th']}: {s['why_th']}")
+    return L
+
+
+def _review_e(it: dict) -> list:
+    p = it.get("prep") or {}
+    L = ["E. วันที่ / คุณภาพข้อมูล / Materiality / แผน Run-Skip"]
+    if p:
+        L.append(f"รูปแบบวันที่ที่แปลง: {p.get('date_format', '-')} | แปลงปี พ.ศ.: {'ใช่' if p.get('be_converted') else 'ไม่'} | "
+                 f"วันและเดือน ≤ 12 ทั้งคู่ {p.get('ambiguous_dates', 0):,} รายการ | ตัวอย่าง: "
+                 + ", ".join(f"{a} → {b}" for a, b in p.get("date_samples", [])))
+        L.append(f"วันที่แปลงไม่ได้ {p.get('unparsed_ts', 0):,} แถว | ยอดเงินแปลงไม่ได้ {p.get('unparsed_amount', 0):,} แถว | "
+                 f"ยอด ≤ 0 (ไม่นำไปวิเคราะห์) {p.get('excluded_nonpositive', 0):,} แถว")
+    st = it.get("profile_status")
+    if st:
+        L.append("ตรวจ record_id และคุณภาพข้อมูล: " + ("ผ่าน" if st == "OK" else st))
+    mat = it.get("materiality") or {}
+    if mat.get("type") in ("ก", "ข"):
+        amt = _num_value(mat.get("amount"))
+        L.append(f"Materiality: แบบ {mat['type']}. ฐาน {amt:,.2f} {mat.get('basis', '')}".rstrip() if amt is not None
+                 else f"Materiality: แบบ {mat['type']}. — ยังไม่มีฐานเป็นจำนวนเงิน ขอให้ระบุ")
+    else:
+        L.append("Materiality: ยังไม่ระบุ — เลือก ก. / ข. (พร้อมฐานเป็นจำนวนเงิน) หรือไม่ระบุ (Priority = Confidence)")
+    pl = it.get("plan", [])
+    run_ = [r["check_id"] for r in pl if r["decision"] == "Run"]
+    skip = [r for r in pl if r["decision"] == "Skip"]
+    L.append(f"แผน: Run {len(run_):,} การ์ด ({', '.join(run_) or '-'}) / Skip {len(skip):,} การ์ด")
+    by = {}
+    for r in skip:
+        by.setdefault(r["reason"], []).append(r["check_id"])
+    for reason, ids in by.items():
+        L.append(f"  - Skip {', '.join(ids)}: {reason}")
+    return L
