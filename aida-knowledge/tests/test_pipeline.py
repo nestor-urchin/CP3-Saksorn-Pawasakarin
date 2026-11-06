@@ -221,7 +221,8 @@ class TestGate(unittest.TestCase):
         self.assertTrue((plan["reason"].str.len() > 0).all())
         for reason in plan["reason"]:  # names only the missing column and how to fix it
             self.assertNotIn("tx_id", reason)
-            self.assertIn("จุดยืนยัน 1", reason)
+            self.assertIn("Intake Review", reason)  # finding 8: C1 has one checkpoint, the Intake Review
+            self.assertNotIn("จุดยืนยัน 1", reason)
         self.assertEqual(set(plan["missing"]), {"ts"})
 
     def test_gate_no_accounts_new_acct_first_seen(self):

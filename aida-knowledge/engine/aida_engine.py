@@ -268,16 +268,16 @@ def prof_checks(tx: pd.DataFrame, prep: dict, cfg: dict) -> list:
         if rows and k / rows > 1 - lim:
             ex = ", ".join(f'"{x}"' for x in prep.get(col.split(".")[-1] + "_samples", []))
             stop.append(f"{col} ไม่มีหรือแปลงไม่ได้ {k / rows:.1%} มากกว่า {1 - lim:.0%} (1 − GATE.COMPLETENESS.MIN)"
-                        f"{' เช่น ' + ex if ex else ''} — {fix} ที่จุดยืนยัน 1 แล้วรันใหม่")
+                        f"{' เช่น ' + ex if ex else ''} — {fix} ใน Intake Review แล้วยืนยันและรันใหม่")
     if "ts" not in tx.columns or not n:
         return stop
     bad = prep.get("unparsed_ts", 0) / n
     if bad > 1 - lim:
         stop.append(f"ts ไม่มีหรือแปลงเป็นวันเวลาไม่ได้ {bad:.1%} มากกว่า {1 - lim:.0%} (1 − GATE.COMPLETENESS.MIN) "
-                    "— ตรวจรูปแบบวันที่ (วัน/เดือน/ปี, ปี พ.ศ.) และการจับคู่คอลัมน์ที่จุดยืนยัน 1")
+                    "— ตรวจรูปแบบวันที่ (วัน/เดือน/ปี, ปี พ.ศ.) และบทบาทคอลัมน์ใน Intake Review (ข้อ A และ E)")
     d = tx["ts"].dropna()
     run_day = pd.Timestamp(cfg["_RUN"].get("run_date") or pd.Timestamp.now()).normalize()
-    cause = "อาจเป็นปี พ.ศ. ที่แปลงไม่ถูกต้อง หรือรูปแบบวัน/เดือนสลับกัน — ตรวจรูปแบบวันที่ที่จุดยืนยัน 1"
+    cause = "อาจเป็นปี พ.ศ. ที่แปลงไม่ถูกต้อง หรือรูปแบบวัน/เดือนสลับกัน — ตรวจรูปแบบวันที่ในข้อ E ของ Intake Review"
     if len(d) and d.min().year < PLAUSIBLE_MIN_YEAR:
         stop.append(f"ts มีวันที่ก่อนปี {PLAUSIBLE_MIN_YEAR} ({d.min():%Y-%m-%d}) ซึ่งไม่สมเหตุสมผล — {cause}")
     if len(d) and d.max() >= run_day + pd.Timedelta(days=1):
@@ -303,7 +303,7 @@ def gate_capability(tables: dict, cfg: dict) -> pd.DataFrame:
         if miss:
             plan[r] = ("Skip", f"ไม่มีคอลัมน์ {', '.join(miss)} หรือแปลงค่าไม่ได้ทั้งคอลัมน์ ซึ่งการ์ดนี้ต้องใช้ จึงรันไม่ได้ "
                        f"— แก้โดยจับคู่คอลัมน์{' / '.join(GATE_COL_TEXT[c] for c in miss)}ในไฟล์เป็น "
-                       f"{', '.join(miss)} ที่จุดยืนยัน 1 แล้วรันใหม่", ", ".join(miss))
+                       f"{', '.join(miss)} ใน Intake Review (ข้อ A) แล้วยืนยันและรันใหม่", ", ".join(miss))
         elif r in vol:
             plan[r] = ("Skip", vol[r], "ปริมาณข้อมูลไม่พอ")
         else:
@@ -2088,11 +2088,18 @@ def gen_conc(tables: dict, cfg: dict) -> pd.DataFrame:
     for role, etype, label in dims:
         d = t[t[_col(role)].notna()]
         g = d.groupby(_col(role))["amount"].sum()
-        if len(g) == 0 or len(g) * thr <= 1:
-            continue  # with so few parties an equal split already reaches the threshold
+        if len(g) == 0:
+            continue
         share = g / g.sum()
         hhi = float(((share * 100) ** 2).sum())
         level = "ต่ำ" if hhi < h["low"] else "ปานกลาง" if hhi <= h["high"] else "สูง"
+        small = len(g) * thr <= 1  # so few parties that an equal split already reaches the share threshold
+        if small and hhi <= h["high"]:
+            card_note(tables, "GEN-CONC", "1.0",
+                      f"{label}: มีเพียง {len(g):,} ราย ซึ่งแต่ละรายถึง CONC.SINGLE_ENTITY_SHARE {thr:.0%} ได้แม้แบ่งยอดเท่ากัน "
+                      f"จึงรายงานเฉพาะเมื่อ HHI สูงกว่าระดับสูงของ CONC.HHI ({h['high']:,}); HHI ของชุดนี้ {hhi:,.0f} "
+                      f"(ระดับ{level}) จึงไม่รายงานการกระจุกตัว")
+            continue
         for ent in share[share >= thr].index:
             e = d[d[_col(role)] == ent]
             top = e.sort_values("amount", ascending=False, kind="mergesort").head(topn)
@@ -2102,7 +2109,9 @@ def gen_conc(tables: dict, cfg: dict) -> pd.DataFrame:
                 "explanation": (f"{label} {ent} มียอดรวม {g[ent]:,.2f} คิดเป็น {share[ent]:.1%} ของยอดรวมทั้งชุด "
                                 f"({len(e):,} รายการ) ตั้งแต่ CONC.SINGLE_ENTITY_SHARE {thr:.0%} ขึ้นไป; HHI ของทั้งชุด "
                                 f"{hhi:,.0f} ระดับ{level} (CONC.HHI; {STD_NOTE}) — สอดคล้องกับ pattern การกระจุกตัว "
-                                f"ควรตรวจสอบเพิ่มเติม (รายการอ้างอิงคือ {len(top)} ยอดสูงสุดตาม CONC.TOPN)"),
+                                f"ควรตรวจสอบเพิ่มเติม (รายการอ้างอิงคือ {len(top)} ยอดสูงสุดตาม CONC.TOPN)"
+                                + (f"; มีเพียง {len(g):,} ราย จึงรายงานเพราะ HHI สูงกว่าระดับสูงของ CONC.HHI "
+                                   f"({h['high']:,})" if small else "")),
                 "record_refs": list(top["tx_id"])})
     roles = ["record_id", "date", "amount", "entity"] + (["counterparty"] if len(dims) > 1 else [])
     return _finish("GEN-CONC", "5.2 Concentration", "A-R4", "CONC.SINGLE_ENTITY_SHARE", found, cfg, roles)
@@ -2422,7 +2431,7 @@ def plan_checks(tables: dict, cfg: dict = None) -> pd.DataFrame:
         if miss:
             what = " / ".join(f"{r} ({ROLE_TEXT.get(r, r)})" for r in miss)
             rows.append((cid, "Skip", f"ไม่มีบทบาทคอลัมน์ {what} หรือคอลัมน์ว่างทั้งคอลัมน์ ซึ่งการ์ดนี้ต้องใช้ จึงรันไม่ได้ — "
-                                      f"แก้โดยกำหนดบทบาท {', '.join(miss)} ให้คอลัมน์ในไฟล์ที่จุดยืนยัน 1 แล้วรันใหม่", ", ".join(miss)))
+                                      f"แก้โดยกำหนดบทบาท {', '.join(miss)} ให้คอลัมน์ในไฟล์ใน Intake Review (ข้อ A) แล้วยืนยันและรันใหม่", ", ".join(miss)))
         else:
             rows.append((cid, "Run", "มีบทบาทคอลัมน์ที่ต้องใช้ครบ", "-"))
     return pd.DataFrame(rows, columns=["recipe_id", "decision", "reason", "missing"])
@@ -2492,9 +2501,10 @@ RISK_LIBRARY = {
                    "unnatural number"],
                   ["E", "C", "A"], ["FOR-BENFORD", "FOR-ROUND", "FOR-REPEAT"], _GENR, 1, 100),
     "C-R1": _risk("ผู้ชำระคนเดียวหลายสัญญา",
-                  "ผู้ชำระรายเดียวชำระแทนผู้กู้หลายสัญญา อาจเป็นการชำระแทนที่ไม่ได้เปิดเผยความสัมพันธ์ รวมถึง pattern "
-                  "ปิดบัญชีก่อนกำหนดจากผู้ชำระอื่น (ใช้การ์ดเดียวกัน ไม่มีรหัสความเสี่ยงแยก)",
-                  ["ผู้ชำระรายเดียว", "ผู้ชำระคนเดียว", "ชำระแทน", "ผู้ชำระหลายสัญญา", "ปิดบัญชีก่อนกำหนด",
+                  "ผู้ชำระรายเดียวชำระแทนผู้กู้หลายสัญญา (ตั้งแต่ PAYER.MIN_CONTRACTS สัญญา) อาจเป็นการชำระแทนที่ไม่ได้"
+                  "เปิดเผยความสัมพันธ์ — ไม่ครอบคลุม pattern ปิดบัญชีก่อนกำหนดจากผู้ชำระอื่นที่ไม่ถึงจำนวนสัญญานี้ "
+                  "(ความกังวลนั้นใช้โหมดสำรวจ)",
+                  ["ผู้ชำระรายเดียว", "ผู้ชำระคนเดียว", "ชำระแทน", "ผู้ชำระหลายสัญญา",
                    "payer multiple contracts", "third-party payer", "third party payer", "one payer many contracts"],
                   ["C"], ["PAYER-MULTI"], ["record_id", "date", "entity", "counterparty", "contract"], 1, 50),
     "C-R2": _risk("ชำระใกล้วันครบกำหนดซ้ำ ๆ (อาจตกแต่งสถานะค้างชำระ)",
@@ -2503,8 +2513,9 @@ RISK_LIBRARY = {
                    "near due date", "near the due date", "overdue status", "window dressing"],
                   ["C"], ["DUE-NEAR"], ["record_id", "date", "contract", "due_date"], 3, 50),
     "C-R3": _risk("ชำระซ้ำ/คืนเงินผิดปกติ",
-                  "การชำระงวดเดียวกันซ้ำในช่วงสั้น หรือการคืนเงินที่ผิดปกติ ซึ่งควรตรวจสอบเพิ่มเติม",
-                  ["ชำระซ้ำ", "คืนเงินผิดปกติ", "คืนเงิน", "refund", "double payment on contract"],
+                  "การชำระงวดเดียวกันซ้ำในช่วงสั้น (DUP-PAY) ซึ่งควรตรวจสอบเพิ่มเติม — ไม่ครอบคลุมการคืนเงิน (รายการยอด ≤ 0 "
+                  "ไม่นำไปวิเคราะห์) ความกังวลเรื่องคืนเงินผิดปกติใช้โหมดสำรวจ",
+                  ["ชำระซ้ำ", "double payment on contract"],
                   ["C"], ["DUP-PAY"], _GENR, 1, 50),
     "A-R1": _risk("จ่ายซ้ำ",
                   "การจ่ายเงินซ้ำสำหรับใบแจ้งหนี้หรือผู้ขายและยอดเดียวกันในช่วงเวลาใกล้กัน",
@@ -2664,7 +2675,7 @@ def _check_state(cid: str, ctx: dict, lib: dict) -> tuple:
     miss = [r for r in spec["requires"] if r not in ctx["roles"]]
     if miss:
         return (False, f"ไม่มีบทบาทคอลัมน์ {_missing_text(miss)} ซึ่งการ์ดนี้ต้องใช้ จึงรันไม่ได้ — แก้โดยกำหนดบทบาท "
-                       f"{', '.join(miss)} ให้คอลัมน์ในไฟล์ที่จุดยืนยัน 1 แล้วรันใหม่", ", ".join(miss), "role")
+                       f"{', '.join(miss)} ให้คอลัมน์ในไฟล์ใน Intake Review (ข้อ A) แล้วยืนยันและรันใหม่", ", ".join(miss), "role")
     dt = ctx["dtype"]
     if dt is not None and (dt not in spec["data_types"] or dt not in lib["data_types"]):
         want = "/".join(TYPE_TEXT[t] for t in (set(spec["data_types"]) & set(lib["data_types"]) or spec["data_types"]))
@@ -3712,7 +3723,7 @@ def _plan_all(pl: pd.DataFrame) -> pd.DataFrame:
     rows = [(r["check_id"], r["decision"], r["reason"], r["missing"]) for _, r in pl.iterrows()]
     done = set(pl["check_id"])
     rows += [(c, "Skip", "ไม่เกี่ยวกับความเสี่ยงที่ยืนยันใน Intake (ผู้ตรวจสอบไม่ได้ขอ) จึงไม่รัน — เพิ่มความเสี่ยงที่ใช้การ์ดนี้"
-                         "ที่จุดยืนยันแล้วรันใหม่", "ไม่ได้ขอ") for c in CHECKS if c not in done]
+                         "ใน Intake Review แล้วรันใหม่", "ไม่ได้ขอ") for c in CHECKS if c not in done]
     return pd.DataFrame(rows, columns=["recipe_id", "decision", "reason", "missing"])
 
 
@@ -3865,7 +3876,7 @@ def trace(files, intake, acct: str, direction: str = "both", period: str = None,
     tx = pre["tables"]["transactions"]
     if "to_acct" not in tx.columns or "from_acct" not in tx.columns:
         raise AidaError("Money Flow ต้องมีบทบาท entity (บัญชีต้นทาง) และ counterparty (บัญชีปลายทาง) — ใช้ได้กับข้อมูล"
-                        "โอนเงินระหว่างบัญชี (ประเภท E); กำหนดบทบาททั้งสองที่จุดยืนยันแล้วเรียกใหม่")
+                        "โอนเงินระหว่างบัญชี (ประเภท E); กำหนดบทบาททั้งสองใน Intake Review แล้วเรียกใหม่")
     acct = str(acct).strip()
     if not (tx["from_acct"].astype(str).eq(acct).any() or tx["to_acct"].astype(str).eq(acct).any()):
         raise AidaError(f"ไม่พบบัญชี '{acct}' ในข้อมูล (หลังตัวกรอง) — ตรวจเลขบัญชีอีกครั้ง")
