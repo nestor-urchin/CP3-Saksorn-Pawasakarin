@@ -1527,23 +1527,58 @@ def match_role(text):
     return (best[1], best[2]) if best[1] else (None, 0)
 
 
-def match_description(text):
-    """Role named by a free-text column description, or None. Unlike a column name, a description is a phrase whose
-    head noun comes first ("จำนวนเงินที่จ่ายจริงต่อใบแจ้งหนี้" is an amount, not an invoice number): the synonym that
-    starts earliest wins, then the longest. A description equal to a synonym is matched as match_role does."""
-    role, strength = match_role(text)
-    if strength == "exact" or role is None:
-        return role
+DESC_REL_EN = re.compile(r"\b(?:per|of|for)\b", re.I)  # "amount per invoice": the head is before "per"
+DESC_REL_TH = ("สำหรับ", "ของ", "ต่อ", "ที่")  # Thai relational words; the head noun comes before them
+DESC_WEAK = {"ยอด", "ยอดเงิน", "จำนวนเงิน", "มูลค่า", "amount", "amt", "value"}  # modifiers a named synonym outranks
+
+
+def _desc_hits(text: str) -> list:
+    """[(start, length, normalized synonym, role)] of every synonym in a description (same rules as match_role:
+    ASCII synonyms need a whole word or 4+ characters, Thai ones 3+ characters)."""
     whole, toks = _norm_name(text), {_norm_name(t) for t in _tokens(text)}
-    best = None
+    hits = []
     for syn, r in _syn_index():
         thai = bool(RE_THAI_CHAR.search(syn))
         if not syn or (syn not in toks and len(syn) < (3 if thai else 4)):
             continue
         pos = whole.find(syn)
-        if pos >= 0 and (best is None or (pos, -len(syn)) < best[:2]):
-            best = (pos, -len(syn), r)
-    return best[2] if best else role
+        if pos >= 0:
+            hits.append((pos, len(syn), syn, r))
+    return hits
+
+
+def match_description(text):
+    """Role named by a free-text column description, or None.
+
+    A description is a phrase: its head comes before a relational word (ต่อ / ของ / สำหรับ / ที่, per / of / for),
+    so "จำนวนเงินที่จ่ายจริงต่อใบแจ้งหนี้" is an amount, not an invoice number. Only the head is matched (a relational
+    word inside a matched synonym such as "วันที่" or "เลขที่" does not cut it). In the head a bare modifier
+    (ยอด, จำนวนเงิน, amount, ...) is weaker than any other synonym ("ยอดวงเงิน" and "limit amount" are limits),
+    then the longest synonym wins. A description equal to a synonym, or a head with no synonym, is matched as
+    match_role does on the whole text."""
+    role, strength = match_role(text)
+    if strength == "exact" or role is None:
+        return role
+    head = DESC_REL_EN.split(str(text))[0].strip() or str(text)
+    hits = _desc_hits(head)
+    norm = _norm_name(head)
+    spans = [(a, a + n) for a, n, _, _ in hits]
+    cut = len(norm)
+    for w in DESC_REL_TH:
+        start = 0
+        while True:
+            k = norm.find(w, start)
+            if k < 0:
+                break
+            if k > 0 and not any(a <= k < b for a, b in spans):
+                cut = min(cut, k)
+                break
+            start = k + 1
+    hits = [h for h in hits if h[0] + h[1] <= cut]
+    if not hits:
+        return role
+    strong = [h for h in hits if h[2] not in {_norm_name(w) for w in DESC_WEAK}] or hits
+    return max(strong, key=lambda h: (h[1], -h[0]))[3]
 
 
 def _num_text(s: pd.Series):
@@ -2730,8 +2765,9 @@ MULE_STAGE = ["MULE-PATTERN", "MULE-CROSS-TX", "MULE-NETWORK"]  # read the Evide
 # entity_type names of a Finding per data type (the checks say entity / counterparty / account)
 ENTITY_LABELS = {"C": {"entity": "borrower", "account": "borrower", "counterparty": "payer"},
                  "A": {"entity": "vendor", "account": "vendor", "counterparty": "payee"}}
-# Evidence of these checks on the same entity and period as the key check is the same pattern (equal split amounts
-# repeat and are round): it joins that Finding instead of making a second one (AIDA-01 one entity, one Finding)
+# Evidence of these checks whose records are all records of the key check's Evidence (same entity and period) is the
+# same pattern (equal split amounts repeat and are round): it joins that Finding instead of making a second one
+# (AIDA-01 one pattern, one Finding). Repeats on other records of the same entity keep their own Finding.
 ABSORB_C1 = {"SPLIT-LIMIT": ("FOR-REPEAT", "FOR-ROUND")}
 OUT_NAMES = {"workbook": "AIDA-workbook.xlsx", "dashboard": "AIDA-dashboard.html", "csv_dir": "network"}
 EXCLUDE_WORDS = ("ตัด", "ไม่รวม", "ยกเว้น", "เอาออก", "exclude", "remove", "drop")
@@ -2865,7 +2901,8 @@ def _read_files(files) -> tuple:
             df = df.copy()
             df.columns = [str(c).strip() for c in df.columns]
             frames[tname] = df
-            meta[tname] = {"path": os.path.abspath(path), "file": os.path.basename(path), "sheet": sheet, "sha256": sha}
+            meta[tname] = {"path": os.path.abspath(path), "file": os.path.basename(path), "sheet": sheet, "sha256": sha,
+                           "key": name}
     if not frames:
         raise AidaError("ไม่มีตารางข้อมูลในไฟล์ที่ส่งมา — ตรวจว่าไฟล์มีข้อมูลอย่างน้อย 1 ตาราง")
     return frames, meta
@@ -3227,7 +3264,7 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
         "dataset_type": dtype, "roles": roles, "role_suggestions": _plain(suggestions), "columns": cols_meaning,
         "code_values": codes, "filters": filters, "filter_proposals": _plain(proposals), "org_values": org,
         "risks": {"requested": requested, "added": [], "exploratory": exploratory, "concerns": _plain(matched)},
-        "materiality": dict(brief.get("materiality") or {"type": "ไม่ระบุ"}), "reviewer": m.get("confirmed_by") if m else None,
+        "materiality": dict(brief.get("materiality") or {"type": "ไม่ระบุ"}), "reviewer": None,
         "description_conflicts": _plain(conflicts), "sufficiency": _plain(suff.to_dict(orient="records")),
         "suggested_risks": _plain(sugg.to_dict(orient="records")), "plan": _plain(pl.to_dict(orient="records")),
         "profile": prows, "signature": _signature(prows), "prep": _plain({k: v for k, v in prep.items()
@@ -3444,7 +3481,7 @@ def _prepare(files, it: dict, cfg: dict) -> dict:
     if files is None:
         files = {}
         for t, m in it["files"].items():
-            files.setdefault(t if not m.get("sheet") else t.rsplit(".", 1)[0], m["path"])
+            files.setdefault(m.get("key") or (t if not m.get("sheet") else t[:-len(m["sheet"]) - 1]), m["path"])
     frames, meta = _read_files(files)
     warnings, events = [], []
     for t, m in it["files"].items():
@@ -3469,6 +3506,10 @@ def _prepare(files, it: dict, cfg: dict) -> dict:
 
 
 def _run_cfg(it: dict, base_cfg: dict, meta: dict) -> tuple:
+    try:
+        _check_org_values(it.get("org_values", {}), base_cfg)  # intake.json may be edited by hand or older than AIDA-14
+    except AidaError as e:
+        raise AidaError(f"intake: {e} (ค่าขององค์กรใน intake.json ต้องตรงกับ AIDA-14 ที่ใช้ตอนนี้ — แก้ด้วย confirm(...) ใหม่)") from None
     org = _merge_org(it.get("org_values", {}), base_cfg)
     core = json.dumps(_plain({k: it.get(k) for k in ("roles", "filters", "org_values", "risks", "materiality")}),
                       ensure_ascii=False, sort_keys=True) + "|" + _input_sha(meta)
@@ -3510,11 +3551,14 @@ def _finding_view(ev: pd.DataFrame, tx: pd.DataFrame, dtype) -> pd.DataFrame:
                 v.at[i, "entity_type"], v.at[i, "entity_id"] = "document", docs.pop()
     for key_check, joins in ABSORB_C1.items():
         k = v[v["recipe_id"] == key_check]
-        risk_of = {(a, b, c): r for a, b, c, r in zip(k["entity_type"], k["entity_id"], k["period"], k["risk"])}
+        key_of = {}
+        for a, b, c, r, refs in zip(k["entity_type"], k["entity_id"], k["period"], k["risk"], k["record_refs"]):
+            key_of.setdefault((a, b, c), (r, set()))[1].update(ref_list(refs))
         for i in v.index[v["recipe_id"].isin(list(joins))]:
-            r = risk_of.get((v.at[i, "entity_type"], v.at[i, "entity_id"], v.at[i, "period"]))
-            if r:
-                v.at[i, "risk"] = r
+            hit = key_of.get((v.at[i, "entity_type"], v.at[i, "entity_id"], v.at[i, "period"]))
+            refs = set(ref_list(v.at[i, "record_refs"]))
+            if hit and refs and refs <= hit[1]:  # only the same records: other repeats keep their own Finding
+                v.at[i, "risk"] = hit[0]
     lab = ENTITY_LABELS.get(dtype, {})
     v["entity_type"] = v["entity_type"].map(lambda x: lab.get(x, x))
     return v

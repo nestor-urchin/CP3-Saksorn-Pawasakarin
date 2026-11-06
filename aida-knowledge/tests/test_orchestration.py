@@ -191,6 +191,26 @@ class Inspect(unittest.TestCase):
         self.assertIn("007", prof[("extra", "code")]["samples"])
         self.assertEqual(it["files"]["book.tx"]["sha256"], it["files"]["book.acc"]["sha256"])
 
+    def test_xlsx_sheet_name_with_dot_runs_from_intake_paths(self):
+        e = engine()
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "tx.2026"
+        ws.append(["tx_id", "ts", "acct", "amount"])
+        for i in range(1, 41):
+            ws.append([f"{i:05d}", f"2026-0{1 + i % 8}-1{i % 9}", f"A{i % 5}", f"{1000 + i * 37}.50"])
+        p = d / "book.v2.xlsx"
+        wb.save(p)
+        it = e.inspect([str(p)])["intake"]
+        self.assertEqual(list(it["files"]), ["book.v2.tx.2026"])
+        c = e.confirm(it, {"roles": {"book.v2.tx.2026": {"tx_id": "record_id", "ts": "date", "acct": "entity",
+                                                          "amount": "amount"}}}, str(d / "intake.json"))
+        r = e.run(None, str(d / "intake.json"), str(d))  # files taken from the intake
+        self.assertEqual(r["status"], "OK")
+        self.assertEqual(r["warnings"], [])
+
     def test_missing_file_thai_error(self):
         with self.assertRaises(engine().AidaError) as cm:
             engine().inspect({"payments": "/no/such/file.csv"})
@@ -373,6 +393,17 @@ class Run(unittest.TestCase):
         n_c = int((pd.read_csv(files("C")["payments"], dtype=str)["status"] == "C").sum())
         self.assertTrue(f["detail"].str.contains(f"{n_c:,}").any(), list(f["detail"]))
 
+    def test_run_revalidates_org_values(self):
+        _, path = confirmed("A")
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data["org_values"] = {"DUP.WINDOWS": 2}
+        bad = Path(tmpdir()) / "bad-org.json"
+        bad.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        with self.assertRaises(engine().AidaError) as cm:
+            engine().run(files("A"), str(bad), tmpdir())
+        self.assertIn("DUP.WINDOWS", str(cm.exception))
+        self.assertIn("AIDA-14", str(cm.exception))
+
     def test_run_rejects_draft_intake(self):
         with self.assertRaises(engine().AidaError) as cm:
             engine().run(files("A"), inspected("A")["intake"], tmpdir())
@@ -392,6 +423,66 @@ class Run(unittest.TestCase):
         ca, _ = confirmed("A")
         with self.assertRaises(e.AidaError):  # no counterparty: no money flow
             e.trace(files("A"), ca, "V-031", out_dir=str(out))
+
+
+class DescriptionHead(unittest.TestCase):
+    """match_description matches the head of a description (fix round 1, Important 1)."""
+    def test_description_head_and_weak_modifiers(self):
+        e = engine()
+        cases = {"vendor invoice number": "document_no", "ยอดวงเงิน": "limit", "ยอดวงเงินอนุมัติ": "limit",
+                 "limit amount": "limit", "จำนวนเงินที่จ่ายจริงต่อใบแจ้งหนี้": "amount", "amount per invoice": "amount",
+                 "วันครบกำหนดชำระของงวดนั้น": "due_date", "เลขที่ใบแจ้งหนี้ของผู้ขาย": "document_no",
+                 "วันที่รับชำระ": "date", "เลขที่รายการจ่าย": "record_id", "วันเวลาที่ทำรายการ": "date"}
+        for text, role in cases.items():
+            self.assertEqual(e.match_description(text), role, text)
+
+    def test_sample_a_amount_line(self):
+        it = inspected("A")["intake"]
+        self.assertEqual(it["roles"]["payments"]["amount"], "amount")
+        self.assertEqual(it["roles"]["payments"]["invoice_no"], "document_no")
+        st = {s["risk_id"]: s["status"] for s in it["sufficiency"]}
+        self.assertEqual(st, key("A")["intake"]["sufficiency"])
+
+
+class AbsorbBySharedRecords(unittest.TestCase):
+    """FOR-REPEAT / FOR-ROUND fold into the SPLIT-LIMIT Finding only for the same records (Important 2)."""
+    def _ev(self, rid, risk, refs, period="2026-06"):
+        return {"evidence_id": f"{rid}-1", "run_id": "T", "recipe_id": rid, "recipe_version": "1.0",
+                "skill_family": "f", "entity_type": "entity", "entity_id": "V-045", "risk": risk, "period": period,
+                "metric": "m", "value": 1, "threshold": 1, "registry_key": "K", "registry_version": "1.2",
+                "explanation": "x", "record_refs": refs, "data_ref": "d"}
+
+    def test_unit(self):
+        e = engine()
+        tx = pd.DataFrame({"tx_id": ["a", "b", "c", "x", "y", "z"], "amount": [1.0] * 6})
+        same = pd.DataFrame([self._ev("SPLIT-LIMIT", "A-R2", ["a", "b", "c"]), self._ev("FOR-REPEAT", "G-R4", ["a", "b", "c"])])
+        self.assertEqual(list(e._finding_view(same, tx, "A")["risk"]), ["A-R2", "A-R2"])
+        other = pd.DataFrame([self._ev("SPLIT-LIMIT", "A-R2", ["a", "b", "c"]), self._ev("FOR-REPEAT", "G-R4", ["x", "y", "z"])])
+        self.assertEqual(list(e._finding_view(other, tx, "A")["risk"]), ["A-R2", "G-R4"])
+        mixed = pd.DataFrame([self._ev("SPLIT-LIMIT", "A-R2", ["a", "b", "c"]),
+                              self._ev("FOR-REPEAT", "G-R4", ["a", "b", "c", "x", "y", "z"])])
+        self.assertEqual(list(e._finding_view(mixed, tx, "A")["risk"]), ["A-R2", "G-R4"])
+
+    def test_rent_repeats_on_split_vendor_stay_g_r4(self):
+        e = engine()
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        df = pd.read_csv(files("A")["payments"], dtype=str)
+        rent = [{"payment_id": f"PAY-RENT-{i}", "pay_date": f"2026-06-0{i + 2}", "amount": "12345.67",
+                 "vendor_id": "V-045", "invoice_no": f"INV-RENT-{i}", "created_by": "U001", "approved_by": "M001",
+                 "approval_limit": "50000.0", "category": "ค่าเช่า"} for i in range(3)]
+        df = pd.concat([df, pd.DataFrame(rent)], ignore_index=True)
+        p = d / "payments.csv"
+        df.to_csv(p, index=False)
+        it = e.inspect([str(p)], brief("A"))["intake"]
+        c = e.confirm(it, answers("A"), str(d / "intake.json"))
+        r = e.run([str(p)], c, str(d))
+        got = finding_set(r["findings"])
+        self.assertIn(("vendor", "V-045", "G-R4", "2026-06"), got)
+        self.assertIn(("vendor", "V-045", "A-R2", "2026-06"), got)
+        f = r["findings"].set_index(["entity_id", "risk"])
+        self.assertEqual(f.loc[("V-045", "A-R2"), "exposure"], 144000.0)  # the split only, no rent records
+        self.assertFalse(set(f.loc[("V-045", "A-R2"), "record_refs"]) & {x["payment_id"] for x in rent})
 
 
 class Mapping(unittest.TestCase):
@@ -452,6 +543,10 @@ class Mapping(unittest.TestCase):
         self.assertEqual(r["changes"], {"added": [], "removed": [], "changed_pattern": []})
         self.assertEqual(r["intake"]["roles"], c["roles"])
         self.assertEqual(r["intake"]["filters"], c["filters"])
+        # the earlier confirmer is shown, but this round's reviewer is not pre-filled
+        self.assertIsNone(r["intake"]["reviewer"])
+        self.assertEqual(r["intake"]["mapping"]["confirmed_by"], "ผู้ตรวจสอบทดสอบ")
+        self.assertIn("ผู้ตรวจสอบทดสอบ", r["review_th"])
 
 
 if __name__ == "__main__":
