@@ -2273,3 +2273,357 @@ def plan_checks(tables: dict, cfg: dict = None) -> pd.DataFrame:
         else:
             rows.append((cid, "Run", "มีบทบาทคอลัมน์ที่ต้องใช้ครบ", "-"))
     return pd.DataFrame(rows, columns=["recipe_id", "decision", "reason", "missing"])
+
+
+# ---- Risk Library, sufficiency and risk suggestions (spec 4.3 step 2, 4.4) ----
+# RISK_LIBRARY is the data the engine computes with; AIDA-18 will describe the same risks in prose for matching.
+# A risk's checks are not typed in twice by hand: tests require them to equal the CHECKS entries whose "risk" or
+# "risk_alt" names the risk.
+JOIN_OK_PCT = 90.0          # a joined master table (opened_at) must match >= this % (normalized) of its keys
+JOIN_ROLES = ("opened_at",)  # roles that normally live in a secondary table joined by the entity id
+NEEDS_TIME_CHECKS = {"TEMP-OFFHOURS"}  # checks that read the time of day, not only the date
+TYPE_TEXT = {"E": "รายการโอนเงินระหว่างบัญชี", "C": "รับชำระค่างวดสินเชื่อ", "A": "จ่ายเงินเจ้าหนี้"}
+REQ_TRANSFERS = ("รายการเงินฝากและโอนเงินของบัญชีผู้ชำระ (รหัสรายการ, วันเวลา, บัญชีต้นทาง, บัญชีปลายทาง, ยอดเงิน) "
+                 "เพื่อดูการรับโอนและส่งต่อเงิน")
+REQ_TIME = "วันที่ของรายการที่มีเวลา (ชั่วโมง:นาที) เพื่อดูรายการนอกเวลาทำการ"
+_B1 = ["record_id", "date", "amount", "entity", "counterparty"]
+_GENR = ["record_id", "date", "amount", "entity"]
+
+
+def _risk(name, desc, syn, types, checks, roles, months=1, rows=30, req=None, join=()):
+    return {"name_th": name, "description_th": desc, "synonyms": syn, "data_types": types, "checks": checks,
+            "min_roles": roles, "min_data": {"months": months, "rows": rows},
+            "request_if_missing": req or {}, "join_roles": list(join)}
+
+
+_MULE_REQ = {"counterparty": REQ_TRANSFERS, "_data_type": REQ_TRANSFERS}
+RISK_LIBRARY = {
+    "R1": _risk("การเคลื่อนย้ายเงินผิดปกติ",
+                "รายการโอนที่ยอดสูงหรือถี่ผิดปกติเมื่อเทียบกับพฤติกรรมปกติ นอกเวลาทำการ เงินวนกลับ หรือส่งต่อเป็นทอด ๆ "
+                "ซึ่งสอดคล้องกับ pattern ที่ควรทบทวนเพิ่มเติม (ต้องเป็นรายการโอนระหว่างบัญชี)",
+                ["การเคลื่อนย้ายเงินผิดปกติ", "เคลื่อนย้ายเงิน", "รับโอนเงินผิดปกติ", "โอนเงินผิดปกติ", "เงินวนกลับ",
+                 "ส่งต่อเป็นทอด", "unusual fund movement", "abnormal transfer", "mule"],
+                ["E"], ["STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE", "TEMP-OFFHOURS", "NET-CYCLE", "NET-FUNNEL",
+                        "MULE-DWELL", "MULE-NEW-ACCT", "FLOW-LAYERING"], _B1, 1, 100, _MULE_REQ, ["opened_at"]),
+    "R2": _risk("บัญชีที่รับแล้วส่งต่อเงินอย่างรวดเร็ว",
+                "บัญชีที่มีหลายสัญญาณพร้อมกัน เช่น รับจากหลายแหล่งแล้วโอนออกเกือบหมดในเวลาสั้น โดยเฉพาะบัญชีเปิดใหม่ "
+                "สอดคล้องกับ pattern ที่ควรทบทวนรายบัญชี",
+                ["รับแล้วส่งต่อ", "ส่งต่อเงินอย่างรวดเร็ว", "บัญชีเปิดใหม่", "pass-through", "pass through",
+                 "rapid onward transfer", "mule account"],
+                ["E"], ["MULE-PATTERN"], _B1, 1, 100, _MULE_REQ, ["opened_at"]),
+    "R3": _risk("เครือข่ายบัญชีที่เชื่อมโยงกัน",
+                "ธุรกรรมระหว่างกลุ่มบัญชีที่เชื่อมโยงกันเป็นเครือข่าย ซึ่งอาจเกี่ยวข้องกับการกระจายหรือรวมเงินร่วมกัน",
+                ["เครือข่าย", "กลุ่มบัญชีที่เชื่อมโยง", "เชื่อมโยงกันเป็นเครือข่าย", "linked accounts", "network of accounts"],
+                ["E"], ["MULE-CROSS-TX", "MULE-NETWORK"], _B1, 1, 100, _MULE_REQ),
+    "R4": _risk("ความผิดปกติของคู่ค้า",
+                "การโอนไปยังคู่ค้าใหม่ด้วยยอดสูงผิดปกติ หรือสัดส่วนคู่ค้าใหม่ที่เปลี่ยนไปจากพฤติกรรมเดิม",
+                ["ความผิดปกติของคู่ค้า", "คู่ค้าใหม่", "โอนไปบัญชีใหม่", "new counterparty", "counterparty anomaly"],
+                ["E"], ["CPTY-PROFILE", "CPTY-NEW-LARGE"], _B1, 2, 100, _MULE_REQ),
+    "G-R1": _risk("ยอดโดดเด่น",
+                  "รายการหรือบัญชีที่ยอดโดดเด่นหรือถี่ผิดปกติเมื่อเทียบกับพฤติกรรมปกติของตนเองและของกลุ่ม",
+                  ["ยอดโดดเด่น", "ยอดสูงผิดปกติ", "ยอดผิดปกติ", "outlier amount", "unusual amount", "amount outlier"],
+                  ["E"], ["STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE"], _B1, 1, 100,
+                  {"counterparty": REQ_TRANSFERS, "_data_type": REQ_TRANSFERS}),
+    "G-R2": _risk("ช่วงสิ้นงวด",
+                  "รายการกระจุกตัวในช่วงสิ้นเดือนหรือสิ้นงวดบัญชีมากกว่าปกติ",
+                  ["ช่วงสิ้นงวด", "สิ้นงวด", "สิ้นเดือน", "ปิดงวด", "period end", "period-end", "month end", "cut-off"],
+                  ["E", "C", "A"], ["GEN-PERIOD-END"], _GENR),
+    "G-R3": _risk("นอกเวลาทำการ",
+                  "รายการที่เกิดนอกเวลาทำการหรือวันหยุดเป็นสัดส่วนสูง (ต้องมีเวลาของรายการ ไม่ใช่เฉพาะวันที่)",
+                  ["นอกเวลาทำการ", "นอกเวลางาน", "วันหยุด", "off-hours", "off hours", "after hours", "after-hours"],
+                  ["E"], ["TEMP-OFFHOURS"], _B1, 1, 100, {"date": REQ_TIME, "_time": REQ_TIME,
+                                                          "counterparty": REQ_TRANSFERS, "_data_type": REQ_TRANSFERS}),
+    "G-R4": _risk("ตัวเลขผิดธรรมชาติ",
+                  "การกระจายตัวเลขหลักแรกผิดจาก Benford ยอดกลมหรือยอดซ้ำถี่ผิดปกติ ซึ่งอาจเกิดจากการกำหนดตัวเลข "
+                  "ไม่ใช่ธุรกรรมจริง",
+                  ["ตัวเลขผิดธรรมชาติ", "ยอดกลม", "ยอดซ้ำ", "benford", "round amount", "round number", "repeated amount",
+                   "unnatural number"],
+                  ["E", "C", "A"], ["FOR-BENFORD", "FOR-ROUND", "FOR-REPEAT"], _GENR, 1, 100),
+    "C-R1": _risk("ผู้ชำระคนเดียวหลายสัญญา",
+                  "ผู้ชำระรายเดียวชำระแทนผู้กู้หลายสัญญา อาจเป็นการชำระแทนที่ไม่ได้เปิดเผยความสัมพันธ์ รวมถึง pattern "
+                  "ปิดบัญชีก่อนกำหนดจากผู้ชำระอื่น (ใช้การ์ดเดียวกัน ไม่มีรหัสความเสี่ยงแยก)",
+                  ["ผู้ชำระรายเดียว", "ผู้ชำระคนเดียว", "ชำระแทน", "ผู้ชำระหลายสัญญา", "ปิดบัญชีก่อนกำหนด",
+                   "payer multiple contracts", "third-party payer", "third party payer", "one payer many contracts"],
+                  ["C"], ["PAYER-MULTI"], ["record_id", "date", "entity", "counterparty", "contract"], 1, 50),
+    "C-R2": _risk("ชำระใกล้วันครบกำหนดซ้ำ ๆ (อาจตกแต่งสถานะค้างชำระ)",
+                  "ลูกหนี้ชำระก่อนวันครบกำหนดเพียงไม่กี่วันแทบทุกงวด สอดคล้องกับ pattern ที่อาจเกี่ยวกับการจัดสถานะค้างชำระ",
+                  ["ชำระใกล้วันครบกำหนด", "ก่อนวันครบกำหนด", "ตกแต่งสถานะค้างชำระ", "สถานะค้างชำระ",
+                   "near due date", "near the due date", "overdue status", "window dressing"],
+                  ["C"], ["DUE-NEAR"], ["record_id", "date", "contract", "due_date"], 3, 50),
+    "C-R3": _risk("ชำระซ้ำ/คืนเงินผิดปกติ",
+                  "การชำระงวดเดียวกันซ้ำในช่วงสั้น หรือการคืนเงินที่ผิดปกติ ซึ่งควรตรวจสอบเพิ่มเติม",
+                  ["ชำระซ้ำ", "คืนเงินผิดปกติ", "คืนเงิน", "refund", "double payment on contract"],
+                  ["C"], ["DUP-PAY"], _GENR, 1, 50),
+    "A-R1": _risk("จ่ายซ้ำ",
+                  "การจ่ายเงินซ้ำสำหรับใบแจ้งหนี้หรือผู้ขายและยอดเดียวกันในช่วงเวลาใกล้กัน",
+                  ["จ่ายซ้ำ", "จ่ายเงินซ้ำ", "จ่ายซ้ำซ้อน", "จ่ายเงินซ้ำซ้อน", "duplicate payment", "double payment",
+                   "paid twice", "duplicate invoice"],
+                  ["A"], ["DUP-PAY"], _GENR, 1, 50),
+    "A-R2": _risk("แบ่งรายการต่ำกว่าวงเงิน",
+                  "การแบ่งจ่ายเป็นหลายรายการให้ยอดแต่ละรายการต่ำกว่าวงเงินอนุมัติ",
+                  ["แบ่งรายการ", "แบ่งจ่าย", "ต่ำกว่าวงเงิน", "หลบวงเงิน", "split payment", "split below limit",
+                   "below approval limit", "threshold avoidance", "splitting"],
+                  ["A"], ["SPLIT-LIMIT"], _GENR + ["limit"], 1, 50,
+                  {"limit": "วงเงินอนุมัติของแต่ละรายการ (approval limit) เพื่อเทียบยอดกับวงเงิน"}),
+    "A-R3": _risk("ผู้บันทึกและผู้อนุมัติเป็นคนเดียวกัน",
+                  "รายการที่ผู้บันทึกและผู้อนุมัติเป็นบุคคลเดียวกัน (การแบ่งแยกหน้าที่ไม่สมบูรณ์)",
+                  ["ผู้บันทึกและผู้อนุมัติ", "คนเดียวกัน", "แบ่งแยกหน้าที่", "segregation of duties", "sod",
+                   "same user", "maker checker", "maker-checker"],
+                  ["A"], ["SOD-SAME-USER"], ["record_id", "date", "created_by", "approved_by"], 1, 50,
+                  {"created_by": "ผู้บันทึกรายการ (created_by) ของแต่ละรายการ",
+                   "approved_by": "ผู้อนุมัติรายการ (approved_by) ของแต่ละรายการ"}),
+    "A-R4": _risk("ผู้ขายกระจุกตัว",
+                  "ยอดจ่ายกระจุกตัวอยู่ที่ผู้ขายรายเดียวหรือไม่กี่รายในสัดส่วนสูงเมื่อเทียบกับยอดรวม",
+                  ["ผู้ขายกระจุกตัว", "กระจุกตัว", "พึ่งพาผู้ขายรายเดียว", "vendor concentration", "concentration",
+                   "single vendor"],
+                  ["A"], ["GEN-CONC"], _GENR, 1, 50),
+}
+
+
+def _norm_concern(s) -> str:
+    return "".join(str(s).casefold().split())
+
+
+def match_concerns(concerns: list) -> list:
+    """Risk Concern text -> Risk Library. Each concern gives {concern, risk_id, matched_by, mode}. A concern matches
+    the risk whose synonym (Thai or English, case and whitespace ignored) it contains; the longest synonym wins,
+    a tie goes to the first risk in RISK_LIBRARY order. No match: risk_id None, matched_by None, mode "สำรวจ"
+    (exploratory mode). Every concern is returned, in order."""
+    out = []
+    for c in concerns:
+        text, best = _norm_concern(c), None
+        for rid, lib in RISK_LIBRARY.items():
+            for syn in lib["synonyms"]:
+                n = _norm_concern(syn)
+                if n and n in text and (best is None or len(n) > best[0]):
+                    best = (len(n), rid, syn)
+        out.append({"concern": c, "risk_id": best[1] if best else None, "matched_by": best[2] if best else None,
+                    "mode": "รับรอง" if best else "สำรวจ"})
+    return out
+
+
+def _roles_by_table(roles_confirmed: dict) -> tuple:
+    """(transaction table name, its roles {role: column}, {other table: {role: column}}) from {table: {column: role}};
+    the transaction table is chosen as to_internal does (the most of record_id / date / amount)."""
+    tx_name, best = None, 0
+    for name, rmap in roles_confirmed.items():
+        score = sum(1 for r in rmap.values() if r in TX_ROLES)
+        if score > best:
+            tx_name, best = name, score
+    by = {n: {r: c for c, r in rmap.items()} for n, rmap in roles_confirmed.items()}
+    if tx_name is None:
+        merged = {}
+        for d in by.values():
+            merged.update(d)
+        return None, merged, {}
+    return tx_name, by[tx_name], {n: d for n, d in by.items() if n != tx_name}
+
+
+def _type_from_roles(roles: set, profile=None):
+    """Dataset type E / C / A from the confirmed roles (same rules as detect_dataset_type), else from the profile."""
+    if {"contract", "due_date"} <= roles:
+        return "C"
+    if {"approved_by", "created_by"} & roles and ("document_no" in roles or "amount" in roles) \
+            and "counterparty" not in roles:
+        return "A"
+    if {"entity", "counterparty", "date", "amount"} <= roles:
+        return "E"
+    return detect_dataset_type(profile) if profile is not None else None
+
+
+def _months_between(lo, hi) -> int:
+    lo, hi = pd.to_datetime(lo, errors="coerce"), pd.to_datetime(hi, errors="coerce")
+    if pd.isna(lo) or pd.isna(hi):
+        return 0
+    return (hi.year - lo.year) * 12 + hi.month - lo.month + 1
+
+
+def _intake_ctx(roles_confirmed: dict, profile=None, tables=None) -> dict:
+    """What sufficiency needs to know: the roles present, the dataset type, rows and months of the transaction
+    table, whether the date carries a time of day, and how well each secondary table joins. Taken from the
+    profile when given, else from the internal tables."""
+    tx_name, tx_roles, others = _roles_by_table(roles_confirmed)
+    ctx = {"roles": set(tx_roles), "dtype": _type_from_roles(set(tx_roles), profile), "rows": None, "months": None,
+           "has_time": None, "joins": {}}
+    if profile is not None and len(profile) and tx_name is not None:
+        pt = profile[profile["table"] == tx_name]
+        if len(pt):
+            ctx["rows"] = int(pt["n_rows"].max())
+        dcol = tx_roles.get("date")
+        d = pt[pt["column"] == dcol]
+        if len(d):
+            ctx["months"] = _months_between(d.iloc[0]["min"], d.iloc[0]["max"])
+            ctx["has_time"] = "datetime" in list(d.iloc[0]["patterns"])
+        for role in JOIN_ROLES:
+            for tname, rmap in others.items():
+                if role in rmap and "entity" in rmap:
+                    # coverage = share of the transaction table's entity values found in the master table's id
+                    j = pt[pt["column"] == tx_roles.get("entity")]
+                    jm = j.iloc[0]["join_match"] if len(j) else None
+                    ok = isinstance(jm, dict) and str(jm["with"]).startswith(f"{tname}.")
+                    ctx["joins"][role] = (tname, float(jm["normalized"]) if ok else 0.0)
+    elif tables is not None and "transactions" in tables:
+        tx = tables["transactions"]
+        ctx["rows"] = int(len(tx))
+        if "ts" in tx.columns:
+            ts = pd.to_datetime(tx["ts"], errors="coerce").dropna()
+            if len(ts):
+                ctx["months"] = _months_between(ts.min(), ts.max())
+                ctx["has_time"] = bool((ts != ts.dt.normalize()).any())
+    return ctx
+
+
+def _missing_text(miss: list) -> str:
+    return " / ".join(f"{r} ({ROLE_TEXT.get(r, r)})" for r in miss)
+
+
+def _check_state(cid: str, ctx: dict, lib: dict) -> tuple:
+    """(runnable, Thai reason, missing, kind) of one check for one risk. kind: role / type / time."""
+    spec = CHECKS[cid]
+    miss = [r for r in spec["requires"] if r not in ctx["roles"]]
+    if miss:
+        return (False, f"ไม่มีบทบาทคอลัมน์ {_missing_text(miss)} ซึ่งการ์ดนี้ต้องใช้ จึงรันไม่ได้ — แก้โดยกำหนดบทบาท "
+                       f"{', '.join(miss)} ให้คอลัมน์ในไฟล์ที่จุดยืนยัน 1 แล้วรันใหม่", ", ".join(miss), "role")
+    dt = ctx["dtype"]
+    if dt is not None and (dt not in spec["data_types"] or dt not in lib["data_types"]):
+        want = "/".join(TYPE_TEXT[t] for t in (set(spec["data_types"]) & set(lib["data_types"]) or spec["data_types"]))
+        return (False, f"การ์ดนี้ใช้กับข้อมูลประเภท{want} แต่ข้อมูลนี้เป็นประเภท{TYPE_TEXT[dt]} "
+                       f"(คอลัมน์ที่มีไม่ใช่ข้อมูลที่การ์ดนี้ออกแบบมา) จึงรันไม่ได้ — ต้องขอข้อมูลประเภทที่ตรงกับความเสี่ยงนี้เพิ่ม",
+                "ประเภทข้อมูล", "type")
+    if cid in NEEDS_TIME_CHECKS and ctx["has_time"] is False:
+        return (False, "คอลัมน์วันที่มีเฉพาะวัน ไม่มีเวลาของรายการ ซึ่งการ์ดนี้ต้องใช้ดูรายการนอกเวลาทำการ จึงรันไม่ได้ "
+                       "— ขอข้อมูลที่มีเวลาของรายการเพิ่ม", "เวลาของรายการ", "time")
+    return True, "มีบทบาทคอลัมน์ที่ต้องใช้ครบ", "-", ""
+
+
+def _assess_one(rid: str, ctx: dict) -> dict:
+    lib = RISK_LIBRARY[rid]
+    run, skipped, kinds = [], {}, []
+    for cid in lib["checks"]:
+        ok, reason, _, kind = _check_state(cid, ctx, lib)
+        if ok:
+            run.append(cid)
+        else:
+            skipped[cid] = reason
+            kinds.append((kind, cid))
+    reasons, req = [], []
+
+    def ask(t):
+        if t and t not in req:
+            req.append(t)
+    miss_roles = [r for r in lib["min_roles"] if r not in ctx["roles"]]
+    short = False
+    md = lib["min_data"]
+    if ctx["rows"] is not None and ctx["rows"] < md["rows"]:
+        short = True
+        reasons.append(f"มีข้อมูล {ctx['rows']:,} รายการ น้อยกว่าขั้นต่ำ {md['rows']:,} รายการของความเสี่ยงนี้")
+        ask(f"ข้อมูลเพิ่มอย่างน้อย {md['rows']:,} รายการ")
+    if ctx["months"] is not None and ctx["months"] < md["months"]:
+        short = True
+        reasons.append(f"ข้อมูลครอบคลุม {ctx['months']} เดือน น้อยกว่าขั้นต่ำ {md['months']} เดือน")
+        ask(f"ข้อมูลย้อนหลังให้ครอบคลุมอย่างน้อย {md['months']} เดือน")
+    if miss_roles:
+        reasons.append(f"ขาดบทบาทคอลัมน์ {_missing_text(miss_roles)}")
+        for r in miss_roles:
+            ask(lib["request_if_missing"].get(r) or f"คอลัมน์{ROLE_TEXT.get(r, r)} (บทบาท {r}) ของรายการ")
+    if not run or miss_roles or short:
+        status = "ไม่พอ"
+    elif skipped:
+        status = "บางส่วน"
+    else:
+        status = "พร้อม"
+    for kind, cid in kinds:
+        if kind == "type":
+            ask(lib["request_if_missing"].get("_data_type") or
+                f"ข้อมูลประเภท{'/'.join(TYPE_TEXT[t] for t in lib['data_types'])}ที่ตรงกับความเสี่ยงนี้")
+        elif kind == "time":
+            ask(lib["request_if_missing"].get("_time") or REQ_TIME)
+        elif kind == "role":
+            for r in [r for r in CHECKS[cid]["requires"] if r not in ctx["roles"]]:
+                ask(lib["request_if_missing"].get(r) or f"คอลัมน์{ROLE_TEXT.get(r, r)} (บทบาท {r}) ของรายการ")
+    for role in lib["join_roles"]:
+        if role in ctx["joins"] and ctx["joins"][role][1] < JOIN_OK_PCT and run:
+            tname, rate = ctx["joins"][role]
+            reasons.append(f"บทบาท {role} อยู่ในตาราง {tname} ซึ่งเชื่อมกับรายการได้เพียง {rate:.1f}% ของรหัส "
+                           f"(ต่ำกว่า {JOIN_OK_PCT:.0f}%) ผลที่ใช้ {role} จึงอาจไม่ครบ — ตรวจรูปแบบรหัสบัญชีของสองตาราง")
+            if status == "พร้อม":
+                status = "บางส่วน"
+    if status == "บางส่วน" and skipped:
+        reasons.append(f"รันได้ {len(run)} จาก {len(lib['checks'])} การ์ด")
+    if status == "ไม่พอ" and not reasons:
+        reasons.append("ไม่มีการ์ดใดรันได้กับข้อมูลนี้: " + "; ".join(skipped.values()))
+    if status == "พร้อม":
+        reasons.append("มีบทบาทคอลัมน์และปริมาณข้อมูลตามที่ความเสี่ยงนี้ต้องใช้")
+    return {"status": status, "run": run, "skipped": skipped, "request": req, "reason": " | ".join(reasons)}
+
+
+def assess_sufficiency(risk_ids: list, roles_confirmed: dict, profile: pd.DataFrame, cfg: dict = None) -> pd.DataFrame:
+    """Is the data enough for each requested risk? status: พร้อม (all checks can run) / บางส่วน (some checks skipped,
+    or a joined table such as opened_at matches under JOIN_OK_PCT) / ไม่พอ (no check can run, a minimum role or
+    minimum data is missing, or the data type is not the one the risk needs). data_request lists what to ask for.
+    `roles_confirmed` is {table: {column: role}}; `profile` is profile_columns output."""
+    ctx = _intake_ctx(roles_confirmed, profile)
+    rows = []
+    for rid in risk_ids:
+        if rid not in RISK_LIBRARY:
+            continue
+        a = _assess_one(rid, ctx)
+        rows.append((rid, a["status"], a["run"], a["skipped"], a["request"], a["reason"]))
+    return pd.DataFrame(rows, columns=["risk_id", "status", "runnable_checks", "skipped_checks", "data_request",
+                                       "reason"])
+
+
+def plan(risk_ids: list, roles_confirmed: dict, profile: pd.DataFrame, cfg: dict = None) -> pd.DataFrame:
+    """Run / Skip per check for the confirmed risks (replaces gate_capability for C1 runs): check_id, decision,
+    reason, missing. A check runs when any requested risk can run it; a Skip reason is Thai and says what is missing."""
+    ctx = _intake_ctx(roles_confirmed, profile)
+    rows = {}
+    for rid in risk_ids:
+        if rid not in RISK_LIBRARY:
+            continue
+        a = _assess_one(rid, ctx)
+        for cid in RISK_LIBRARY[rid]["checks"]:
+            if rows.get(cid, ("",))[0] == "Run":
+                continue
+            if cid in a["run"] and a["status"] != "ไม่พอ":
+                note = "มีบทบาทคอลัมน์ที่ต้องใช้ครบและปริมาณข้อมูลผ่านเกณฑ์"
+                for role in CHECKS[cid]["optional"]:
+                    if role in ctx["joins"] and ctx["joins"][role][1] < JOIN_OK_PCT:
+                        note += f" (แต่ {role} เชื่อมกับรายการได้เพียง {ctx['joins'][role][1]:.1f}%)"
+                rows[cid] = ("Run", note, "-")
+            elif cid in a["skipped"]:
+                rows[cid] = ("Skip", a["skipped"][cid], _check_state(cid, ctx, RISK_LIBRARY[rid])[2])
+            else:
+                rows[cid] = ("Skip", f"ความเสี่ยง {rid} ข้อมูลไม่พอ: {a['reason']}", "ปริมาณข้อมูลไม่พอ")
+    return pd.DataFrame([(c, *v) for c, v in rows.items()], columns=["check_id", "decision", "reason", "missing"])
+
+
+def suggest_risks(requested_ids: list, roles_confirmed: dict, tables: dict, cfg: dict) -> pd.DataFrame:
+    """Risks in the library that the data supports (status พร้อม or บางส่วน) and that were not requested, each with
+    `preview` = the number of distinct entities its checks flag, counted by actually running the checks on `tables`
+    (internal columns). Risks with preview 0 are not suggested. Sorted by preview desc, then risk_id."""
+    ctx = _intake_ctx(roles_confirmed, None, tables)
+    ask = set(requested_ids or [])
+    out = []
+    for rid, lib in RISK_LIBRARY.items():
+        if rid in ask:
+            continue
+        a = _assess_one(rid, ctx)
+        if a["status"] == "ไม่พอ":
+            continue
+        seen, hit = set(), []
+        for cid in a["run"]:
+            try:
+                ev = CHECKS[cid]["func"](dict(tables), cfg)
+            except Exception:  # a check that cannot run on this data adds nothing to the preview
+                continue
+            pairs = {(str(t), str(i)) for t, i in zip(ev["entity_type"], ev["entity_id"])} if len(ev) else set()
+            if pairs:
+                hit.append(cid)
+            seen |= pairs
+        if seen:
+            out.append((rid, lib["name_th"],
+                        f"ข้อมูลรองรับความเสี่ยงนี้และยังไม่ได้ขอ — การ์ด {', '.join(hit)} พบ {len(seen):,} รายการ/กลุ่มที่"
+                        f"สอดคล้องกับ pattern นี้เบื้องต้น (ยังไม่ใช่ข้อสรุป ควรตรวจสอบเพิ่มเติม)", len(seen)))
+    df = pd.DataFrame(out, columns=["risk_id", "name_th", "why_th", "preview"])
+    return df.sort_values(["preview", "risk_id"], ascending=[False, True], kind="mergesort").reset_index(drop=True)
