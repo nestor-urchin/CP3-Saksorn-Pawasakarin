@@ -1,0 +1,13 @@
+{
+  "payments": {
+    "payment_id": "record_id",
+    "pay_date": "date",
+    "amount": "amount",
+    "vendor_id": "entity",
+    "invoice_no": "document_no",
+    "created_by": "created_by",
+    "approved_by": "approved_by",
+    "approval_limit": "limit",
+    "category": "category"
+  }
+}

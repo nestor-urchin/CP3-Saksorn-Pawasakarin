@@ -1,0 +1,16 @@
+{
+  "transactions": {
+    "TRN_NO": "record_id",
+    "TRN_DT": "date",
+    "ACC_FR": "entity",
+    "ACC_TO": "counterparty",
+    "AMT_X1": "amount",
+    "CHNL": "channel",
+    "CCY": "custom:currency"
+  },
+  "accounts": {
+    "ACC_ID": "entity",
+    "OPN_DT": "opened_at",
+    "ACC_TY": "custom:account_type"
+  }
+}

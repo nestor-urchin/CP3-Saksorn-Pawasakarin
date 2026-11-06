@@ -1,0 +1,17 @@
+{
+  "payments": {
+    "COL1": "record_id",
+    "COL2": "date",
+    "AMT_X1": "amount",
+    "COL4": "entity",
+    "COL5": "counterparty",
+    "COL6": "contract",
+    "COL7": "due_date",
+    "STS": "custom:status"
+  },
+  "contracts": {
+    "COL4": "entity",
+    "COL9": "opened_at",
+    "COL10": "custom:product"
+  }
+}

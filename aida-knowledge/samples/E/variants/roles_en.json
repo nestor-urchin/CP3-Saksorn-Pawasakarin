@@ -1,0 +1,16 @@
+{
+  "transactions": {
+    "tx_id": "record_id",
+    "ts": "date",
+    "from_acct": "entity",
+    "to_acct": "counterparty",
+    "amount": "amount",
+    "channel": "channel",
+    "currency": "custom:currency"
+  },
+  "accounts": {
+    "acct_id": "entity",
+    "opened_at": "opened_at",
+    "account_type": "custom:account_type"
+  }
+}

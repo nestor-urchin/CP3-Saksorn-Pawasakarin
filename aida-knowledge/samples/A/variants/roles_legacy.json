@@ -1,0 +1,13 @@
+{
+  "payments": {
+    "F01": "record_id",
+    "F02": "date",
+    "AMT_X1": "amount",
+    "F04": "entity",
+    "F05": "document_no",
+    "USR_A": "created_by",
+    "USR_B": "approved_by",
+    "LMT": "limit",
+    "COL3": "category"
+  }
+}

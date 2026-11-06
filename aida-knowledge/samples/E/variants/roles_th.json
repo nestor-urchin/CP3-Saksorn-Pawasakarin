@@ -1,0 +1,16 @@
+{
+  "transactions": {
+    "รหัสรายการ": "record_id",
+    "วันเวลาทำรายการ": "date",
+    "บัญชีต้นทาง": "entity",
+    "บัญชีปลายทาง": "counterparty",
+    "จำนวนเงิน": "amount",
+    "ช่องทาง": "channel",
+    "สกุลเงิน": "custom:currency"
+  },
+  "accounts": {
+    "เลขที่บัญชี": "entity",
+    "วันที่เปิดบัญชี": "opened_at",
+    "ประเภทบัญชี": "custom:account_type"
+  }
+}

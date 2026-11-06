@@ -1,0 +1,111 @@
+{
+  "recipes": {
+    "GEN-CONC": [
+      "V-077"
+    ],
+    "GEN-PERIOD-END": [
+      "V-150"
+    ],
+    "DUP-PAY": [
+      "V-031"
+    ],
+    "SPLIT-LIMIT": [
+      "V-045"
+    ],
+    "FOR-BENFORD": [
+      "V-099"
+    ],
+    "FOR-ROUND": [
+      "V-120"
+    ],
+    "FOR-REPEAT": [
+      "V-045"
+    ],
+    "SOD-SAME-USER": [
+      "U017"
+    ]
+  },
+  "findings": [
+    {
+      "entity_type": "document",
+      "entity_id": "INV-7781",
+      "risk": "A-R1",
+      "period": "2026-04"
+    },
+    {
+      "entity_type": "vendor",
+      "entity_id": "V-045",
+      "risk": "A-R2",
+      "period": "2026-06"
+    },
+    {
+      "entity_type": "user",
+      "entity_id": "U017",
+      "risk": "A-R3",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "vendor",
+      "entity_id": "V-077",
+      "risk": "A-R4",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "vendor",
+      "entity_id": "V-099",
+      "risk": "G-R4",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "vendor",
+      "entity_id": "V-120",
+      "risk": "G-R4",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "vendor",
+      "entity_id": "V-150",
+      "risk": "G-R2",
+      "period": "2026-08"
+    }
+  ],
+  "concern_risks": [
+    "A-R1",
+    "A-R2"
+  ],
+  "intake": {
+    "sufficiency": {
+      "A-R1": "พร้อม",
+      "A-R2": "พร้อม"
+    },
+    "data_request": [],
+    "suggested_risks": [
+      "A-R3",
+      "A-R4",
+      "G-R2",
+      "G-R4"
+    ],
+    "description_conflicts": []
+  },
+  "conventions": {
+    "entities": "DUP-PAY and SPLIT-LIMIT / FOR-* / GEN-* name the vendor (vendor_id); SOD-SAME-USER the user (created_by = approved_by); the duplicate finding is keyed by invoice number",
+    "period": "findings of a pattern over several periods carry the latest period of the data, 2026-08; INV-7781 carries 2026-04 and the split payments 2026-06",
+    "DUP-PAY": "V-031 only: same vendor, invoice and amount within DUP.WINDOW_DAYS. V-045's 3 x 48,000 have the same vendor and amount within the window but different invoice numbers (not a duplicate)",
+    "FOR-ROUND": "V-120: 40 of 40 payments round. V-045 has 3 round payments of about 50 (6 %)",
+    "FOR-BENFORD": "V-099 is the only vendor with >= FOR.BENFORD.MIN_N (1,000) payments; the whole file is within the acceptable MAD (< 0.012)",
+    "suggested_risks": "library risks the data supports (roles present) and that have a planted case, minus the two the auditor asked for: A-R3, A-R4, G-R2, G-R4. G-R3 would need time of day (date only), G-R1 has no planted case"
+  },
+  "tables": {
+    "payments": [
+      "payment_id",
+      "pay_date",
+      "amount",
+      "vendor_id",
+      "invoice_no",
+      "created_by",
+      "approved_by",
+      "approval_limit",
+      "category"
+    ]
+  }
+}

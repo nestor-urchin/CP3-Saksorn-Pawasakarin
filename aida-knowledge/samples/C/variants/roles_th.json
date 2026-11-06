@@ -1,0 +1,17 @@
+{
+  "payments": {
+    "รหัสรายการชำระ": "record_id",
+    "วันที่ชำระ": "date",
+    "ยอดชำระ": "amount",
+    "รหัสผู้กู้": "entity",
+    "รหัสผู้ชำระ": "counterparty",
+    "เลขที่สัญญา": "contract",
+    "วันครบกำหนด": "due_date",
+    "สถานะ": "custom:status"
+  },
+  "contracts": {
+    "รหัสผู้กู้": "entity",
+    "วันที่ทำสัญญา": "opened_at",
+    "ประเภทสินเชื่อ": "custom:product"
+  }
+}

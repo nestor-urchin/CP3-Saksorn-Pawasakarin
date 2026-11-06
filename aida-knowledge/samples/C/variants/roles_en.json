@@ -1,0 +1,17 @@
+{
+  "payments": {
+    "payment_id": "record_id",
+    "pay_date": "date",
+    "pay_amount": "amount",
+    "borrower_id": "entity",
+    "payer_id": "counterparty",
+    "contract_id": "contract",
+    "due_date": "due_date",
+    "status": "custom:status"
+  },
+  "contracts": {
+    "borrower_id": "entity",
+    "opened_at": "opened_at",
+    "product": "custom:product"
+  }
+}
