@@ -374,6 +374,28 @@ class RealPackTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("build_risk_library_md", errors[0])
 
+    def test_registry_v13_keys_documented(self):
+        """Every LIFE.* and FUND.* key (the engine's and the C2 list) is in both the AIDA-14 table and Machine Config."""
+        reg = self.k / vp.REGISTRY_NAME
+        table, errors = vp.parse_registry(reg)
+        self.assertEqual(errors, [])
+        config, errors = vp.parse_machine_config(reg)
+        self.assertEqual(errors, [])
+        c2 = {"LIFE.EARLY_SURR.MONTHS", "LIFE.BENCHG_CASH.WINDOW_DAYS", "LIFE.LOAN.NEAR_PCT", "LIFE.LOAN.MIN_COUNT",
+              "LIFE.LOAN.COUNT_MONTHS", "LIFE.LOAN_SURR.WINDOW_DAYS", "LIFE.PAYEE.MIN_POLICIES",
+              "LIFE.BENEF.MIN_POLICIES", "LIFE.BENCHG.MIN_COUNT", "LIFE.BENCHG.COUNT_MONTHS", "FUND.ROUNDTRIP.DAYS",
+              "FUND.ROUNDTRIP.AMOUNT_BAND", "FUND.SHARED_ACCT.MIN_HOLDERS", "FUND.FREQ.MIN_TX_MONTH",
+              "FUND.CHURN.MIN_CLIENT_SHARE", "FUND.CHURN.MIN_CLIENTS", "FUND.CUTOFF_TIME"}
+        prefixed = lambda keys: {k for k in keys if k.startswith(("LIFE.", "FUND."))}
+        engine_keys = prefixed(vp.engine_cfg_keys(self.engine))
+        self.assertTrue(engine_keys, "the engine reads no LIFE.* / FUND.* key")
+        everything = c2 | engine_keys | prefixed(table) | prefixed(config)
+        self.assertEqual(everything - set(table), set(), "missing from the AIDA-14 table")
+        self.assertEqual(everything - set(config), set(), "missing from the Machine Config")
+        self.assertEqual(table["REGISTRY.VERSION"], "1.3")
+        self.assertEqual(config["FUND.CUTOFF_TIME"], "15:30")
+        self.assertEqual(config["FUND.ROUNDTRIP.AMOUNT_BAND"], {"low": 0.8, "high": 1.2})
+
     def test_risk_references_checks_and_roles(self):
         mod = vp.load_engine(self.engine)
         self.assertEqual(vp.check_risk_references(mod.RISK_LIBRARY, mod.CHECKS), [])
