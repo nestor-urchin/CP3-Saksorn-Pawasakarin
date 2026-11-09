@@ -230,6 +230,17 @@ class Boundaries(unittest.TestCase):
         self.assertEqual(len(call("FUND-CHURN", self._churn_tables(17, 5))[0]), 0)   # 29.4%
         self.assertEqual(len(call("FUND-CHURN", self._churn_tables(20, 6))[0]), 1)   # exactly 30%
 
+    def test_churn_multi_agent_attribution(self):
+        tx, n = [], 0
+        for c in range(5):  # 1 trade each with AG-Y in January, then 6 trades each with AG-X in July
+            n += 1
+            tx.append(row(n, f"U-{c}", "2026-01-05", "B", agent="AG-Y"))
+            for d in range(1, 7):
+                n += 1
+                tx.append(row(n, f"U-{c}", f"2026-07-{d:02d}", "B", agent="AG-X"))
+        ev, _ = call("FUND-CHURN", mk(tx))
+        self.assertEqual(list(ev["entity_id"]), ["AG-X"])
+
     def test_churn_period_is_the_month_of_frequent_clients(self):
         ev, _ = call("FUND-CHURN", self._churn_tables(10, 5))
         self.assertEqual(ev["period"].iloc[0], "2026-03")
@@ -330,6 +341,22 @@ class SufficiencyDateOnly(unittest.TestCase):
         self.assertEqual(r["status"], conv["sufficiency"]["F-R6"])
         self.assertEqual(list(r["data_request"]), conv["data_request"])
         self.assertIn("FUND-LATE-TRADE", r["skipped_checks"])
+
+    def test_date_only_plan_reason_names_cutoff_not_offhours(self):
+        _, key = sample()
+        d = ROOT / "samples" / "F"
+        roles = json.loads((d / "variants" / "roles_en.json").read_text(encoding="utf-8"))
+        frames = {t: pd.read_csv(d / "variants" / "date_only" / f"{t}.csv", dtype=str, keep_default_na=False) for t in roles}
+        e = engine()
+        pl = e.plan(["F-R6", "G-R3"], roles, e.profile_columns(frames), cfg()).set_index("check_id")
+        self.assertIn("หลังเวลาตัดรอบ", pl.loc["FUND-LATE-TRADE", "reason"])
+        self.assertNotIn("นอกเวลาทำการ", pl.loc["FUND-LATE-TRADE", "reason"])
+        self.assertIn("นอกเวลาทำการ", pl.loc["TEMP-OFFHOURS", "reason"])
+
+    def test_time_partial_is_a_library_attribute(self):
+        lib = engine().RISK_LIBRARY
+        self.assertTrue(lib["F-R6"]["time_partial"])
+        self.assertFalse(any(v.get("time_partial") for k, v in lib.items() if k != "F-R6"))
 
     def test_with_time_f_r6_ready(self):
         _, key = sample()

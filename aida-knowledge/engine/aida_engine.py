@@ -3024,14 +3024,19 @@ def fund_churn(tables: dict, cfg: dict) -> pd.DataFrame:
     counted = _fund_count_rows(tables, rid)
     if counted is None:
         return empty
-    hits = _freq_hits(counted, cfg["FUND.FREQ.MIN_TX_MONTH"])
+    # a client counts as frequent for an agent in a month only when that agent's OWN counted rows of the client reach
+    # FUND.FREQ.MIN_TX_MONTH that month (trades made through another agent are not credited to this one)
+    counted = counted[counted["channel"].notna() & (counted["channel"].astype(str).str.strip() != "")]
+    counted = counted.assign(_a=counted["channel"].astype(str).str.strip())
+    own = counted.groupby(["_a", "_e", "period"], sort=True).agg(n=("tx_id", "size"), refs=("tx_id", list)).reset_index()
+    own = own[own["n"] >= cfg["FUND.FREQ.MIN_TX_MONTH"]]
     all_tx = _fund_tx(tables)
     all_tx = all_tx[all_tx["_e"].notna() & all_tx["channel"].notna() & (all_tx["channel"].astype(str).str.strip() != "")]
     all_tx = all_tx.assign(_a=all_tx["channel"].astype(str).str.strip())
     found = []
     for agent, g in all_tx.groupby("_a", sort=True):
         clients = set(g["_e"])
-        for per, h in hits[hits["_e"].isin(clients)].groupby("period", sort=True):
+        for per, h in own[own["_a"] == agent].groupby("period", sort=True):
             n = h["_e"].nunique()
             share = n / len(clients)
             if n >= nmin and share >= smin - EPS:
@@ -3218,7 +3223,7 @@ TYPE_TEXT = {"E": "รายการโอนเงินระหว่าง�
              "L": "รายการกรมธรรม์ประกันชีวิต", "F": "ธุรกรรมกองทุนรวมของผู้ถือหน่วย"}
 REQ_TRANSFERS = ("รายการเงินฝากและโอนเงินของบัญชีผู้ชำระ (รหัสรายการ, วันเวลา, บัญชีต้นทาง, บัญชีปลายทาง, ยอดเงิน) "
                  "เพื่อดูการรับโอนและส่งต่อเงิน")
-TIME_PARTIAL_RISKS = {"F-R6"}  # risks whose only check needs the time of day: no time gives บางส่วน (🟡) + Data Request
+TIME_USE = {"FUND-LATE-TRADE": "ดูคำสั่งที่ทำหลังเวลาตัดรอบ"}  # what a check needs the time of day for; default is the off-hours wording
 REQ_TIME = "วันที่ของรายการที่มีเวลา (ชั่วโมง:นาที) เพื่อดูรายการนอกเวลาทำการ"
 _B1 = ["record_id", "date", "amount", "entity", "counterparty"]
 _GENR = ["record_id", "date", "amount", "entity"]
@@ -3395,7 +3400,7 @@ RISK_LIBRARY = {
                   ["ทำรายการหลังเวลาตัดรอบ", "หลังเวลาตัดรอบ", "เลยเวลาตัดรอบ", "หลังตัดรอบ", "after cut-off", "after cutoff",
                    "late trading", "late trade", "after the cut-off time"],
                   ["F"], ["FUND-LATE-TRADE"], ["record_id", "date", "entity", "due_date"], 1, 30,
-                  {"due_date": REQ_NAV_DATE, "_time": REQ_FUND_TIME}),
+                  {"due_date": REQ_NAV_DATE, "_time": REQ_FUND_TIME}) | {"time_partial": True},  # no time of day: บางส่วน + Data Request
 }
 
 
@@ -3555,7 +3560,7 @@ def _check_state(cid: str, ctx: dict, lib: dict) -> tuple:
                        f"(คอลัมน์ที่มีไม่ใช่ข้อมูลที่การ์ดนี้ออกแบบมา) จึงรันไม่ได้ — ต้องขอข้อมูลประเภทที่ตรงกับความเสี่ยงนี้เพิ่ม",
                 "ประเภทข้อมูล", "type")
     if cid in NEEDS_TIME_CHECKS and ctx["has_time"] is False:
-        return (False, "คอลัมน์วันที่มีเฉพาะวัน ไม่มีเวลาของรายการ ซึ่งการ์ดนี้ต้องใช้ดูรายการนอกเวลาทำการ จึงรันไม่ได้ "
+        return (False, "คอลัมน์วันที่มีเฉพาะวัน ไม่มีเวลาของรายการ ซึ่งการ์ดนี้ต้องใช้" + TIME_USE.get(cid, "ดูรายการนอกเวลาทำการ") + " จึงรันไม่ได้ "
                        "— ขอข้อมูลที่มีเวลาของรายการเพิ่ม", "เวลาของรายการ", "time")
     if cid in ctx["vol"]:
         return False, ctx["vol"][cid], "ปริมาณข้อมูลไม่พอ", "volume"
@@ -3592,7 +3597,7 @@ def _assess_one(rid: str, ctx: dict) -> dict:
         reasons.append(f"ขาดบทบาทคอลัมน์ {_missing_text(miss_roles)}")
         for r in miss_roles:
             ask(lib["request_if_missing"].get(r) or f"คอลัมน์{ROLE_TEXT.get(r, r)} (บทบาท {r}) ของรายการ")
-    time_only = bool(kinds) and all(k == "time" for k, _ in kinds) and rid in TIME_PARTIAL_RISKS
+    time_only = bool(kinds) and all(k == "time" for k, _ in kinds) and lib.get("time_partial", False)
     if time_only and not run and not miss_roles and not short:
         status = "บางส่วน"  # only the time of day is missing: spec 5.2 gives 🟡 plus a Data Request, not ไม่พอ
         reasons.append("ข้อมูลมีเฉพาะวันที่ ไม่มีเวลาของคำสั่ง จึงยังตัดสินรายการหลังเวลาตัดรอบไม่ได้ — ขอข้อมูลที่มีเวลาของคำสั่ง")
