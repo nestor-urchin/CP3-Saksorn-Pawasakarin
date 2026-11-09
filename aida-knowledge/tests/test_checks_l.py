@@ -262,6 +262,70 @@ class Boundaries(unittest.TestCase):
         self.assertEqual(set(call("LIFE-STAFF-CONC", mk(two))["entity_id"]), {"S-1", "S-2"})  # HHI 5,000 > high
 
 
+class Fixes(unittest.TestCase):
+    def test_benchg_cash_runs_with_two_money_codes_and_notes_missing(self):
+        e = engine()
+        tables, key = sample()
+        cv = {k: v for k, v in key["code_values"]["policy_txn.txn_type"].items() if k != "CLM"}
+        tables["meta"]["code_values"] = {"policy_txn.txn_type": cv}
+        plan = e.plan_checks(tables, cfg()).set_index("recipe_id")
+        self.assertEqual(plan.loc["LIFE-BENCHG-CASH", "decision"], "Run")
+        ev = e.CHECKS["LIFE-BENCHG-CASH"]["func"](tables, cfg())
+        self.assertIn("P-0202", set(ev["entity_id"]))
+        self.assertIn("claim", " ".join(n["detail"] for n in tables["_out"]["notes"]))
+
+    def test_benchg_cash_skips_with_no_money_code(self):
+        e = engine()
+        tables, _ = sample()
+        tables["meta"]["code_values"] = {"policy_txn.txn_type": {}}
+        plan = e.plan_checks(tables, cfg()).set_index("recipe_id")
+        self.assertEqual(plan.loc["LIFE-BENCHG-CASH", "decision"], "Skip")
+
+    def test_staff_conc_counts_benefit_change_rows_without_events(self):
+        codes = {**CODES, "B": "เปลี่ยนผู้รับผลประโยชน์"}
+        tx = [row(i, f"P-{i}", "2026-01-10", "S", staff=f"S-{i}") for i in range(1, 11)] \
+            + [row(100 + i, f"P-{i}", "2026-02-10", "B", staff="S-9") for i in range(1, 8)]
+        got = call("LIFE-STAFF-CONC", mk(tx, codes=codes))
+        self.assertEqual(list(got["entity_id"]), ["S-9"])  # 8 of 17 records
+        self.assertEqual(got["period"].iloc[0], "2026-02")
+
+    def test_staff_conc_without_changes_source_notes_surrenders_only(self):
+        t = mk([row(1, "P-1", "2026-01-10", "S", staff="S-1")])
+        call("LIFE-STAFF-CONC", t)
+        self.assertIn("เฉพาะรายการเวนคืน", " ".join(n["detail"] for n in t["_out"]["notes"]))
+
+    def test_staff_conc_events_without_created_by_notes(self):
+        t = mk([row(1, "P-1", "2026-01-10", "S", staff="S-1")], events=[("E1", "P-1", "2026-01-01", "B-1", None)])
+        t["events"] = t["events"].drop(columns="created_by")
+        call("LIFE-STAFF-CONC", t)
+        self.assertIn("created_by", " ".join(n["detail"] for n in t["_out"]["notes"]))
+
+    def test_staff_conc_no_double_count_with_events(self):
+        codes = {**CODES, "B": "เปลี่ยนผู้รับผลประโยชน์"}
+        tx = [row(1, "P-1", "2026-01-10", "B", staff="S-9")]
+        t = mk(tx + [row(2, "P-2", "2026-01-10", "S", staff="S-1")], events=[("E1", "P-1", "2026-01-01", "B-1", "S-1")], codes=codes)
+        got = call("LIFE-STAFF-CONC", t)
+        self.assertNotIn("S-9", set(got["entity_id"]))
+
+    def test_benef_unknown_insured_skipped_with_note(self):
+        ev = [(f"E{i}", f"P-{i}", "2026-01-10", "B-7", "S-1") for i in range(1, 4)]
+        t = mk([], events=ev)
+        self.assertEqual(len(call("LIFE-BENEF-MULTI", t)), 0)
+        self.assertTrue(t["_out"]["notes"])
+
+    def test_benef_master_insured_wins_over_transactions(self):
+        ev = [(f"E{i}", f"P-{i}", "2026-01-10", "B-7", "S-1") for i in range(1, 4)]
+        tx = [row(i, f"P-{i}", "2026-06-10", "S", ins="I-1") for i in range(1, 4)]
+        acc = [(f"P-{i}", f"I-{i}", "2020-01-01", "periodic") for i in range(1, 4)]
+        self.assertEqual(list(call("LIFE-BENEF-MULTI", mk(tx, acc, ev))["entity_id"]), ["B-7"])
+
+    def test_loan_same_day_surrender_before_loan_not_counted(self):
+        tx = [row(1, "P-1", "2026-03-01 15:00", "L"), row(2, "P-1", "2026-03-01 09:00", "S")]
+        self.assertEqual(len(call("LIFE-LOAN", mk(tx))), 0)
+        tx = [row(1, "P-1", "2026-03-01 09:00", "L"), row(2, "P-1", "2026-03-01 15:00", "S")]
+        self.assertEqual(list(call("LIFE-LOAN", mk(tx))["entity_id"]), ["P-1"])
+
+
 class Guards(unittest.TestCase):
     def test_l_checks_skip_without_codes(self):
         e = engine()

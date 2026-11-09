@@ -2537,6 +2537,18 @@ def _life_skip(tables: dict, recipe_id: str, meanings: list, events: str = "") -
     return bool(reason)
 
 
+MONEY_MEANINGS = ("surrender", "loan", "claim")
+
+
+def _benchg_codes(tables: dict) -> tuple:
+    """(Thai Skip reason or None, confirmed money meanings, unconfirmed money meanings) for LIFE-BENCHG-CASH: it runs when
+    at least one of surrender / loan / claim is confirmed (and, without an event table, benefit_change is)."""
+    miss = missing_codes(tables, list(MONEY_MEANINGS) + ([] if "events" in tables else ["benefit_change"]))
+    have = [m for m in MONEY_MEANINGS if m not in miss]
+    need = list(miss) if not have or "benefit_change" in miss else []
+    return (missing_codes_reason(need) if need else None), have, [m for m in MONEY_MEANINGS if m in miss]
+
+
 def _life_rows(tables: dict, meaning: str, t: pd.DataFrame = None) -> pd.DataFrame:
     """Transactions (date order) whose category code has the confirmed meaning, with the normalised policy key `_k`
     and the day `_day`."""
@@ -2608,8 +2620,13 @@ def life_benchg_cash(tables: dict, cfg: dict) -> pd.DataFrame:
     roles = ["record_id", "date", "contract", "category", "counterparty"]
     empty = _empty_life(rid, "L-R2", "LIFE.BENCHG_CASH.WINDOW_DAYS", cfg, roles)
     # every row of the event table is a beneficiary change; without it, the rows coded benefit_change are
-    if _life_skip(tables, rid, ["surrender", "loan", "claim"] + ([] if has_ev else ["benefit_change"])):
+    reason, have, lacking = _benchg_codes(tables)
+    if reason:
+        card_note(tables, rid, "1.0", reason)
         return empty
+    if lacking:
+        card_note(tables, rid, "1.0", "ยังไม่ได้ยืนยันความหมายรหัส " + ", ".join(lacking) + " จึงนับเฉพาะรายการ "
+                  + ", ".join(have) + " ที่ตามหลังการเปลี่ยนผู้รับผลประโยชน์")
     t = _gen_tx(tables)
     if has_ev:
         ev = tables["events"]
@@ -2621,7 +2638,7 @@ def life_benchg_cash(tables: dict, cfg: dict) -> pd.DataFrame:
         ben = c["to_acct"] if "to_acct" in c.columns else pd.Series(None, index=c.index, dtype="object")
         ch = pd.DataFrame({"_cid": c["tx_id"], "_cts": c["_day"], "_k": c["_k"], "_ben": ben})
     ch = ch.dropna(subset=["_cts", "_k"])
-    money = pd.concat([_life_rows(tables, mn, t).assign(_what=mn) for mn in ("surrender", "loan", "claim")])
+    money = pd.concat([_life_rows(tables, mn, t).assign(_what=mn) for mn in have])
     pair = ch.merge(money, on="_k")
     pair = pair.assign(_d=(pair["_day"] - pair["_cts"]).dt.days)
     pair = pair[(pair["_d"] >= 0) & (pair["_d"] <= win)].sort_values(["ts", "_cts"], kind="mergesort")
@@ -2682,7 +2699,7 @@ def life_loan(tables: dict, cfg: dict) -> pd.DataFrame:
         surr = _life_rows(tables, "surrender")
         pair = loans.merge(surr, on="_k", suffixes=("", "_s"))
         pair = pair.assign(_d=(pair["_day_s"] - pair["_day"]).dt.days)
-        pair = pair[(pair["_d"] >= 0) & (pair["_d"] <= swin)].sort_values(["ts_s", "ts"], kind="mergesort")
+        pair = pair[(pair["_d"] >= 0) & (pair["_d"] <= swin) & (pair["ts_s"] >= pair["ts"])].sort_values(["ts_s", "ts"], kind="mergesort")
         for _, g in pair.groupby("_k", sort=False):
             last = g.iloc[-1]
             pol = str(last["contract"]).strip()
@@ -2753,14 +2770,20 @@ def life_benef_multi(tables: dict, cfg: dict) -> pd.DataFrame:
                        "_k": norm_id(ev["contract"]), "ben": ev["to_acct"]}).dropna(subset=["ben", "_day", "_k"])
     ch["ben"] = ch["ben"].astype(str).str.strip()
     ch = ch[ch["ben"] != ""].sort_values("_day", kind="mergesort")
-    ins = {}  # policy key -> insured, from the policy table, then the transactions
-    acc = tables.get("accounts")
-    if acc is not None and "contract" in acc.columns and "acct_id" in acc.columns:
-        ins.update(dict(zip(norm_id(acc["contract"]), norm_id(acc["acct_id"]))))
+    ins = {}  # policy key -> insured: the transactions first, the policy table (master) wins
     t = tables["transactions"]
     if "contract" in t.columns and "from_acct" in t.columns:
         ins.update(dict(zip(norm_id(t["contract"]), norm_id(t["from_acct"]))))
-    ch["_ins"] = [ins[k] if isinstance(ins.get(k), str) else f"policy:{k}" for k in ch["_k"]]
+    acc = tables.get("accounts")
+    if acc is not None and "contract" in acc.columns and "acct_id" in acc.columns:
+        ins.update(dict(zip(norm_id(acc["contract"]), norm_id(acc["acct_id"]))))
+    ch["_ins"] = [ins[k] if isinstance(ins.get(k), str) else None for k in ch["_k"]]
+    unknown = ch[ch["_ins"].isna()]
+    if len(unknown):
+        ids = sorted(set(unknown["_k"]))
+        card_note(tables, rid, "1.0", f"กรมธรรม์ {len(ids):,} รายการในตารางประวัติไม่มีผู้เอาประกันในตารางรายการหรือตารางกรมธรรม์ "
+                                      f"({_ids_text(ids)}) จึงไม่นับในข้อ (a) ผู้รับผลประโยชน์ซ้ำข้ามผู้เอาประกัน — ตรวจเลขที่กรมธรรม์ให้ตรงกันทั้งสองตาราง")
+    ch = ch[ch["_ins"].notna()]
     hits = {}  # beneficiary -> {"parts", "refs", "day", "value", "thr", "metric"}
 
     def hit(ben, part, refs, day, value, thr, metric):
@@ -2801,6 +2824,16 @@ def life_staff_conc(tables: dict, cfg: dict) -> pd.DataFrame:
     ev = tables.get("events")
     if ev is not None and "created_by" in ev.columns:  # every event-table row is a beneficiary change
         parts.append(pd.DataFrame({"tx_id": ev["tx_id"].astype(str), "ts": _to_dt(ev["ts"]), "created_by": ev["created_by"]}))
+    elif ev is not None:
+        card_note(tables, rid, "1.0", "ตารางประวัติการเปลี่ยนผู้รับผลประโยชน์ไม่มีผู้ทำรายการ (created_by) จึงนับเฉพาะรายการเวนคืน — "
+                                      "ขอประวัติการเปลี่ยนผู้รับผลประโยชน์ที่มีผู้ทำรายการ")
+    elif not missing_codes(tables, ["benefit_change"]):  # no event table: rows coded benefit_change are the changes
+        b = _life_rows(tables, "benefit_change")
+        if "created_by" in b.columns:
+            parts.append(b[["tx_id", "ts", "created_by"]])
+    else:
+        card_note(tables, rid, "1.0", "ไม่มีตารางประวัติการเปลี่ยนผู้รับผลประโยชน์และยังไม่ได้ยืนยันรหัสการเปลี่ยนผู้รับผลประโยชน์ "
+                                      "จึงนับเฉพาะรายการเวนคืน")
     if not parts:
         card_note(tables, rid, "1.0", "ไม่มีผู้บันทึก/ตัวแทน (created_by) ของรายการเวนคืนหรือการเปลี่ยนผู้รับผลประโยชน์ จึงรันไม่ได้ — ขอข้อมูลผู้ทำรายการ")
         return empty
@@ -2889,7 +2922,7 @@ CHECKS = {
                              ["LIFE.EARLY_SURR.MONTHS"], ["L"], ["opened_at"], codes=["surrender"]),
     "LIFE-BENCHG-CASH": _spec(life_benchg_cash, "L-R2", LIFE_FAMILY, ["record_id", "date", "contract", "category"],
                               ["LIFE.BENCHG_CASH.WINDOW_DAYS"], ["L"], ["counterparty"],
-                              codes=["surrender", "loan", "claim"]),
+                              codes=["surrender", "loan", "claim"]),  # any one of them (see _benchg_codes)
     "LIFE-LOAN": _spec(life_loan, "L-R3", LIFE_FAMILY, ["record_id", "date", "amount", "contract", "category", "limit"],
                        ["LIFE.LOAN.NEAR_PCT", "LIFE.LOAN.MIN_COUNT", "LIFE.LOAN.COUNT_MONTHS", "LIFE.LOAN_SURR.WINDOW_DAYS"],
                        ["L"], codes=["loan"]),
@@ -2925,8 +2958,7 @@ def plan_checks(tables: dict, cfg: dict = None) -> pd.DataFrame:
                        "วันที่เปลี่ยน และผู้รับผลประโยชน์) แล้วกำหนดบทบาท record_id, date, contract ให้ตารางนั้นใน Intake Review",
                        "ตารางประวัติการเปลี่ยนผู้รับผลประโยชน์")
             elif spec["codes"] and tables is not None:
-                need = list(spec["codes"]) + (["benefit_change"] if cid == "LIFE-BENCHG-CASH" and "events" not in tables else [])
-                r = require_codes(tables, need)
+                r = _benchg_codes(tables)[0] if cid == "LIFE-BENCHG-CASH" else require_codes(tables, list(spec["codes"]))
                 if r:
                     why = (r, "ความหมายรหัสประเภทรายการ")
             rows.append((cid, "Skip", why[0], why[1]) if why else (cid, "Run", "มีบทบาทคอลัมน์ที่ต้องใช้ครบ", "-"))
