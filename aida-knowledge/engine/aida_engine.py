@@ -2782,8 +2782,7 @@ def life_benef_multi(tables: dict, cfg: dict) -> pd.DataFrame:
     if len(unknown):
         ids = sorted(set(unknown["_k"]))
         card_note(tables, rid, "1.0", f"กรมธรรม์ {len(ids):,} รายการในตารางประวัติไม่มีผู้เอาประกันในตารางรายการหรือตารางกรมธรรม์ "
-                                      f"({_ids_text(ids)}) จึงไม่นับในข้อ (a) ผู้รับผลประโยชน์ซ้ำข้ามผู้เอาประกัน — ตรวจเลขที่กรมธรรม์ให้ตรงกันทั้งสองตาราง")
-    ch = ch[ch["_ins"].notna()]
+                                      f"({_ids_text(ids)}) ตัดออกจากข้อ (a) เท่านั้น (ข้อ (b) ยังนับ) — ตรวจเลขที่กรมธรรม์ให้ตรงกันทั้งสองตาราง")
     hits = {}  # beneficiary -> {"parts", "refs", "day", "value", "thr", "metric"}
 
     def hit(ben, part, refs, day, value, thr, metric):
@@ -2791,7 +2790,7 @@ def life_benef_multi(tables: dict, cfg: dict) -> pd.DataFrame:
         h["parts"].append(part)
         h["refs"] |= set(refs)
         h["day"] = max(h["day"], day)
-    for ben, g in ch.groupby("ben", sort=False):  # (a) one beneficiary on policies of different insured
+    for ben, g in ch[ch["_ins"].notna()].groupby("ben", sort=False):  # (a) one beneficiary on policies of different insured
         n_ins, n_pol = g["_ins"].nunique(), g["_k"].nunique()
         if n_ins >= pmin:
             hit(ben, f"ปรากฏในกรมธรรม์ {n_pol} กรมธรรม์ของผู้เอาประกันต่างกัน {n_ins} ราย ตั้งแต่ LIFE.BENEF.MIN_POLICIES {pmin} ราย",

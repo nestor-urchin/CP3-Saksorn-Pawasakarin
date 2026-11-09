@@ -313,6 +313,13 @@ class Fixes(unittest.TestCase):
         self.assertEqual(len(call("LIFE-BENEF-MULTI", t)), 0)
         self.assertTrue(t["_out"]["notes"])
 
+    def test_benef_multi_rule_b_with_unknown_insured(self):
+        ev = [(f"E{i}", "P-1", f"2026-0{i}-10", f"B-{i}", "S-1") for i in range(1, 4)]
+        t = mk([], events=ev)
+        got = call("LIFE-BENEF-MULTI", t)
+        self.assertEqual(list(got["entity_id"]), ["B-3"])
+        self.assertIn("(a) เท่านั้น", " ".join(n["detail"] for n in t["_out"]["notes"]))
+
     def test_benef_master_insured_wins_over_transactions(self):
         ev = [(f"E{i}", f"P-{i}", "2026-01-10", "B-7", "S-1") for i in range(1, 4)]
         tx = [row(i, f"P-{i}", "2026-06-10", "S", ins="I-1") for i in range(1, 4)]
