@@ -230,7 +230,7 @@ engine `aida_engine.py` v3.1.0 · Registry 1.3 · 27 ความเสี่ย
 - การ์ดรับรอง: LIFE-THIRD-PAYEE
 - บทบาทขั้นต่ำ: `record_id`, `date`, `entity`, `counterparty`, `contract`
 - ข้อมูลขั้นต่ำ: อย่างน้อย 1 เดือน และ 30 รายการ
-- คำที่ใช้จับคู่ Risk Concern: จ่ายเงินเข้าบัญชีบุคคลที่สาม, บุคคลที่สาม, ผู้รับเงินไม่ใช่ผู้เอาประกัน, ผู้รับเงินรายเดียวหลายกรมธรรม์, third-party payee, third party payee, payee not the insured, one payee many policies
+- คำที่ใช้จับคู่ Risk Concern: จ่ายเงินเข้าบัญชีบุคคลที่สาม, บุคคลที่สาม, ผู้รับเงินไม่ใช่ผู้เอาประกัน, ผู้รับเงินรายเดียวหลายกรมธรรม์, บุคคลอื่นที่ไม่ใช่ผู้เอาประกัน, ไม่ใช่ผู้เอาประกัน, บัญชีเดียวที่รับเงินจากหลายกรมธรรม์, third-party payee, third party payee, payee not the insured, one payee many policies
 - ถ้าขาดบทบาท `counterparty` → ขอเพิ่ม: ผู้รับเงิน (payee) ของแต่ละรายการจ่าย
 
 ### L-R5 · ผู้รับผลประโยชน์ซ้ำข้ามกรมธรรม์

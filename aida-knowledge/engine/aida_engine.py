@@ -1522,12 +1522,12 @@ ROLE_SYNONYMS = {
     "record_id": ["id", "txid", "txnid", "trxid", "transactionid", "transactionno", "transactionnumber", "trnno",
                   "trnid", "recordid", "recordno", "paymentid", "payid", "rowid", "รหัสรายการ", "เลขที่รายการ",
                   "เลขรายการ", "รหัสธุรกรรม", "เลขที่ธุรกรรม", "รหัสรายการชำระ", "รหัสรายการจ่าย",
-                  "เลขที่รายการจ่าย", "เลขที่รายการชำระ", "orderid", "changeid", "รหัสคำสั่ง", "เลขที่คำสั่งซื้อขาย"],
+                  "เลขที่รายการจ่าย", "เลขที่รายการชำระ", "orderid", "changeid", "รหัสคำสั่ง", "เลขที่คำสั่งซื้อขาย", "รหัสการเปลี่ยน"],
     "date": ["date", "ts", "dt", "timestamp", "datetime", "txdate", "txndate", "trandate", "trndate", "trndt",
              "transactiondate", "paydate", "paymentdate", "postingdate", "postdate", "txtime", "วันที่", "วันเวลา",
              "วันที่ทำรายการ", "วันที่รายการ", "วันที่ชำระ", "วันที่โอน", "เวลาทำรายการ", "วันเวลาทำรายการ", "วันที่จ่าย",
              "วันที่จ่ายเงิน", "วันที่รับชำระ", "orderdatetime", "orderdate", "changedate", "วันที่คำสั่ง",
-             "วันที่เปลี่ยนผู้รับผลประโยชน์"],
+             "วันที่เปลี่ยนผู้รับผลประโยชน์", "วันที่เปลี่ยน", "วันและเวลา", "วันเวลาที่ทำคำสั่ง"],
     "amount": ["amount", "amt", "value", "txamt", "trnamt", "txnamount", "transactionamount", "paymentamount",
                "payamount", "netamount", "netamt", "ยอดเงิน", "จำนวนเงิน", "ยอด", "ยอดสุทธิ", "ยอดชำระ", "มูลค่า",
                "ยอดโอน"],
@@ -1540,12 +1540,15 @@ ROLE_SYNONYMS = {
     "counterparty": ["toacct", "toaccount", "receiver", "beneficiary", "destacct", "destinationaccount",
                      "accountto", "acctto", "accto", "payer", "payerid", "payor", "counterparty", "cpty",
                      "บัญชีปลายทาง", "บัญชีผู้รับ", "ผู้รับ", "ผู้รับโอน", "ผู้ชำระ", "ผู้ชำระเงิน", "คู่รายการ",
-                     "คู่ค้า", "รหัสผู้ชำระ", "bankaccount", "bankacct", "บัญชีธนาคาร", "บัญชีรับเงิน"],
+                     "คู่ค้า", "รหัสผู้ชำระ", "bankaccount", "bankacct", "บัญชีธนาคาร", "บัญชีรับเงิน",
+                     "ผู้รับเงิน", "ผู้รับผลประโยชน์", "ผู้รับผลประโยชน์ใหม่", "เจ้าของบัญชีรับเงิน", "เจ้าของบัญชีรับจ่ายเงิน",
+                     "เจ้าของบัญชีที่รับ", "เจ้าของบัญชีที่จ่าย"],
     "contract": ["contract", "contractid", "contractno", "loanid", "loanno", "loanaccount", "policy", "policyno",
                  "cardno", "สัญญา", "เลขที่สัญญา", "เลขสัญญา", "กรมธรรม์", "เลขที่กรมธรรม์", "บัตร", "fundcode", "fundid",
                  "กองทุน", "รหัสกองทุน"],
     "category": ["category", "categ", "txtype", "trantype", "transactiontype", "expensetype", "glcode", "หมวด",
-                 "หมวดหมู่", "ประเภท", "ประเภทรายการ", "หมวดค่าใช้จ่าย", "txntype", "premiummode", "งวดชำระเบี้ย"],
+                 "หมวดหมู่", "ประเภท", "ประเภทรายการ", "หมวดค่าใช้จ่าย", "txntype", "premiummode", "งวดชำระเบี้ย",
+                 "วิธีชำระเบี้ย"],
     "channel": ["channel", "chnl", "chan", "branch", "branchcode", "branchid", "brcd", "ช่องทาง", "สาขา",
                 "รหัสสาขา", "agent", "agentcode", "ตัวแทน", "ตัวแทนขาย"],
     "created_by": ["createdby", "creator", "maker", "entryby", "preparedby", "createuser", "crtby", "inputby",
@@ -1558,7 +1561,7 @@ ROLE_SYNONYMS = {
     "limit": ["limit", "creditlimit", "credlimit", "approvallimit", "installment", "instalment",
               "installmentamount", "scheduledamount", "วงเงิน", "ค่างวด", "ยอดค่างวด", "วงเงินอนุมัติ", "cashvalue", "surrendervalue", "มูลค่าเวนคืน", "มูลค่าเงินสด"],
     "due_date": ["duedate", "due", "duedt", "maturitydate", "paymentduedate", "วันครบกำหนด", "วันที่ครบกำหนด",
-                 "กำหนดชำระ", "วันกำหนดชำระ", "navdate", "navdt", "วันที่nav", "วันที่ได้ราคา"],
+                 "กำหนดชำระ", "วันกำหนดชำระ", "navdate", "navdt", "วันที่nav", "วันที่ได้ราคา", "วันที่ได้ราคาnav"],
     "opened_at": ["openedat", "opendate", "openeddate", "opendt", "accountopendate", "วันเปิดบัญชี",
                   "วันที่เปิดบัญชี", "วันเปิด", "วันที่เปิด", "วันที่ทำสัญญา", "issuedate", "policyissuedate",
                   "วันออกกรมธรรม์", "วันที่ออกกรมธรรม์"],
@@ -1666,6 +1669,10 @@ def match_role(text):
 DESC_REL_EN = re.compile(r"\b(?:per|of|for)\b", re.I)  # "amount per invoice": the head is before "per"
 DESC_REL_TH = ("สำหรับ", "ของ", "ต่อ", "ที่")  # Thai relational words; the head noun comes before them
 DESC_WEAK = {"ยอด", "ยอดเงิน", "จำนวนเงิน", "มูลค่า", "amount", "amt", "value"}  # modifiers a named synonym outranks
+# "X เป็น Y" / "X คือ Y": the head X is named first and the copula explains its values ("ผู้รับเงิน เป็นรหัสผู้เอาประกัน")
+DESC_COPULA = re.compile(r"\s(?:เป็น|คือ)")
+DESC_UNIQUE = ("ไม่ซ้ำ", "unique")  # a column described as unique per row is the record id
+DESC_NAV = ("nav", "ได้ราคา")  # a date "on which the order got its NAV price" is the NAV date (due_date), not the order date
 
 
 def _desc_hits(text: str) -> list:
@@ -1691,11 +1698,24 @@ def match_description(text):
     word inside a matched synonym such as "วันที่" or "เลขที่" does not cut it). In the head a bare modifier
     (ยอด, จำนวนเงิน, amount, ...) is weaker than any other synonym ("ยอดวงเงิน" and "limit amount" are limits),
     then the longest synonym wins. A description equal to a synonym, or a head with no synonym, is matched as
-    match_role does on the whole text."""
+    match_role does on the whole text. The head also ends at a copula (" เป็น" / " คือ": "ผู้รับเงิน เป็นรหัสผู้เอาประกัน"
+    is the payee, a counterparty). A description that says the value is unique per row (ไม่ซ้ำ / unique) is the record
+    id, and a date the order got its NAV price on (NAV / ได้ราคา) is the NAV date (due_date), not the order date."""
+    role = _match_description(text)
+    low, norm = str(text).casefold(), _norm_name(text)
+    if any(w in low for w in DESC_UNIQUE):
+        return "record_id"
+    if role == "date" and ("nav" in {t.casefold() for t in _tokens(text)} or any(w in norm for w in DESC_NAV[1:])):
+        return "due_date"
+    return role
+
+
+def _match_description(text):
     role, strength = match_role(text)
     if strength == "exact" or role is None:
         return role
-    head = DESC_REL_EN.split(str(text))[0].strip() or str(text)
+    head = DESC_COPULA.split(str(text))[0].strip() or str(text)
+    head = DESC_REL_EN.split(head)[0].strip() or head
     hits = _desc_hits(head)
     norm = _norm_name(head)
     spans = [(a, a + n) for a, n, _, _ in hits]
@@ -3342,6 +3362,7 @@ RISK_LIBRARY = {
                   "รายการจ่ายที่ผู้รับเงินไม่ใช่ผู้เอาประกัน (เทียบเมื่อรหัสอยู่ในรูปแบบเดียวกัน) หรือผู้รับเงินรายเดียวรับจาก"
                   "กรมธรรม์ของผู้เอาประกันต่างรายตั้งแต่ LIFE.PAYEE.MIN_POLICIES กรมธรรม์",
                   ["จ่ายเงินเข้าบัญชีบุคคลที่สาม", "บุคคลที่สาม", "ผู้รับเงินไม่ใช่ผู้เอาประกัน", "ผู้รับเงินรายเดียวหลายกรมธรรม์",
+                   "บุคคลอื่นที่ไม่ใช่ผู้เอาประกัน", "ไม่ใช่ผู้เอาประกัน", "บัญชีเดียวที่รับเงินจากหลายกรมธรรม์",
                    "third-party payee", "third party payee", "payee not the insured", "one payee many policies"],
                   ["L"], ["LIFE-THIRD-PAYEE"], ["record_id", "date", "entity", "counterparty", "contract"], 1, 30,
                   {"counterparty": "ผู้รับเงิน (payee) ของแต่ละรายการจ่าย"}),
@@ -3419,22 +3440,48 @@ def _syn_in(syn: str, concern) -> bool:
     return bool(n) and n in _norm_concern(concern)
 
 
-def match_concerns(concerns: list) -> list:
+def match_concerns(concerns: list, dtype: str = None) -> list:
     """Risk Concern text -> Risk Library. Each concern gives {concern, risk_id, matched_by, mode}. A concern matches
     the risk whose synonym (Thai or English, case and whitespace ignored) it contains; the longest synonym wins,
-    a tie goes to the first risk in RISK_LIBRARY order. No match: risk_id None, matched_by None, mode "สำรวจ"
-    (exploratory mode). Every concern is returned, in order."""
+    a tie goes to the first risk in RISK_LIBRARY order. With `dtype` (the data type of the files) the risks of that
+    type are tried first and the others only when none of them matches ("บัญชีของบุคคลอื่น" in a life-insurance letter
+    is L-R4, not the fund risk F-R2). No match: risk_id None, matched_by None, mode "สำรวจ" (exploratory mode).
+    Every concern is returned, in order."""
     out = []
+    pools = ([[r for r, lib in RISK_LIBRARY.items() if dtype in lib["data_types"]]] if dtype in DATA_TYPES else []) \
+        + [list(RISK_LIBRARY)]
     for c in concerns:
         best = None
-        for rid, lib in RISK_LIBRARY.items():
-            for syn in lib["synonyms"]:
-                n = len(_norm_concern(syn))
-                if _syn_in(syn, c) and (best is None or n > best[0]):
-                    best = (n, rid, syn)
+        for pool in pools:
+            for rid in pool:
+                for syn in RISK_LIBRARY[rid]["synonyms"]:
+                    n = len(_norm_concern(syn))
+                    if _syn_in(syn, c) and (best is None or n > best[0]):
+                        best = (n, rid, syn)
+            if best:
+                break
         out.append({"concern": c, "risk_id": best[1] if best else None, "matched_by": best[2] if best else None,
                     "mode": "รับรอง" if best else "สำรวจ"})
     return out
+
+
+# Concerns no certified check answers yet because the data they need is outside this phase (spec 1, roadmap: L2 claims
+# comes later): the concern goes to exploratory mode and Intake Review asks for the data it needs (a Data Request).
+REQ_CLAIM_DETAIL = ("ข้อมูลการเคลม (วันที่เกิดเหตุ วันที่เรียกร้องสินไหม ประเภทและสาเหตุของการเคลม ผลการพิจารณา) ของแต่ละกรมธรรม์ "
+                    "เพื่อดูการเคลมเร็วหลังทำกรมธรรม์")
+DEFERRED_CONCERNS = [
+    {"types": ["L"], "request": REQ_CLAIM_DETAIL,
+     "synonyms": ["เคลมเร็ว", "เคลมหลังทำกรมธรรม์", "เคลมหลังออกกรมธรรม์", "สินไหมเร็ว", "เรียกร้องสินไหมเร็ว",
+                  "early claim", "claim soon after issue", "claim shortly after issue"]}]
+
+
+def concern_request(concern, dtype=None):
+    """The Data Request for an exploratory concern that needs data this phase does not cover (DEFERRED_CONCERNS), for
+    data of type `dtype` (any type when None), else None."""
+    for d in DEFERRED_CONCERNS:
+        if (dtype is None or dtype in d["types"]) and any(_syn_in(w, concern) for w in d["synonyms"]):
+            return d["request"]
+    return None
 
 
 def _roles_by_table(roles_confirmed: dict) -> tuple:
@@ -3490,7 +3537,10 @@ def _intake_ctx(roles_confirmed: dict, profile=None, tables=None, cfg: dict = No
     ctx = {"roles": set(tx_roles), "dtype": _type_from_roles(set(tx_roles), profile, declared, _colroles(roles_confirmed)), "rows": None,
            "months": None,
            "has_time": None, "joins": {}, "vol": {},
-           "join_min": 100.0 * cfg["INTAKE.JOIN_MIN_PCT"] if cfg else 100.0 * 0.9}
+           "join_min": 100.0 * cfg["INTAKE.JOIN_MIN_PCT"] if cfg else 100.0 * 0.9,
+           # the event table (L: beneficiary changes) is mapped, and the internal tables with the confirmed code values
+           "has_events": bool(_event_tables(roles_confirmed, tx_name)) or "events" in (tables or {}),
+           "tables": tables if tables is not None and "meta" in tables else None}
     if profile is not None and len(profile) and tx_name is not None:
         pt = profile[profile["table"] == tx_name]
         if len(pt):
@@ -3559,6 +3609,23 @@ def _check_state(cid: str, ctx: dict, lib: dict) -> tuple:
         return (False, f"การ์ดนี้ใช้กับข้อมูลประเภท{want} แต่ข้อมูลนี้เป็นประเภท{TYPE_TEXT[dt]} "
                        f"(คอลัมน์ที่มีไม่ใช่ข้อมูลที่การ์ดนี้ออกแบบมา) จึงรันไม่ได้ — ต้องขอข้อมูลประเภทที่ตรงกับความเสี่ยงนี้เพิ่ม",
                 "ประเภทข้อมูล", "type")
+    ev_missing = not ctx.get("has_events")
+    if spec["events"] == "required" and ev_missing:
+        return (False, f"ไม่มีตารางประวัติการเปลี่ยนผู้รับผลประโยชน์ ซึ่งการ์ดนี้ต้องใช้ — {REQ_BENEF_HISTORY} (ตารางที่มีเลขที่"
+                       "กรมธรรม์ วันที่เปลี่ยน และผู้รับผลประโยชน์) แล้วกำหนดบทบาท record_id, date, contract ให้ตารางนั้นใน Intake Review",
+                "ตารางประวัติการเปลี่ยนผู้รับผลประโยชน์", "events")
+    tables = ctx.get("tables")
+    if spec["codes"] and tables is not None:  # the code meanings confirmed in the intake (tables["meta"])
+        if cid == "LIFE-BENCHG-CASH":
+            r = _benchg_codes(tables)[0]
+            if r and ev_missing and "benefit_change" in missing_codes(tables, ["benefit_change"]):
+                return (False, f"ไม่มีตารางประวัติการเปลี่ยนผู้รับผลประโยชน์ และไม่มีรหัสประเภทรายการที่ยืนยันว่าเป็นการเปลี่ยนผู้รับ"
+                               f"ผลประโยชน์ ซึ่งการ์ดนี้ต้องใช้ — {REQ_BENEF_HISTORY} หรือยืนยันรหัสการเปลี่ยนผู้รับผลประโยชน์ใน "
+                               "Intake Review", "ตารางประวัติการเปลี่ยนผู้รับผลประโยชน์", "events")
+        else:
+            r = _fund_codes(tables)[0] if cid in FUND_COUNT_CHECKS else require_codes(tables, list(spec["codes"]))
+        if r:
+            return False, r, "ความหมายรหัสประเภทรายการ", "codes"
     if cid in NEEDS_TIME_CHECKS and ctx["has_time"] is False:
         return (False, "คอลัมน์วันที่มีเฉพาะวัน ไม่มีเวลาของรายการ ซึ่งการ์ดนี้ต้องใช้" + TIME_USE.get(cid, "ดูรายการนอกเวลาทำการ") + " จึงรันไม่ได้ "
                        "— ขอข้อมูลที่มีเวลาของรายการเพิ่ม", "เวลาของรายการ", "time")
@@ -3615,6 +3682,8 @@ def _assess_one(rid: str, ctx: dict) -> dict:
             ask(lib["request_if_missing"].get("_time") or REQ_TIME)
         elif kind == "volume":
             ask("ข้อมูลช่วงเวลายาวขึ้นหรือจำนวนรายการต่อบัญชี/กลุ่มมากขึ้น เพื่อให้สร้าง baseline หรือคำนวณได้")
+        elif kind == "events":
+            ask(lib["request_if_missing"].get("_events") or REQ_BENEF_HISTORY)
         elif kind == "role":
             for r in [r for r in CHECKS[cid]["requires"] if r not in ctx["roles"]]:
                 ask(lib["request_if_missing"].get(r) or f"คอลัมน์{ROLE_TEXT.get(r, r)} (บทบาท {r}) ของรายการ")
@@ -3625,6 +3694,13 @@ def _assess_one(rid: str, ctx: dict) -> dict:
                            f"(ต่ำกว่า {ctx['join_min']:.0f}% ตาม INTAKE.JOIN_MIN_PCT) ผลที่ใช้ {role} จึงอาจไม่ครบ — ตรวจรูปแบบรหัสบัญชีของสองตาราง")
             if status == "พร้อม":
                 status = "บางส่วน"
+    ev_join = ctx["joins"].get("events")
+    if "_events" in lib["request_if_missing"] and ev_join and ev_join[1] < ctx["join_min"] and run:
+        tname, rate = ev_join
+        reasons.append(f"ตารางเหตุการณ์ {tname} เชื่อมกับรายการด้วยเลขที่กรมธรรม์/สัญญาได้เพียง {rate:.1f}% ของรหัส "
+                       f"(ต่ำกว่า {ctx['join_min']:.0f}% ตาม INTAKE.JOIN_MIN_PCT) ผลที่ใช้ตารางนี้จึงอาจไม่ครบ — ตรวจรูปแบบเลขที่กรมธรรม์/สัญญาของสองตาราง")
+        if status == "พร้อม":
+            status = "บางส่วน"
     if status == "บางส่วน" and skipped and not time_only:
         reasons.append(f"รันได้ {len(run)} จาก {len(lib['checks'])} การ์ด")
     if status == "ไม่พอ" and not reasons:
@@ -4268,7 +4344,11 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
             cv = _code_values(said, p)
             if cv:
                 codes[f"{p['table']}.{p['column']}"] = cv
-    matched = match_concerns(brief.get("concerns") or [])
+    primary, _ = _split_roles(roles)
+    declared = m.get("dataset_type") if m is not None else None  # a mapping profile remembers the confirmed type
+    dtype = _type_from_roles(set(_roles_by_table(primary)[1]) if primary else set(), profile,
+                             declared if declared in DATA_TYPES else None, _colroles(primary))
+    matched = match_concerns(brief.get("concerns") or [], dtype)
     requested = _risk_order([x["risk_id"] for x in matched])
     if not matched and m is not None:
         requested = _risk_order(m.get("risks", []))
@@ -4279,7 +4359,6 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
         filters = [f for f in filters if _find_columns(frames, f["column"])]
     org = dict(m.get("org_values", {})) if m is not None else {}
     notes, tables, suff, sugg, pl, prep, status = [], None, None, None, None, {}, None
-    primary, _ = _split_roles(roles)
     run_cfg = {**base_cfg, **_merge_org(org, base_cfg), "_RUN": {"run_id": "INSPECT", "data_ref": _data_ref(meta)}}
     try:
         tables, _ = _internal(frames, roles)
@@ -4296,9 +4375,6 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
         status = "REVIEW: " + NO_RECORD_ID + ("; ตรวจเพิ่ม: " + "; ".join(rest) if rest else "")
     else:
         status = _status_th(status, tx_roles0)
-    declared = m.get("dataset_type") if m is not None else None  # a mapping profile remembers the confirmed type
-    dtype = _type_from_roles(set(_roles_by_table(primary)[1]) if primary else set(), profile,
-                             declared if declared in DATA_TYPES else None, _colroles(primary))
     if tables is not None:
         attach_meta(tables, {"roles": roles, "code_values": codes, "dataset_type": dtype})
     suff = assess_sufficiency(requested, primary, profile, run_cfg, tables)
@@ -4307,6 +4383,9 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
         sugg = suggest_risks(requested, primary, {k: v for k, v in tables.items() if k != "_prep"}, run_cfg)
     else:
         sugg = pd.DataFrame(columns=["risk_id", "name_th", "why_th", "preview"])
+    # every Data Request of the Intake Review: what the requested risks miss, then what exploratory concerns need
+    data_req = _risk_order([r for reqs in suff["data_request"] for r in reqs]
+                           + [concern_request(c, dtype) for c in exploratory])
     it = {
         "intake_version": INTAKE_VERSION, "status": "draft", "created_at": _now(), "engine_version": __version__,
         "registry_version": str(base_cfg.get("REGISTRY.VERSION", REGISTRY_VERSION)), "registry_path": reg_path,
@@ -4317,6 +4396,7 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
         "risks": {"requested": requested, "added": [], "exploratory": exploratory, "concerns": _plain(matched)},
         "materiality": dict(brief.get("materiality") or {"type": "ไม่ระบุ"}), "reviewer": None,
         "description_conflicts": _plain(conflicts), "sufficiency": _plain(suff.to_dict(orient="records")),
+        "data_request": data_req,
         "suggested_risks": _plain(sugg.to_dict(orient="records")), "plan": _plain(pl.to_dict(orient="records")),
         "profile": prows, "signature": _signature(prows), "prep": _plain({k: v for k, v in prep.items()
                                                                           if k != "opened_at_info"}),
@@ -4706,9 +4786,16 @@ def _prepare(files, it: dict, cfg: dict) -> dict:
     frames, flog = _apply_filters(frames, it.get("filters", []), it["roles"], it.get("profile", []))
     events += [{"stage": 2, "status": "OK", "detail": x} for x in flog]
     tables, tx_name = _internal(frames, it["roles"])
-    tables = attach_meta(_prep_internal(tables, cfg), it)
+    # the data type reaches tables["meta"] (the L / F checks are gated on it): the confirmed one, else the type the
+    # roles and column names show (an intake confirmed without dataset_type, e.g. by hand or from an older draft)
+    primary = _split_roles(it["roles"])[0]
+    prof, dtype = None, it.get("dataset_type")
+    if dtype not in DATA_TYPES:
+        prof = profile_columns(frames)
+        dtype = _type_from_roles(set(_roles_by_table(primary)[1]), prof, None, _colroles(primary))
+    tables = attach_meta(_prep_internal(tables, cfg), {**it, "dataset_type": dtype})
     return {"frames": frames, "meta": meta, "tables": tables, "tx_name": tx_name, "warnings": warnings,
-            "events": events, "filter_log": flog}
+            "events": events, "filter_log": flog, "profile": prof, "dtype": dtype}
 
 
 def _run_cfg(it: dict, base_cfg: dict, meta: dict, extra: str = "", source: str = "AIDA-14") -> tuple:
@@ -4825,8 +4912,8 @@ def run(files, intake, out_dir: str = ".", cfg: dict = None, registry_path: str 
                         f"{', '.join(RISK_LIBRARY)} (ความเสี่ยงที่ไม่มีในคลังใช้โหมดสำรวจ) แล้วแก้ด้วย confirm(...) ใหม่")
     events.append({"stage": 4, "status": "OK", "detail": "ความเสี่ยงที่ยืนยัน: " + (", ".join(risk_ids) or "ไม่มี")
                    + (f"; โหมดสำรวจ: {', '.join(it['risks'].get('exploratory', []))}" if it["risks"].get("exploratory") else "")})
-    prof = profile_columns(pre["frames"])
-    dtype = _type_from_roles(set(tx_roles), prof, it.get("dataset_type"), _colroles(primary))
+    prof = pre["profile"] if pre.get("profile") is not None else profile_columns(pre["frames"])
+    dtype = pre["dtype"]
     pl = plan(risk_ids, primary, prof, cfg_run, tables) if not status.startswith("STOP") else \
         pd.DataFrame(columns=["check_id", "decision", "reason", "missing"])
     plan_df = _plan_all(pl)
@@ -5408,8 +5495,17 @@ def _review_a(it: dict) -> list:
         if s["status"] == "unknown":
             line += " — ระบุความหมาย หรือเก็บเป็น custom:<ชื่อ> หรือไม่ใช้"
         L.append(line)
+    prim0 = _split_roles(it["roles"])[0]
+    tx0, txr0, _ = _roles_by_table(prim0) if prim0 else (None, {}, {})
+    cat_key = f"{tx0}.{txr0['category']}" if tx0 and txr0.get("category") else None
+    if it.get("dataset_type") in ("L", "F") and cat_key and not it.get("code_values", {}).get(cat_key):
+        p = prof.get((tx0, txr0["category"]), {})  # the checks Skip until the auditor gives each code its meaning
+        seen = ", ".join(str(x[0] if isinstance(x, (list, tuple)) else x) for x in (p.get("top5") or [])[:5])
+        L.append(f"❓ ค่ารหัสของ {cat_key} ยังไม่ได้ยืนยันความหมาย" + (f" (ค่าที่พบบ่อย: {seen})" if seen else "")
+                 + " — ระบุความหมายของแต่ละรหัสใน code_values (เช่น {\"" + cat_key + "\": {\"รหัส\": \"ความหมาย\"}}) "
+                 "การ์ดที่แยกตามประเภทรายการจะข้ามจนกว่าจะยืนยัน")
     for k, v in it.get("code_values", {}).items():
-        if it.get("dataset_type") in ("L", "F"):  # show the internal meaning each code resolved to, so errors are caught
+        if it.get("dataset_type") in ("L", "F") and k == cat_key:  # show the internal meaning each code resolved to
             res = {a: resolve_code_meaning(b) for a, b in v.items()}
             icon = "❓" if None in res.values() else "✅"
             txt = ", ".join(f"{a} = {b} → " + (res[a] if res[a] else "❓ จับคู่ความหมายไม่ได้ — ระบุใหม่") for a, b in v.items())
@@ -5454,16 +5550,19 @@ def _review_b(it: dict) -> list:
     for i, c in enumerate(concerns, 1):
         rid = c["risk_id"]
         if rid is None:
+            need = concern_request(c["concern"], it.get("dataset_type"))
             L.append(f"{i}. ❓ \"{c['concern']}\" → ไม่มีในคลังความเสี่ยง (Risk Library) จะวิเคราะห์ในโหมดสำรวจ "
-                     "(ผลมีป้าย \"โหมดสำรวจ — ยังไม่ผ่านการรับรอง\")")
+                     "(ผลมีป้าย \"โหมดสำรวจ — ยังไม่ผ่านการรับรอง\")"
+                     + (f" — ข้อมูลที่ไฟล์นี้ยังไม่มีและควรขอเพิ่ม: {need}" if need else ""))
             continue
         L.append(_suff_line(f"{i}. \"{c['concern']}\" → ", rid, suff.get(rid)))
         shown.add(rid)
     for rid in it["risks"]["requested"]:
         if rid not in shown:
             L.append(_suff_line("- ", rid, suff.get(rid)))
-    req = [r for s in it["sufficiency"] for r in s["data_request"]]
-    req = _risk_order(req)
+    req = it.get("data_request")
+    if req is None:  # an intake written before data_request was kept at the top level
+        req = _risk_order([r for s in it["sufficiency"] for r in s["data_request"]])
     L.append("Data Request (ข้อมูลที่ควรขอเพิ่ม):" if req else "Data Request: ไม่มี — ข้อมูลพอสำหรับความเสี่ยงที่ขอ")
     L += [f"  {i}. {r}" for i, r in enumerate(req, 1)]
     return L
