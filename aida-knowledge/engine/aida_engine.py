@@ -1587,14 +1587,17 @@ PRESETS["F"] = {
     "order_id": "record_id", "unitholder_id": "entity", "fund_code": "contract", "order_datetime": "date",
     "txn_type": "category", "amount": "amount", "bank_account": "counterparty", "agent": "channel",
     "nav_date": "due_date", "open_date": "opened_at"}
-# column names that only the type has (anchors). A file is L / F only when it has at least LF_MIN_ANCHORS of them:
-# generic names (order_id, bank_account, open_date, staff_id, ...) also occur in E / C / A files and never decide.
+# column names that only the type has (anchors). A file is L / F only when it has at least LF_MIN_ANCHORS of them, each
+# on a column that holds a role: generic names (order_id, bank_account, open_date, staff_id, ...) also occur in E / C / A
+# files and never decide, and one anchor alone (a C contract column named policy_no, a fund_code in AP data) keeps the
+# C1 rules. Real L data has policy_no / insured_id / cash_value, F data fund_code / unitholder_id / nav_date; an L / F
+# file with a single anchor name needs dataset_type in confirm.
 LF_ANCHORS = {
     "L": {"policyno", "insuredid", "cashvalue", "surrendervalue", "premiummode", "มูลค่าเวนคืน", "ผู้เอาประกัน",
           "รหัสผู้เอาประกัน", "วันออกกรมธรรม์"},
     "F": {"unitholderid", "unitholdercode", "fundcode", "navdate", "orderdatetime", "ผู้ถือหน่วย", "รหัสผู้ถือหน่วย",
           "รหัสกองทุน"}}
-LF_MIN_ANCHORS = 1
+LF_MIN_ANCHORS = 2
 # the type-specific meaning of a role, shown next to the role name in Intake Review section A (spec 2)
 ROLE_MEANING_BY_TYPE = {
     "L": {"record_id": "รหัสรายการกรมธรรม์", "date": "วันที่ทำรายการ", "entity": "ผู้เอาประกัน",
@@ -2116,11 +2119,12 @@ def _lf_detect(profile: pd.DataFrame, colroles: dict = None) -> tuple:
     """(type, ["table.column", ...]) for data type L / F, else (None, []). An anchor name (LF_ANCHORS) counts only on a
     column that holds a certified role: in `colroles` {(table, column): role} (the confirmed roles) or, when None, the
     role suggest_roles proposes for it. A stray policy_no with no role (or a custom: role) is ignored. The type needs
-    at least LF_MIN_ANCHORS such columns and more of them than the other type."""
+    at least LF_MIN_ANCHORS different anchor names on such columns (policy_no in two tables is one anchor) and more of
+    them than the other type."""
     if colroles is None:
         sug = suggest_roles(profile)
         colroles = {(r["table"], r["column"]): r["role"] for _, r in sug.iterrows() if r["role"] != UNKNOWN_ROLE}
-    hits = {t: [] for t in LF_ANCHORS}
+    hits, names = {t: [] for t in LF_ANCHORS}, {t: set() for t in LF_ANCHORS}
     for tbl, col in zip(profile["table"], profile["column"]):
         role = colroles.get((tbl, col))
         if not role or role == UNKNOWN_ROLE or str(role).startswith("custom:"):
@@ -2128,7 +2132,8 @@ def _lf_detect(profile: pd.DataFrame, colroles: dict = None) -> tuple:
         for t, anchors in LF_ANCHORS.items():
             if _norm_name(col) in anchors:
                 hits[t].append(f"{tbl}.{col}")
-    n = {t: len(v) for t, v in hits.items()}
+                names[t].add(_norm_name(col))
+    n = {t: len(v) for t, v in names.items()}
     best = max(n, key=n.get)
     if n[best] >= LF_MIN_ANCHORS and sorted(n.values())[-1] > sorted(n.values())[-2]:
         return best, hits[best]
@@ -3620,8 +3625,11 @@ def _check_state(cid: str, ctx: dict, lib: dict) -> tuple:
     dt = ctx["dtype"]
     if dt is not None and (dt not in spec["data_types"] or dt not in lib["data_types"]):
         want = "/".join(TYPE_TEXT[t] for t in (set(spec["data_types"]) & set(lib["data_types"]) or spec["data_types"]))
+        codes = " หรือ ".join(t for t in DATA_TYPES if t in (set(spec["data_types"]) & set(lib["data_types"]) or spec["data_types"]))
         return (False, f"การ์ดนี้ใช้กับข้อมูลประเภท{want} แต่ข้อมูลนี้เป็นประเภท{TYPE_TEXT[dt]} "
-                       f"(คอลัมน์ที่มีไม่ใช่ข้อมูลที่การ์ดนี้ออกแบบมา) จึงรันไม่ได้ — ต้องขอข้อมูลประเภทที่ตรงกับความเสี่ยงนี้เพิ่ม",
+                       f"(คอลัมน์ที่มีไม่ใช่ข้อมูลที่การ์ดนี้ออกแบบมา) จึงรันไม่ได้ — ถ้าข้อมูลนี้เป็นประเภท {codes} ({want}) "
+                       f"ให้ระบุ dataset_type = {codes} ในคำตอบตอนยืนยัน Intake แล้วยืนยันอีกครั้ง; ถ้าไม่ใช่ "
+                       "ต้องขอข้อมูลประเภทที่ตรงกับความเสี่ยงนี้เพิ่ม",
                 "ประเภทข้อมูล", "type")
     ev_missing = not ctx.get("has_events")
     if spec["events"] == "required" and ev_missing:
@@ -4405,7 +4413,7 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
         "registry_version": str(base_cfg.get("REGISTRY.VERSION", REGISTRY_VERSION)), "registry_path": reg_path,
         "cfg": base_cfg if cfg is not None else None,
         "files": meta, "data_ref": _data_ref(meta), "input_sha256": _input_sha(meta), "brief": _plain(brief),
-        "dataset_type": dtype, "roles": roles, "role_suggestions": _plain(suggestions), "columns": cols_meaning,
+        "dataset_type": dtype, "dataset_type_source": "confirmed" if declared in DATA_TYPES else "detected", "roles": roles, "role_suggestions": _plain(suggestions), "columns": cols_meaning,
         "code_values": codes, "filters": filters, "filter_proposals": _plain(proposals), "org_values": org,
         "risks": {"requested": requested, "added": [], "exploratory": exploratory, "concerns": _plain(matched)},
         "materiality": dict(brief.get("materiality") or {"type": "ไม่ระบุ"}), "reviewer": None,
@@ -4608,15 +4616,12 @@ def confirm(intake: dict, answers: dict = None, path: str = "intake.json", cfg: 
         for t, c in _find_columns(fake, k) or []:
             cols.setdefault(t, {})[c] = v
     codes = {**intake.get("code_values", {}), **(a.get("code_values") or {})}
-    dtype = a.get("dataset_type", intake.get("dataset_type"))
-    if "dataset_type" in a and dtype not in DATA_TYPES:
-        raise AidaError(f"dataset_type '{dtype}' ใช้ไม่ได้ — เลือกจาก {', '.join(DATA_TYPES)} "
-                        "(E โอนเงิน, C รับชำระสินเชื่อ, A จ่ายเจ้าหนี้, L ประกันชีวิต, F กองทุนรวม) แล้วยืนยันอีกครั้ง")
+    dtype, dtype_src = _confirmed_type(a, intake, roles)
     it = dict(intake)
     requested = list(intake["risks"]["requested"])
     it.update(status="confirmed", confirmed_at=_now(), roles=roles, filters=filters, org_values=org,
               materiality=mat, reviewer=str(a.get("reviewer") or intake.get("reviewer") or "ไม่ระบุ"),
-              columns=cols, code_values=codes, dataset_type=dtype,
+              columns=cols, code_values=codes, dataset_type=dtype, dataset_type_source=dtype_src,
               risks={**intake["risks"], "added": [r for r in add if r not in requested]},
               registry_version=str(base_cfg.get("REGISTRY.VERSION", REGISTRY_VERSION)), engine_version=__version__)
     it = _plain(it)
@@ -4626,6 +4631,30 @@ def confirm(intake: dict, answers: dict = None, path: str = "intake.json", cfg: 
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(it, fh, ensure_ascii=False, indent=2)
     return it
+
+
+DATA_TYPE_HELP = "(E โอนเงิน, C รับชำระสินเชื่อ, A จ่ายเจ้าหนี้, L ประกันชีวิต, F กองทุนรวม)"
+
+
+def _confirmed_type(a: dict, intake: dict, roles: dict) -> tuple:
+    """(dataset_type, source) for confirm: the type in the answers ("confirmed"), else the type an earlier confirm or a
+    mapping profile confirmed, else the type the confirmed roles and column names show ("detected"). A detected type is
+    derived again from the confirmed roles, so a role the auditor takes away from an L / F anchor column changes it."""
+    if "dataset_type" in a:
+        dtype = a["dataset_type"]
+        if not isinstance(dtype, str) or dtype not in DATA_TYPES:
+            raise AidaError(f"dataset_type '{dtype}' ใช้ไม่ได้ — เลือกจาก {', '.join(DATA_TYPES)} {DATA_TYPE_HELP} "
+                            "แล้วยืนยันอีกครั้ง")
+        return dtype, "confirmed"
+    old = intake.get("dataset_type")
+    if intake.get("dataset_type_source") == "confirmed" and isinstance(old, str) and old in DATA_TYPES:
+        return old, "confirmed"
+    prof = pd.DataFrame(intake.get("profile") or [])
+    primary = _split_roles(roles)[0]
+    tx_roles = _roles_by_table(primary)[1] if primary else {}
+    dtype = _type_from_roles(set(tx_roles), prof if len(prof) and "column" in prof.columns else None, None,
+                             _colroles(primary))
+    return dtype, "detected"
 
 
 def _load_draft(intake):
