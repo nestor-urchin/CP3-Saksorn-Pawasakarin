@@ -1,0 +1,26 @@
+{
+  "policy_txn": {
+    "txn_id": "record_id",
+    "policy_no": "contract",
+    "insured_id": "entity",
+    "txn_date": "date",
+    "txn_type": "category",
+    "amount": "amount",
+    "payee": "counterparty",
+    "cash_value": "limit",
+    "staff_id": "created_by"
+  },
+  "policies": {
+    "policy_no": "contract",
+    "insured_id": "entity",
+    "issue_date": "opened_at",
+    "premium_mode": "category"
+  },
+  "beneficiary_changes": {
+    "change_id": "record_id",
+    "policy_no": "contract",
+    "change_date": "date",
+    "beneficiary": "counterparty",
+    "staff_id": "created_by"
+  }
+}

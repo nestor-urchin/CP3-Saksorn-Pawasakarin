@@ -1,0 +1,18 @@
+{
+  "fund_txn": {
+    "COL1": "record_id",
+    "COL2": "entity",
+    "COL3": "contract",
+    "COL4": "date",
+    "TP": "category",
+    "AMT": "amount",
+    "COL7": "counterparty",
+    "AGT": "channel",
+    "COL9": "due_date"
+  },
+  "unitholders": {
+    "COL2": "entity",
+    "COL10": "opened_at"
+  },
+  "dataset_type": "F"
+}

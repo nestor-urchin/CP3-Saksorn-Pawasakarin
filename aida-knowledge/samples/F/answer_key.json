@@ -1,0 +1,177 @@
+{
+  "recipes": {
+    "STAT-MAD": [],
+    "BEH-VELOCITY": [],
+    "BEH-SPIKE": [],
+    "TEMP-OFFHOURS": [],
+    "GEN-CONC": [],
+    "GEN-PERIOD-END": [],
+    "FOR-BENFORD": [],
+    "FOR-ROUND": [],
+    "FOR-REPEAT": [],
+    "FUND-ROUNDTRIP": [
+      "U-0101"
+    ],
+    "FUND-THIRD-PARTY": [
+      "U-0202"
+    ],
+    "FUND-SHARED-ACCT": [
+      "BA-7000"
+    ],
+    "FUND-FREQUENT": [
+      "U-0404",
+      "U-0501",
+      "U-0502",
+      "U-0503",
+      "U-0504",
+      "U-0505",
+      "U-0506"
+    ],
+    "FUND-CHURN": [
+      "AG-05"
+    ],
+    "FUND-LATE-TRADE": [
+      "O-6006"
+    ]
+  },
+  "findings": [
+    {
+      "entity_type": "unitholder",
+      "entity_id": "U-0101",
+      "risk": "F-R1",
+      "period": "2026-05"
+    },
+    {
+      "entity_type": "unitholder",
+      "entity_id": "U-0202",
+      "risk": "F-R2",
+      "period": "2026-06"
+    },
+    {
+      "entity_type": "account",
+      "entity_id": "BA-7000",
+      "risk": "F-R3",
+      "period": "2026-09"
+    },
+    {
+      "entity_type": "unitholder",
+      "entity_id": "U-0404",
+      "risk": "F-R4",
+      "period": "2026-07"
+    },
+    {
+      "entity_type": "agent",
+      "entity_id": "AG-05",
+      "risk": "F-R5",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "unitholder",
+      "entity_id": "U-0606",
+      "risk": "F-R6",
+      "period": "2026-09"
+    },
+    {
+      "entity_type": "unitholder",
+      "entity_id": "U-0501",
+      "risk": "F-R4",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "unitholder",
+      "entity_id": "U-0502",
+      "risk": "F-R4",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "unitholder",
+      "entity_id": "U-0503",
+      "risk": "F-R4",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "unitholder",
+      "entity_id": "U-0504",
+      "risk": "F-R4",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "unitholder",
+      "entity_id": "U-0505",
+      "risk": "F-R4",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "unitholder",
+      "entity_id": "U-0506",
+      "risk": "F-R4",
+      "period": "2026-08"
+    }
+  ],
+  "code_values": {
+    "fund_txn.txn_type": {
+      "BUY": "ซื้อหน่วยลงทุน",
+      "SELL": "ขายคืนหน่วยลงทุน",
+      "SWI": "สับเปลี่ยนเข้า",
+      "SWO": "สับเปลี่ยนออก"
+    }
+  },
+  "concern_risks": [
+    "F-R1",
+    "F-R2",
+    "F-R6"
+  ],
+  "intake": {
+    "sufficiency": {
+      "F-R1": "พร้อม",
+      "F-R2": "พร้อม",
+      "F-R6": "พร้อม"
+    },
+    "data_request": [],
+    "suggested_risks": [
+      "F-R3",
+      "F-R4",
+      "F-R5"
+    ],
+    "description_conflicts": []
+  },
+  "conventions": {
+    "entities": "findings are keyed by the check's own entity: FUND-ROUNDTRIP, FUND-THIRD-PARTY and FUND-FREQUENT name the unitholder (unitholder_id); FUND-SHARED-ACCT the account (bank_account value); FUND-CHURN the agent; FUND-LATE-TRADE the order id (the finding row of F-R6 is keyed by the unitholder U-0606 in findings, the order is O-6006). entity_type labels: unitholder / fund / account / agent",
+    "period": "the period is the month of the record that completes the pattern: the sale (F-R1, F-R2), the transactions of the month (F-R4, F-R5), the order (F-R6); for a pattern over several records the latest month of the contributing records (BA-7000 2026-09)",
+    "counterparty": "bank_account holds the ACCOUNT OWNER: the unitholder id (U-nnnn, the unitholder_id format) of the owner of the account paid or receiving, so FUND-THIRD-PARTY can compare it with the unitholder. BA-5555 of the design belongs to U-0999: it is written as its owner U-0999 on the redemption of U-0202 (F-R2 reports U-0202). The shared account of F-R3 is written as its number BA-7000 (owner not known): F-R3 reports it, F-R2 cannot compare that format and must not report the four holders",
+    "F-R4": "U-0404 makes 10 transactions in 2026-07 (4 BUY, 3 SWO, 3 SWI in 7 funds, no SELL); the six clients of AG-05 (U-0501..U-0506) make 8 each in 2026-08 (4 BUY, 2 SWO, 2 SWI); they are F-R4 findings too, because FUND-FREQUENT reports every holder with 6+ transactions in a month. Normal holders make 1 or 2 a month",
+    "F-R5": "AG-05 has 15 clients, 6 of them (40 %) hit F-R4; AG-06 (U-0404's agent) has 1 frequent client of 12 and is not reported",
+    "F-R1": "U-0101 buys FX1 2026-05-06 and sells it 2026-05-15 (9 days, 98 % of the purchase). Near misses that must not be reported: 8 holders sell the same fund 55+ days later at 90-110 %, 4 holders sell within 10-25 days at 40-55 %. Switches are never sales",
+    "F-R6": "O-6006 (U-0606) was ordered 2026-09-16 16:10 with NAV date 2026-09-16 (after the 15:30 cut-off and priced the same day). Five normal orders after the cut-off (15:40-16:20) are priced on the next business day and must not be reported. In variants/date_only the time of day is missing: F-R6 cannot be judged",
+    "date_only": {
+      "sufficiency": {
+        "F-R6": "บางส่วน"
+      },
+      "data_request": [
+        "วันที่ของคำสั่งซื้อขายที่มีเวลา (ชั่วโมง:นาที) เพื่อดูคำสั่งที่ทำหลังเวลาตัดรอบ"
+      ],
+      "note": "variants/date_only/fund_txn.csv has order_datetime as a date only; every other table and the roles are the en variant. FUND-LATE-TRADE is Skipped with a reason and F-R6 is 🟡 (บางส่วน) with this Data Request, as the spec says"
+    },
+    "normal": "every other holder: one fund and one fixed amount, 1-2 transactions a month for 10 months, weekdays day 5-24, 09:00-15:00, NAV date = order date, counterparty = the holder; amounts 3,000-9,999 and never round, so the general cards (STAT-MAD per agent, BEH-VELOCITY, BEH-SPIKE, TEMP-OFFHOURS, GEN-CONC, GEN-PERIOD-END, FOR-*) find nothing",
+    "code_values": "fund_txn.txn_type: BUY buy, SELL sell, SWI switch_in, SWO switch_out",
+    "intake": "sufficiency: F-R1, F-R2 and F-R6 are พร้อม (the unitholders join the transactions on 100 % of the holders, the time of day and the NAV date are present, so F-R6 runs); the letter has no concern without data, so data_request is empty; suggested_risks are the risks with a planted case that the letter did not ask for: F-R3, F-R4, F-R5; the brief and the data have no description conflict",
+    "legacy_dataset_type": "variants/roles_legacy.json carries a top-level \"dataset_type\": \"F\" next to the {table: {column: role}} mapping; pass it as confirm answers[\"dataset_type\"] and drop it from the roles mapping before to_internal"
+  },
+  "tables": {
+    "fund_txn": [
+      "order_id",
+      "unitholder_id",
+      "fund_code",
+      "order_datetime",
+      "txn_type",
+      "amount",
+      "bank_account",
+      "agent",
+      "nav_date"
+    ],
+    "unitholders": [
+      "unitholder_id",
+      "open_date"
+    ]
+  }
+}

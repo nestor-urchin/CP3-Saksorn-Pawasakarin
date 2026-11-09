@@ -1,0 +1,27 @@
+{
+  "policy_txn": {
+    "COL1": "record_id",
+    "COL2": "contract",
+    "COL3": "entity",
+    "COL4": "date",
+    "TP": "category",
+    "AMT": "amount",
+    "COL7": "counterparty",
+    "CV": "limit",
+    "USR": "created_by"
+  },
+  "policies": {
+    "COL2": "contract",
+    "COL3": "entity",
+    "COL9": "opened_at",
+    "COL10": "category"
+  },
+  "beneficiary_changes": {
+    "COL11": "record_id",
+    "COL2": "contract",
+    "COL12": "date",
+    "COL13": "counterparty",
+    "USR": "created_by"
+  },
+  "dataset_type": "L"
+}

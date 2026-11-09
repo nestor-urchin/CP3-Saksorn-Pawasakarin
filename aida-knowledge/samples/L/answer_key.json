@@ -1,0 +1,151 @@
+{
+  "recipes": {
+    "STAT-MAD": [],
+    "BEH-VELOCITY": [],
+    "BEH-SPIKE": [],
+    "TEMP-OFFHOURS": [],
+    "GEN-CONC": [],
+    "GEN-PERIOD-END": [],
+    "FOR-BENFORD": [],
+    "FOR-ROUND": [],
+    "FOR-REPEAT": [],
+    "LIFE-EARLY-SURR": [
+      "P-0101"
+    ],
+    "LIFE-BENCHG-CASH": [
+      "P-0202"
+    ],
+    "LIFE-LOAN": [
+      "P-0303",
+      "P-0304"
+    ],
+    "LIFE-THIRD-PAYEE": [
+      "ACC-9001",
+      "P-0505"
+    ],
+    "LIFE-BENEF-MULTI": [
+      "B-777"
+    ],
+    "LIFE-STAFF-CONC": [
+      "S-07"
+    ]
+  },
+  "findings": [
+    {
+      "entity_type": "policy",
+      "entity_id": "P-0101",
+      "risk": "L-R1",
+      "period": "2026-06"
+    },
+    {
+      "entity_type": "policy",
+      "entity_id": "P-0202",
+      "risk": "L-R2",
+      "period": "2026-07"
+    },
+    {
+      "entity_type": "policy",
+      "entity_id": "P-0303",
+      "risk": "L-R3",
+      "period": "2026-08"
+    },
+    {
+      "entity_type": "policy",
+      "entity_id": "P-0304",
+      "risk": "L-R3",
+      "period": "2026-05"
+    },
+    {
+      "entity_type": "payee",
+      "entity_id": "ACC-9001",
+      "risk": "L-R4",
+      "period": "2026-09"
+    },
+    {
+      "entity_type": "policy",
+      "entity_id": "P-0505",
+      "risk": "L-R4",
+      "period": "2026-05"
+    },
+    {
+      "entity_type": "beneficiary",
+      "entity_id": "B-777",
+      "risk": "L-R5",
+      "period": "2026-06"
+    },
+    {
+      "entity_type": "staff",
+      "entity_id": "S-07",
+      "risk": "L-R6",
+      "period": "2026-10"
+    }
+  ],
+  "code_values": {
+    "policy_txn.txn_type": {
+      "SURR": "เวนคืนกรมธรรม์",
+      "LOAN": "กู้ยืมตามกรมธรรม์",
+      "CLM": "จ่ายสินไหม"
+    }
+  },
+  "concern_risks": [
+    "L-R1",
+    "L-R2",
+    "L-R4"
+  ],
+  "intake": {
+    "sufficiency": {
+      "L-R1": "พร้อม",
+      "L-R2": "พร้อม",
+      "L-R4": "พร้อม"
+    },
+    "data_request": [
+      "ข้อมูลการเคลม (วันที่เกิดเหตุ วันที่เรียกร้องสินไหม ประเภทและสาเหตุของการเคลม ผลการพิจารณา) ของแต่ละกรมธรรม์ เพื่อดูการเคลมเร็วหลังทำกรมธรรม์"
+    ],
+    "suggested_risks": [
+      "L-R3",
+      "L-R5",
+      "L-R6"
+    ],
+    "description_conflicts": []
+  },
+  "conventions": {
+    "entities": "findings are keyed by the check's own entity: LIFE-EARLY-SURR, LIFE-BENCHG-CASH and LIFE-LOAN name the policy (policy_no); LIFE-THIRD-PAYEE names the payee for rule (b) (ACC-9001) and the policy for rule (a) (P-0505); LIFE-BENEF-MULTI the beneficiary; LIFE-STAFF-CONC the staff id. entity_type labels: policy / payee / beneficiary / staff",
+    "period": "the period is the month of the record that completes the pattern: the surrender (L-R1, L-R2, L-R3 c, L-R4 a), the loan (L-R3 a), and, for a pattern over several records, the latest month of the contributing records (ACC-9001 2026-09, B-777 2026-06, S-07 2026-10)",
+    "L-R3": "P-0303 meets rule (a) (95 % of the cash value, the normal maximum is 70 %); P-0304 meets rule (c) (loan 2026-04-14, surrender 2026-05-26, 42 days); no policy meets rule (b), 20 policies have two loans (below LIFE.LOAN.MIN_COUNT 3), so (b) must not report anything",
+    "L-R4": "ACC-9001 is a bank account number, a different id format from the insured id, so rule (a) cannot compare it; rule (b) (4 policies of 4 insured) reports it. P-0505 is paid to I-0999, another person in the insured id format (I-nnnn): rule (a) reports the policy. Every other payee is the insured (I-nnnn = insured_id)",
+    "L-R5": "B-777 is named by one change on each of 3 policies of 3 insured; no policy and no other beneficiary has two changes, so the LIFE.BENCHG.MIN_COUNT rule reports nothing. After each change the policy has a loan 84-98 days later (outside LIFE.BENCHG_CASH.WINDOW_DAYS)",
+    "L-R6": "S-07 handles 64 of the 160 surrender + beneficiary-change records (40 %; the other 19 staff 3.1-3.8 % each). Loans and claims are spread over all 20 staff and are not counted",
+    "normal": "every other policy: one money transaction (two for 20 loan policies), payee = insured, issued 13+ months before, loan at most 70 % of the cash value, a beneficiary change (58 policies) always 45-90 days before the transaction; dates day 5-24 (no period-end window)",
+    "date_format": "txn_date, issue_date and change_date are dates without a time of day (TEMP-OFFHOURS reads nothing); the general cards STAT-MAD, BEH-VELOCITY, BEH-SPIKE, GEN-CONC, GEN-PERIOD-END, FOR-BENFORD (no entity reaches FOR.BENFORD.MIN_N), FOR-ROUND and FOR-REPEAT find nothing",
+    "code_values": "policy_txn.txn_type: SURR surrender, LOAN loan, CLM claim; the beneficiary changes are the events table (no category column), so benefit_change needs no code. premium_mode values are self-describing words (single / periodic), described in the brief",
+    "exploratory": "concern 4 (early claims) needs claim dates, incident dates and claim reasons that the file does not have: no library risk has a runnable check for it, so the engine answers it with exploratory mode or a Data Request (data_request above); CLM rows only say a claim was paid. It has no entry in intake.sufficiency",
+    "intake": "sufficiency: L-R1, L-R2 and L-R4 are พร้อม (policies join the transactions on 100 % of the insured ids, the beneficiary changes on 100 % of the policy numbers, every role of the checks is mapped); suggested_risks are the risks with a planted case that the letter did not ask for: L-R3, L-R5, L-R6; the brief and the data have no description conflict",
+    "legacy_dataset_type": "variants/roles_legacy.json carries a top-level \"dataset_type\": \"L\" next to the {table: {column: role}} mapping; pass it as confirm answers[\"dataset_type\"] and drop it from the roles mapping before to_internal"
+  },
+  "tables": {
+    "policy_txn": [
+      "txn_id",
+      "policy_no",
+      "insured_id",
+      "txn_date",
+      "txn_type",
+      "amount",
+      "payee",
+      "cash_value",
+      "staff_id"
+    ],
+    "policies": [
+      "policy_no",
+      "insured_id",
+      "issue_date",
+      "premium_mode"
+    ],
+    "beneficiary_changes": [
+      "change_id",
+      "policy_no",
+      "change_date",
+      "beneficiary",
+      "staff_id"
+    ]
+  }
+}

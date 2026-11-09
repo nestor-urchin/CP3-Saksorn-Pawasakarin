@@ -14,6 +14,13 @@ JSON_BLOCK = re.compile(r"```json\s*\n(.*?)\n```", re.S)
 REGISTRY_PATH = Path(__file__).resolve().parent.parent / "knowledge" / "AIDA-14-configuration-registry.md"
 
 
+# AIDA-14 v1.3 keys the L / F samples are designed against (FUND.ROUNDTRIP.AMOUNT_BAND is exposed as FUND.ROUNDTRIP.BAND)
+LF_KEYS = ("LIFE.EARLY_SURR.MONTHS", "LIFE.BENCHG_CASH.WINDOW_DAYS", "LIFE.LOAN.NEAR_PCT", "LIFE.LOAN.MIN_COUNT",
+           "LIFE.LOAN.COUNT_MONTHS", "LIFE.LOAN_SURR.WINDOW_DAYS", "LIFE.PAYEE.MIN_POLICIES", "LIFE.BENEF.MIN_POLICIES",
+           "LIFE.BENCHG.MIN_COUNT", "LIFE.BENCHG.COUNT_MONTHS", "FUND.ROUNDTRIP.DAYS", "FUND.SHARED_ACCT.MIN_HOLDERS",
+           "FUND.FREQ.MIN_TX_MONTH", "FUND.CHURN.MIN_CLIENT_SHARE", "FUND.CHURN.MIN_CLIENTS", "FUND.CUTOFF_TIME")
+
+
 def _thresholds():
     """The thresholds the planted cases are designed against, read from the AIDA-14 Machine Config
     (through the engine's load_registry) so the samples and the registry cannot drift apart."""
@@ -23,6 +30,9 @@ def _thresholds():
     th = {k: cfg[k] for k in ("DUP.WINDOW_DAYS", "SPLIT.WINDOW_DAYS", "SPLIT.MIN_TX", "DUE.NEAR_DAYS",
                               "DUE.MIN_SHARE", "DUE.MIN_PERIODS", "PAYER.MIN_CONTRACTS", "FOR.BENFORD.MIN_N",
                               "FOR.ROUND.UNIT", "FOR.REPEAT.MIN_COUNT", "CONC.SINGLE_ENTITY_SHARE")}
+    th.update({k: cfg[k] for k in LF_KEYS})
+    rt = cfg["FUND.ROUNDTRIP.AMOUNT_BAND"]
+    th.update({"FUND.ROUNDTRIP.BAND": (rt["low"], rt["high"])})
     th.update({"SPLIT.BAND": (band["low"], band["high"]),
                "FOR.BENFORD.MAD_OK": mad["acceptable"], "FOR.BENFORD.MAD_BAD": mad["marginal"]})
     return th
@@ -58,8 +68,11 @@ def variant_brief(brief, names):
     return {**brief, "columns": {flat.get(c, c): m for c, m in brief["columns"].items()}}
 
 
-def write_dataset(out_dir, frames, key, brief_md, variant_names, roles_en):
-    """Write frames as <table>.csv, answer_key.json, brief.md and the three naming variants."""
+def write_dataset(out_dir, frames, key, brief_md, variant_names, roles_en, legacy_dataset_type=None):
+    """Write frames as <table>.csv, answer_key.json, brief.md and the three naming variants.
+
+    legacy_dataset_type (L / F samples): stored in roles_legacy.json as the top-level key "dataset_type", next to the
+    {table: {column: role}} mapping, because cryptic legacy names cannot be recognised as L / F from the columns."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     for t, df in frames.items():
@@ -75,5 +88,8 @@ def write_dataset(out_dir, frames, key, brief_md, variant_names, roles_en):
             df.to_csv(vdir / v / f"{t}.csv", index=False)
         (vdir / v / "brief.json").write_text(json.dumps(variant_brief(brief, names), ensure_ascii=False, indent=2)
                                              + "\n", encoding="utf-8")
-        (vdir / f"roles_{v}.json").write_text(json.dumps(variant_roles(roles_en, names), ensure_ascii=False,
-                                                         indent=2) + "\n", encoding="utf-8")
+        roles = variant_roles(roles_en, names)
+        if v == "legacy" and legacy_dataset_type:
+            roles = {**roles, "dataset_type": legacy_dataset_type}
+        (vdir / f"roles_{v}.json").write_text(json.dumps(roles, ensure_ascii=False, indent=2) + "\n",
+                                              encoding="utf-8")

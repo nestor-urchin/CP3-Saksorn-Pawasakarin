@@ -1,0 +1,17 @@
+{
+  "fund_txn": {
+    "order_id": "record_id",
+    "unitholder_id": "entity",
+    "fund_code": "contract",
+    "order_datetime": "date",
+    "txn_type": "category",
+    "amount": "amount",
+    "bank_account": "counterparty",
+    "agent": "channel",
+    "nav_date": "due_date"
+  },
+  "unitholders": {
+    "unitholder_id": "entity",
+    "open_date": "opened_at"
+  }
+}
