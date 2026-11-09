@@ -1584,13 +1584,14 @@ PRESETS["F"] = {
     "order_id": "record_id", "unitholder_id": "entity", "fund_code": "contract", "order_datetime": "date",
     "txn_type": "category", "amount": "amount", "bank_account": "counterparty", "agent": "channel",
     "nav_date": "due_date", "open_date": "opened_at"}
-# columns whose names point to data type L / F (>= LF_MIN_MARKERS of them in the files); synonyms and preset names
-LF_MARKERS = {
-    "L": {"policyno", "insuredid", "cashvalue", "surrendervalue", "staffid", "premiummode", "issuedate", "changeid",
-          "changedate", "มูลค่าเวนคืน", "ผู้เอาประกัน", "วันออกกรมธรรม์"},
-    "F": {"unitholderid", "fundcode", "orderdatetime", "navdate", "bankaccount", "orderid", "opendate", "ผู้ถือหน่วย",
-          "กองทุน", "รหัสกองทุน"}}
-LF_MIN_MARKERS = 2
+# column names that only the type has (anchors). A file is L / F only when it has at least LF_MIN_ANCHORS of them:
+# generic names (order_id, bank_account, open_date, staff_id, ...) also occur in E / C / A files and never decide.
+LF_ANCHORS = {
+    "L": {"policyno", "insuredid", "cashvalue", "surrendervalue", "premiummode", "มูลค่าเวนคืน", "ผู้เอาประกัน",
+          "รหัสผู้เอาประกัน", "วันออกกรมธรรม์"},
+    "F": {"unitholderid", "unitholdercode", "fundcode", "navdate", "orderdatetime", "ผู้ถือหน่วย", "รหัสผู้ถือหน่วย",
+          "รหัสกองทุน"}}
+LF_MIN_ANCHORS = 1
 # the type-specific meaning of a role, shown next to the role name in Intake Review section A (spec 2)
 ROLE_MEANING_BY_TYPE = {
     "L": {"record_id": "รหัสรายการกรมธรรม์", "date": "วันที่ทำรายการ", "entity": "ผู้เอาประกัน",
@@ -1605,11 +1606,14 @@ CODE_MEANINGS = {
     "surrender": ["เวนคืน", "surrender", "surr"],
     "loan": ["เงินกู้", "กู้", "loan", "policy loan", "apl"],
     "claim": ["สินไหม", "เคลม", "เรียกร้อง", "claim", "clm"],
-    "benefit_change": ["เปลี่ยนผู้รับผลประโยชน์", "ผู้รับผลประโยชน์", "benefit change", "beneficiary change", "benchg"],
+    "benefit_change": ["เปลี่ยนผู้รับผลประโยชน์", "เปลี่ยนผู้รับประโยชน์", "benefit change", "beneficiary change",
+                       "change beneficiary", "change of beneficiary", "benchg"],
     "buy": ["ซื้อ", "buy", "subscription", "subscribe", "purchase", "sub"],
-    "sell": ["ขาย", "ไถ่ถอน", "sell", "redemption", "redeem", "red"],
+    "sell": ["ขาย", "ไถ่ถอน", "รับซื้อคืน", "sell", "redemption", "redeem", "red"],
     "switch_in": ["สับเปลี่ยนเข้า", "สับเปลี่ยนซื้อ", "switch in", "switchin", "swin"],
     "switch_out": ["สับเปลี่ยนออก", "สับเปลี่ยนขาย", "switch out", "switchout", "swout"]}
+# a meaning text with one of these is not a transaction type the checks read (repayments, interest, cancelled orders)
+CODE_MEANING_EXCLUDE = ["ชำระคืน", "คืนเงินกู้", "repay", "ดอกเบี้ย", "interest", "ยกเลิก", "cancel"]
 # codes assumed per meaning when the intake has no confirmed code values; the checks Skip until they are confirmed
 PRESET_DEFAULT_CODES = {
     "L": {"surrender": ["SURR"], "loan": ["LOAN"], "claim": ["CLAIM"], "benefit_change": ["BENCHG"]},
@@ -2064,12 +2068,12 @@ def check_descriptions(profile: pd.DataFrame, brief_columns=None) -> list:
 
 
 def _lf_type(profile: pd.DataFrame):
-    """"L" (life insurance) or "F" (fund orders) when at least LF_MIN_MARKERS column names are those of the type
-    (the preset columns and their synonyms), and more of them than the other type; else None."""
+    """"L" (life insurance) or "F" (fund orders) when the column names include at least LF_MIN_ANCHORS anchor names of
+    exactly one type (or more of one type than the other); else None. Generic names never count."""
     names = {_norm_name(c) for c in profile["column"]}
-    n = {t: len(names & m) for t, m in LF_MARKERS.items()}
+    n = {t: len(names & m) for t, m in LF_ANCHORS.items()}
     best = max(n, key=n.get)
-    if n[best] >= LF_MIN_MARKERS and sorted(n.values())[-1] > sorted(n.values())[-2]:
+    if n[best] >= LF_MIN_ANCHORS and sorted(n.values())[-1] > sorted(n.values())[-2]:
         return best
     return None
 
@@ -2679,9 +2683,9 @@ def _roles_by_table(roles_confirmed: dict) -> tuple:
 
 def _type_from_roles(roles: set, profile=None, declared=None):
     """Dataset type E / C / A from the confirmed roles (same rules as detect_dataset_type), else from the profile.
-    L and F share their roles with C / E (a fund order has a contract and a due date), so they are taken from the
-    column names in the profile, or from `declared` (the type the intake / the meta of the tables recorded)."""
-    if declared in ("L", "F"):
+    L and F share their roles with C / E (a fund order has a contract and a due date), so they are taken from
+    type-exclusive column names (LF_ANCHORS) in the profile, or from `declared` (the type confirmed in the intake)."""
+    if declared in DATA_TYPES:  # the type the auditor confirmed (or the intake recorded) wins over every detection
         return declared
     lf = _lf_type(profile) if profile is not None and len(profile) else None
     if lf:
@@ -3438,7 +3442,8 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
     profile = profile_columns(frames)
     prows = _profile_records(profile)
     bcols = brief.get("columns") or {}
-    preset = detect_dataset_type(profile)
+    preset = (m.get("dataset_type") if m is not None and m.get("dataset_type") in DATA_TYPES else None) \
+        or detect_dataset_type(profile)
     sug = suggest_roles(profile, bcols, preset, base_cfg)
     conflicts = check_descriptions(profile, bcols)
     cset = {(c["table"], c["column"]) for c in conflicts}
@@ -3514,7 +3519,9 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
         status = "REVIEW: " + NO_RECORD_ID + ("; ตรวจเพิ่ม: " + "; ".join(rest) if rest else "")
     else:
         status = _status_th(status, tx_roles0)
-    dtype = _type_from_roles(set(_roles_by_table(primary)[1]) if primary else set(), profile)
+    declared = m.get("dataset_type") if m is not None else None  # a mapping profile remembers the confirmed type
+    dtype = _type_from_roles(set(_roles_by_table(primary)[1]) if primary else set(), profile,
+                             declared if declared in DATA_TYPES else None)
     if tables is not None:
         attach_meta(tables, {"roles": roles, "code_values": codes, "dataset_type": dtype})
     suff = assess_sufficiency(requested, primary, profile, run_cfg, tables)
@@ -3695,14 +3702,16 @@ def confirm(intake: dict, answers: dict = None, path: str = "intake.json", cfg: 
     """Apply the auditor's answers to a draft intake and write intake.json (self-sufficient for run()).
     answers: roles {col: role} or {table: {col: role}} (a role may be a list: one certified role + custom roles;
     'ไม่ใช้' removes), filters [{column, op, value}], org_values {AIDA-14 KEY: value}, add_risks [risk_id],
-    materiality {type ก|ข|ไม่ระบุ, amount, basis}, reviewer, columns {col: meaning}, code_values {table.col: {..}}.
+    materiality {type ก|ข|ไม่ระบุ, amount, basis}, reviewer, columns {col: meaning}, code_values {table.col: {..}},
+    dataset_type (E|C|A|L|F: the confirmed data type, which wins over detection for the whole run).
     Duplicate role targets, unknown roles / columns / keys / risk ids are rejected with a Thai message.
     `intake` = the draft dict (inspect(...)["intake"] or the inspect result itself) or the path of intake_draft.json."""
     intake = _load_draft(intake)
     if not isinstance(intake, dict) or "files" not in intake or "roles" not in intake:
         raise AidaError("intake ไม่ครบ — ส่ง intake ที่ได้จาก inspect(...)['intake']")
     a = dict(answers or {})
-    known = {"roles", "filters", "org_values", "add_risks", "materiality", "reviewer", "columns", "code_values"}
+    known = {"roles", "filters", "org_values", "add_risks", "materiality", "reviewer", "columns", "code_values",
+             "dataset_type"}
     extra = sorted(set(a) - known)
     if extra:
         raise AidaError(f"ไม่รู้จักคำตอบ {', '.join(extra)} — ใช้ได้เฉพาะ {', '.join(sorted(known))}")
@@ -3728,11 +3737,15 @@ def confirm(intake: dict, answers: dict = None, path: str = "intake.json", cfg: 
         for t, c in _find_columns(fake, k) or []:
             cols.setdefault(t, {})[c] = v
     codes = {**intake.get("code_values", {}), **(a.get("code_values") or {})}
+    dtype = a.get("dataset_type", intake.get("dataset_type"))
+    if "dataset_type" in a and dtype not in DATA_TYPES:
+        raise AidaError(f"dataset_type '{dtype}' ใช้ไม่ได้ — เลือกจาก {', '.join(DATA_TYPES)} "
+                        "(E โอนเงิน, C รับชำระสินเชื่อ, A จ่ายเจ้าหนี้, L ประกันชีวิต, F กองทุนรวม) แล้วยืนยันอีกครั้ง")
     it = dict(intake)
     requested = list(intake["risks"]["requested"])
     it.update(status="confirmed", confirmed_at=_now(), roles=roles, filters=filters, org_values=org,
               materiality=mat, reviewer=str(a.get("reviewer") or intake.get("reviewer") or "ไม่ระบุ"),
-              columns=cols, code_values=codes,
+              columns=cols, code_values=codes, dataset_type=dtype,
               risks={**intake["risks"], "added": [r for r in add if r not in requested]},
               registry_version=str(base_cfg.get("REGISTRY.VERSION", REGISTRY_VERSION)), engine_version=__version__)
     it = _plain(it)
@@ -3797,9 +3810,10 @@ def _meaning_text(x) -> str:
 def resolve_code_meaning(text):
     """The internal meaning (a key of CODE_MEANINGS) a Thai or English meaning text resolves to, else None.
     Case and spacing are ignored; a phrase matches as a substring (short ASCII phrases such as "sub" only as a word);
-    the longest matching phrase wins. "Surrender", "surrender " and "เวนคืน" all give "surrender"."""
+    the longest matching phrase wins. "Surrender", "surrender " and "เวนคืน" all give "surrender". A text with a word of
+    CODE_MEANING_EXCLUDE (ชำระคืน, ดอกเบี้ย, ยกเลิก, repay, interest, cancel, ...) gives None."""
     t = _meaning_text(text)
-    if not t:
+    if not t or any(w in t for w in CODE_MEANING_EXCLUDE):
         return None
     words = set(re.findall(r"[a-z0-9]+", t))
     best = (0, None)
@@ -3876,6 +3890,13 @@ def missing_codes(tables: dict, meanings: list) -> list:
         return list(meanings)
     have = {resolve_code_meaning(m) for m in confirmed.values()}
     return [m for m in meanings if m not in have]
+
+
+def require_codes(tables: dict, meanings: list):
+    """The guard every check that filters by transaction type calls first: None when the intake confirmed a code for each
+    of `meanings`, else the Thai Skip reason (missing_codes_reason). A check must Skip with it, never run on defaults."""
+    missing = missing_codes(tables, meanings)
+    return missing_codes_reason(missing) if missing else None
 
 
 def missing_codes_reason(missing: list) -> str:
@@ -4545,8 +4566,9 @@ def _review_text(it: dict) -> str:
         rows[p["table"]] = p["n_rows"]
     L.append(f"Intake Review — ไฟล์ {len(it['files']):,} ตาราง: {files}")
     L.append("จำนวนแถว: " + ", ".join(f"{t} {n:,} แถว" for t, n in rows.items()))
-    if it.get("dataset_type"):
-        L.append(f"ประเภทข้อมูลที่ engine เห็น: {it['dataset_type']} ({TYPE_TEXT[it['dataset_type']]})")
+    dt = it.get("dataset_type")
+    L.append(f"ประเภทข้อมูลที่ตรวจพบ: {dt} ({TYPE_TEXT[dt]}) " if dt else "ประเภทข้อมูลที่ตรวจพบ: ไม่ระบุ ")
+    L[-1] += f"(แก้ได้ในคำตอบ: dataset_type เป็น {', '.join(DATA_TYPES)})"
     if it.get("brief", {}).get("context"):
         L.append(f"บริบท: {it['brief']['context']}")
     if it.get("mapping"):
@@ -4594,6 +4616,12 @@ def _review_a(it: dict) -> list:
             line += " — ระบุความหมาย หรือเก็บเป็น custom:<ชื่อ> หรือไม่ใช้"
         L.append(line)
     for k, v in it.get("code_values", {}).items():
+        if it.get("dataset_type") in ("L", "F"):  # show the internal meaning each code resolved to, so errors are caught
+            res = {a: resolve_code_meaning(b) for a, b in v.items()}
+            icon = "❓" if None in res.values() else "✅"
+            txt = ", ".join(f"{a} = {b} → " + (res[a] if res[a] else "❓ จับคู่ความหมายไม่ได้ — ระบุใหม่") for a, b in v.items())
+            L.append(f"{icon} ค่ารหัสของ {k}: {txt}")
+            continue
         L.append(f"✅ ค่ารหัสของ {k}: " + ", ".join(f"{a} = {b}" for a, b in v.items()))
     for p in it["profile"]:
         jm = p.get("join_match")

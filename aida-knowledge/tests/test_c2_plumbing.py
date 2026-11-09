@@ -320,6 +320,118 @@ class RunFillsMeta(unittest.TestCase):
         self.assertEqual(t["meta"]["code_values"], {"a.b": {"x": "buy"}})
 
 
+class FixesReview(unittest.TestCase):
+    """Review fixes: type-exclusive anchors, confirmed dataset_type, meaning matcher."""
+
+    def test_ap_with_order_and_bank_stays_A(self):
+        e = E()
+        ap = pd.DataFrame({"order_id": ["O1", "O2", "O3"], "pay_date": ["2026-01-05", "2026-01-06", "2026-01-07"],
+                           "amount": ["10", "20", "30"], "vendor_id": ["V1", "V2", "V3"],
+                           "bank_account": ["B1", "B2", "B3"], "created_by": ["U1", "U2", "U3"],
+                           "approved_by": ["U2", "U3", "U1"], "invoice_no": ["I1", "I2", "I3"]})
+        prof = e.profile_columns({"ap": ap})
+        self.assertNotIn(e.detect_dataset_type(prof), ("L", "F"))
+        roles = {"record_id", "date", "amount", "entity", "created_by", "approved_by", "document_no"}
+        self.assertEqual(e._type_from_roles(roles, prof), "A")
+
+    def test_e_with_accounts_open_date_stays_E(self):
+        e = E()
+        tx = pd.DataFrame({"tx_id": ["T1", "T2", "T3"], "ts": ["2026-01-05", "2026-01-06", "2026-01-07"],
+                           "from_acct": ["A1", "A2", "A3"], "to_acct": ["A2", "A3", "A1"], "amount": ["1", "2", "3"]})
+        acc = pd.DataFrame({"acct_id": ["A1", "A2", "A3"], "open_date": ["2020-01-01"] * 3,
+                            "bank_account": ["B1", "B2", "B3"], "staff_id": ["S1", "S2", "S3"]})
+        prof = e.profile_columns({"transactions": tx, "accounts": acc})
+        self.assertEqual(e.detect_dataset_type(prof), "E")
+        roles = {"record_id", "date", "amount", "entity", "counterparty"}
+        self.assertEqual(e._type_from_roles(roles, prof), "E")
+
+    def _legacy(self, d):
+        """The L fixture with cryptic column names: detection alone reads it as E."""
+        fr = l_frames()
+        names, roles, files = {}, {}, {}
+        for t, df in fr.items():
+            m = {c: f"c{i}" for i, c in enumerate(df.columns)}
+            roles[t] = {m[c]: r for c, r in L_ROLES[t].items()}
+            files[t] = str(Path(d) / f"{t}.csv")
+            df.rename(columns=m).to_csv(files[t], index=False)
+            names[t] = m
+        return files, roles, names
+
+    def test_confirm_dataset_type_override_legacy_L(self):
+        e = E()
+        with tempfile.TemporaryDirectory() as d:
+            files, roles, names = self._legacy(d)
+            ins = e.inspect(files, {})
+            self.assertNotEqual(ins["intake"]["dataset_type"], "L")
+            self.assertIn("ประเภทข้อมูลที่ตรวจพบ", ins["review_th"])
+            self.assertIn("แก้ได้ในคำตอบ", ins["review_th"])
+            code_key = f"tx.{names['tx']['txn_type']}"
+            it = e.confirm(ins["intake"], {"roles": roles, "dataset_type": "L", "code_values": {code_key: {"SURR": "เวนคืน"}}},
+                           str(Path(d) / "intake.json"))
+            self.assertEqual(it["dataset_type"], "L")
+            pre = e._prepare(files, it, e._effective_cfg(None, it, None, {})[0])
+            self.assertEqual(pre["tables"]["meta"]["dtype"], "L")
+            self.assertEqual(e.code_set(pre["tables"], "surrender"), {"SURR", "surr", "SURR "} & set(pre["tables"]["transactions"]["category"]))
+            self.assertEqual(e._type_from_roles({"entity", "counterparty", "date", "amount"}, None, "L"), "L")
+            res = e.run(files, it, d)
+            self.assertIn(e.TYPE_TEXT["L"], res["summary_th"])
+
+    def test_confirm_dataset_type_invalid_thai(self):
+        e = E()
+        with tempfile.TemporaryDirectory() as d:
+            files, roles, _ = self._legacy(d)
+            ins = e.inspect(files, {})
+            with self.assertRaises(e.AidaError) as cm:
+                e.confirm(ins["intake"], {"roles": roles, "dataset_type": "Z"}, str(Path(d) / "i.json"))
+            self.assertRegex(str(cm.exception), r"[฀-๿]")
+            self.assertIn("L", str(cm.exception))
+
+    def test_mapping_keeps_dataset_type(self):
+        e = E()
+        with tempfile.TemporaryDirectory() as d:
+            files, roles, _ = self._legacy(d)
+            ins = e.inspect(files, {})
+            it = e.confirm(ins["intake"], {"roles": roles, "dataset_type": "L"}, str(Path(d) / "i.json"))
+            mp = e.save_mapping(it, str(Path(d) / "mapping-l.json"))
+            self.assertEqual(e.load_mapping(mp)["dataset_type"], "L")
+            ins2 = e.inspect(files, {}, mapping=mp)
+            self.assertEqual(ins2["intake"]["dataset_type"], "L")
+
+    def test_meaning_table(self):
+        e = E()
+        rows = [("จ่ายสินไหมให้ผู้รับผลประโยชน์", "claim"), ("จ่ายเงินให้ผู้รับผลประโยชน์", None),
+                ("ชำระคืนเงินกู้", None), ("คืนเงินกู้", None), ("loan repayment", None), ("ดอกเบี้ยเงินกู้", None),
+                ("loan interest", None), ("รับซื้อคืน", "sell"), ("รับซื้อคืนหน่วยลงทุน", "sell"),
+                ("ยกเลิกคำสั่งซื้อ", None), ("Cancel buy", None), ("เปลี่ยนผู้รับผลประโยชน์", "benefit_change"),
+                ("Change beneficiary", "benefit_change"), ("redemption", "sell"), ("เงินกู้", "loan")]
+        for text, want in rows:
+            with self.subTest(text=text):
+                self.assertEqual(e.resolve_code_meaning(text), want)
+
+    def test_review_a_shows_resolved_meaning(self):
+        e = E()
+        with tempfile.TemporaryDirectory() as d:
+            paths = {}
+            for k, df in l_frames().items():
+                paths[k] = str(Path(d) / f"{k}.csv")
+                df.to_csv(paths[k], index=False)
+            it = e.inspect(paths, {})["intake"]
+        it["code_values"] = {"tx.txn_type": {"SURR": "Surrender", "LN": "ชำระคืนเงินกู้"}}
+        a = "\n".join(e._review_a(it))
+        self.assertIn("SURR = Surrender → surrender", a)
+        line = [x for x in a.splitlines() if "ค่ารหัสของ tx.txn_type" in x][0]
+        self.assertTrue(line.startswith("❓"))
+        self.assertIn("LN = ชำระคืนเงินกู้ → ❓", line)
+
+    def test_require_codes_guard(self):
+        e = E()
+        t = CodeMeanings()._tables(["SURR"], {"SURR": "Surrender"})
+        self.assertIsNone(e.require_codes(t, ["surrender"]))
+        self.assertTrue(e.require_codes(t, ["surrender", "loan"]).startswith("ยังไม่ได้ยืนยันความหมายรหัสประเภทรายการ: loan"))
+        t0 = CodeMeanings()._tables(["SURR"], None)
+        self.assertIn("surrender", e.require_codes(t0, ["surrender"]))
+
+
 class CAUnchanged(unittest.TestCase):
     def test_e_c_a_unchanged(self):
         for name in ("C", "A"):
