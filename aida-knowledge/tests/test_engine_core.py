@@ -20,8 +20,8 @@ FORBIDDEN = {"requests", "urllib", "urllib3", "http", "httpx", "socket", "ftplib
 class EngineCore(unittest.TestCase):
     def test_version_constants(self):
         e = engine()
-        self.assertEqual(e.__version__, "3.0.0")
-        self.assertEqual(e.REGISTRY_VERSION, "1.2")
+        self.assertEqual(e.__version__, "3.1.0")
+        self.assertEqual(e.REGISTRY_VERSION, "1.3")
 
     def test_roles_exact_list(self):
         e = engine()
@@ -83,10 +83,10 @@ class EngineCore(unittest.TestCase):
         import tempfile
         e = engine()
         text = (KNOWLEDGE / "AIDA-14-configuration-registry.md").read_text(encoding="utf-8")
-        self.assertIn('"REGISTRY.VERSION": "1.2"', text)
+        self.assertIn('"REGISTRY.VERSION": "1.3"', text)
         with tempfile.TemporaryDirectory() as d:
             stale = Path(d) / "AIDA-14-configuration-registry.md"
-            stale.write_text(text.replace('"REGISTRY.VERSION": "1.2"', '"REGISTRY.VERSION": "1.1"'), encoding="utf-8")
+            stale.write_text(text.replace('"REGISTRY.VERSION": "1.3"', '"REGISTRY.VERSION": "1.1"'), encoding="utf-8")
             with self.assertRaises(e.AidaError) as cm:
                 e._load_cfg(None, str(stale))
             self.assertIn("รุ่น 1.1", str(cm.exception))

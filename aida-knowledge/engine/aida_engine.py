@@ -14,8 +14,8 @@ import numpy as np
 import pandas as pd
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE  # control characters a worksheet cannot hold
 
-__version__ = "3.0.0"
-REGISTRY_VERSION = "1.2"
+__version__ = "3.1.0"
+REGISTRY_VERSION = "1.3"
 
 ROLES = ("record_id", "date", "amount", "entity", "counterparty", "contract", "category", "channel",
          "created_by", "approved_by", "document_no", "limit", "due_date", "opened_at")
@@ -1397,11 +1397,19 @@ tbl($("log"), D.run_log, ["run_id", "timestamp", "stage", "status", "detail", "r
 # ---- role adapter (spec 4.1) ----
 ACCOUNT_ID_ROLE = "entity"  # in a master (non-transaction) table, the entity column is the account id
 TX_ROLES = ("record_id", "date", "amount")
+EVENT_ROLES = ("record_id", "date", "contract")  # a non-transaction table with all three is the event table (L / F)
+MASTER_KEEP_ROLES = ("opened_at", "contract", "category")  # roles a master table keeps besides its account id
 
 
 def _check_role(role):
     if role not in ROLE_TO_INTERNAL and not (role.startswith("custom:") and len(role) > 7):
         raise ValueError(f"ไม่รู้จักบทบาทคอลัมน์ '{role}' — ใช้ได้เฉพาะ {', '.join(ROLES)} หรือ custom:<ชื่อ>")
+
+
+def _event_tables(roles: dict, tx_name) -> list:
+    """Names of the tables other than the transaction table whose roles include record_id, date and contract."""
+    return [n for n, rmap in roles.items()
+            if n != tx_name and set(EVENT_ROLES) <= {r for r in rmap.values() if isinstance(r, str)}]
 
 
 def to_internal(frames: dict, roles: dict) -> dict:
@@ -1415,7 +1423,11 @@ def to_internal(frames: dict, roles: dict) -> dict:
       `acct_id` and `opened_at`. The roles give no separate account-id role, so, as prep_map
       does for accounts.csv (acct_id, opened_at), its account id is the column mapped as
       `entity` (-> acct_id); `opened_at` -> opened_at; custom:x columns are kept. A master table
-      mapped without `entity` is rejected, because accounts cannot be joined without an id.
+      mapped without `entity` is rejected, because accounts cannot be joined without an id. A master table
+      also keeps its `contract` and `category` columns when mapped (policy number, premium mode).
+    * At most one other table may be the event table (data types L / F): it has record_id, date and contract
+      roles. It is returned as tables["events"] with the same internal names as the transactions table.
+      A second such table is rejected.
     Raises ValueError with a Thai message saying how to fix the mapping.
     """
     tx_name, best = None, 0
@@ -1425,21 +1437,27 @@ def to_internal(frames: dict, roles: dict) -> dict:
             tx_name, best = name, score
     if tx_name is None:
         raise ValueError("ไม่พบตารางธุรกรรม — ต้องกำหนดบทบาท record_id, date และ amount ให้คอลัมน์ในตารางธุรกรรม")
+    ev_names = _event_tables(roles, tx_name)
+    if len(ev_names) > 1:
+        raise AidaError(f"พบตารางเหตุการณ์ (event table) มากกว่า 1 ตาราง ({', '.join(ev_names)}) — AIDA รองรับตารางเหตุการณ์"
+                        "ได้ 1 ตารางต่อการวิเคราะห์ (ตารางที่มีบทบาท record_id, date และ contract): เลือกตารางเดียว "
+                        "หรือรวมตารางเข้าด้วยกันก่อน แล้วกำหนดบทบาทใหม่")
     out = {}
     for name, rmap in roles.items():
         if name not in frames:
             raise ValueError(f"ไม่พบตาราง '{name}' ในไฟล์ที่ส่งเข้ามา — ตรวจชื่อตารางหรือชื่อชีตอีกครั้ง")
         df, ren, seen = frames[name], {}, {}
         is_tx = name == tx_name
+        is_ev = name in ev_names
         for col, role in rmap.items():
             _check_role(role)
             if col not in df.columns:
                 raise ValueError(f"ไม่พบคอลัมน์ '{col}' ในตาราง '{name}' — ตรวจชื่อคอลัมน์ให้ตรงกับไฟล์")
-            if is_tx:
+            if is_tx or is_ev:
                 target = ROLE_TO_INTERNAL.get(role, role)
             elif role == ACCOUNT_ID_ROLE:
                 target = "acct_id"
-            elif role == "opened_at" or role.startswith("custom:"):
+            elif role in MASTER_KEEP_ROLES or role.startswith("custom:"):
                 target = role
             else:
                 continue  # role not used by the master table: dropped
@@ -1448,9 +1466,9 @@ def to_internal(frames: dict, roles: dict) -> dict:
                                  f"({role}) — เลือกเพียงคอลัมน์เดียวต่อบทบาท")
             seen[target] = col
             ren[col] = target
-        if not is_tx and "acct_id" not in ren.values():
+        if not is_tx and not is_ev and "acct_id" not in ren.values():
             raise ValueError(f"ตาราง '{name}' ไม่มีคอลัมน์รหัสบัญชี — กำหนดบทบาท entity ให้คอลัมน์รหัสบัญชี")
-        out["transactions" if is_tx else "accounts"] = df[list(ren)].rename(columns=ren).copy()
+        out["transactions" if is_tx else "events" if is_ev else "accounts"] = df[list(ren)].rename(columns=ren).copy()
     return out
 
 
@@ -1504,11 +1522,12 @@ ROLE_SYNONYMS = {
     "record_id": ["id", "txid", "txnid", "trxid", "transactionid", "transactionno", "transactionnumber", "trnno",
                   "trnid", "recordid", "recordno", "paymentid", "payid", "rowid", "รหัสรายการ", "เลขที่รายการ",
                   "เลขรายการ", "รหัสธุรกรรม", "เลขที่ธุรกรรม", "รหัสรายการชำระ", "รหัสรายการจ่าย",
-                  "เลขที่รายการจ่าย", "เลขที่รายการชำระ"],
+                  "เลขที่รายการจ่าย", "เลขที่รายการชำระ", "orderid", "changeid", "รหัสคำสั่ง", "เลขที่คำสั่งซื้อขาย"],
     "date": ["date", "ts", "dt", "timestamp", "datetime", "txdate", "txndate", "trandate", "trndate", "trndt",
              "transactiondate", "paydate", "paymentdate", "postingdate", "postdate", "txtime", "วันที่", "วันเวลา",
              "วันที่ทำรายการ", "วันที่รายการ", "วันที่ชำระ", "วันที่โอน", "เวลาทำรายการ", "วันเวลาทำรายการ", "วันที่จ่าย",
-             "วันที่จ่ายเงิน", "วันที่รับชำระ"],
+             "วันที่จ่ายเงิน", "วันที่รับชำระ", "orderdatetime", "orderdate", "changedate", "วันที่คำสั่ง",
+             "วันที่เปลี่ยนผู้รับผลประโยชน์"],
     "amount": ["amount", "amt", "value", "txamt", "trnamt", "txnamount", "transactionamount", "paymentamount",
                "payamount", "netamount", "netamt", "ยอดเงิน", "จำนวนเงิน", "ยอด", "ยอดสุทธิ", "ยอดชำระ", "มูลค่า",
                "ยอดโอน"],
@@ -1516,30 +1535,33 @@ ROLE_SYNONYMS = {
                "accfrom", "borrower", "borrowerid", "customer", "customerid", "vendor", "vendorid", "supplier",
                "supplierid", "payee", "acctid", "accountid", "accountno", "accountnumber", "บัญชีต้นทาง",
                "บัญชีผู้โอน", "ผู้โอน", "ผู้กู้", "ลูกค้า", "ผู้ขาย", "เลขที่บัญชี", "รหัสบัญชี", "รหัสผู้ขาย",
-               "เจ้าหนี้", "รหัสผู้กู้", "รหัสลูกหนี้"],
+               "เจ้าหนี้", "รหัสผู้กู้", "รหัสลูกหนี้", "insuredid", "unitholderid", "unitholdercode", "ผู้เอาประกัน",
+               "รหัสผู้เอาประกัน", "ผู้ถือหน่วย", "รหัสผู้ถือหน่วย"],
     "counterparty": ["toacct", "toaccount", "receiver", "beneficiary", "destacct", "destinationaccount",
                      "accountto", "acctto", "accto", "payer", "payerid", "payor", "counterparty", "cpty",
                      "บัญชีปลายทาง", "บัญชีผู้รับ", "ผู้รับ", "ผู้รับโอน", "ผู้ชำระ", "ผู้ชำระเงิน", "คู่รายการ",
-                     "คู่ค้า", "รหัสผู้ชำระ"],
+                     "คู่ค้า", "รหัสผู้ชำระ", "bankaccount", "bankacct", "บัญชีธนาคาร", "บัญชีรับเงิน"],
     "contract": ["contract", "contractid", "contractno", "loanid", "loanno", "loanaccount", "policy", "policyno",
-                 "cardno", "สัญญา", "เลขที่สัญญา", "เลขสัญญา", "กรมธรรม์", "เลขที่กรมธรรม์", "บัตร"],
+                 "cardno", "สัญญา", "เลขที่สัญญา", "เลขสัญญา", "กรมธรรม์", "เลขที่กรมธรรม์", "บัตร", "fundcode", "fundid",
+                 "กองทุน", "รหัสกองทุน"],
     "category": ["category", "categ", "txtype", "trantype", "transactiontype", "expensetype", "glcode", "หมวด",
-                 "หมวดหมู่", "ประเภท", "ประเภทรายการ", "หมวดค่าใช้จ่าย"],
+                 "หมวดหมู่", "ประเภท", "ประเภทรายการ", "หมวดค่าใช้จ่าย", "txntype", "premiummode", "งวดชำระเบี้ย"],
     "channel": ["channel", "chnl", "chan", "branch", "branchcode", "branchid", "brcd", "ช่องทาง", "สาขา",
-                "รหัสสาขา"],
+                "รหัสสาขา", "agent", "agentcode", "ตัวแทน", "ตัวแทนขาย"],
     "created_by": ["createdby", "creator", "maker", "entryby", "preparedby", "createuser", "crtby", "inputby",
-                   "ผู้บันทึก", "ผู้สร้าง", "ผู้ทำรายการ", "ผู้จัดทำ"],
+                   "ผู้บันทึก", "ผู้สร้าง", "ผู้ทำรายการ", "ผู้จัดทำ", "staffid", "staffcode", "รหัสพนักงาน"],
     "approved_by": ["approvedby", "approver", "checker", "authorizedby", "authby", "apprby", "apvby", "ผู้อนุมัติ",
                     "ผู้อนุมัติรายการ"],
     "document_no": ["documentno", "docno", "docnumber", "invoiceno", "invoicenumber", "invoice", "invno", "refno",
                     "reference", "receiptno", "เลขที่เอกสาร", "เลขเอกสาร", "เลขที่ใบแจ้งหนี้", "ใบแจ้งหนี้",
                     "เลขที่ใบกำกับ", "เลขอ้างอิง"],
     "limit": ["limit", "creditlimit", "credlimit", "approvallimit", "installment", "instalment",
-              "installmentamount", "scheduledamount", "วงเงิน", "ค่างวด", "ยอดค่างวด", "วงเงินอนุมัติ"],
+              "installmentamount", "scheduledamount", "วงเงิน", "ค่างวด", "ยอดค่างวด", "วงเงินอนุมัติ", "cashvalue", "surrendervalue", "มูลค่าเวนคืน", "มูลค่าเงินสด"],
     "due_date": ["duedate", "due", "duedt", "maturitydate", "paymentduedate", "วันครบกำหนด", "วันที่ครบกำหนด",
-                 "กำหนดชำระ", "วันกำหนดชำระ"],
+                 "กำหนดชำระ", "วันกำหนดชำระ", "navdate", "navdt", "วันที่nav", "วันที่ได้ราคา"],
     "opened_at": ["openedat", "opendate", "openeddate", "opendt", "accountopendate", "วันเปิดบัญชี",
-                  "วันที่เปิดบัญชี", "วันเปิด", "วันที่เปิด", "วันที่ทำสัญญา"],
+                  "วันที่เปิดบัญชี", "วันเปิด", "วันที่เปิด", "วันที่ทำสัญญา", "issuedate", "policyissuedate",
+                  "วันออกกรมธรรม์", "วันที่ออกกรมธรรม์"],
 }
 # preset -> {column name: role}; used only to propose roles, the auditor confirms
 PRESETS = {
@@ -1553,6 +1575,45 @@ PRESETS = {
           "invoice_no": "document_no", "created_by": "created_by", "approved_by": "approved_by",
           "approval_limit": "limit", "category": "category", "channel": "channel", "po_no": "contract"},
 }
+PRESETS["L"] = {
+    "txn_id": "record_id", "policy_no": "contract", "insured_id": "entity", "txn_date": "date", "txn_type": "category",
+    "amount": "amount", "payee": "counterparty", "cash_value": "limit", "staff_id": "created_by",
+    "issue_date": "opened_at", "premium_mode": "category",
+    "change_id": "record_id", "change_date": "date", "beneficiary": "counterparty"}
+PRESETS["F"] = {
+    "order_id": "record_id", "unitholder_id": "entity", "fund_code": "contract", "order_datetime": "date",
+    "txn_type": "category", "amount": "amount", "bank_account": "counterparty", "agent": "channel",
+    "nav_date": "due_date", "open_date": "opened_at"}
+# columns whose names point to data type L / F (>= LF_MIN_MARKERS of them in the files); synonyms and preset names
+LF_MARKERS = {
+    "L": {"policyno", "insuredid", "cashvalue", "surrendervalue", "staffid", "premiummode", "issuedate", "changeid",
+          "changedate", "มูลค่าเวนคืน", "ผู้เอาประกัน", "วันออกกรมธรรม์"},
+    "F": {"unitholderid", "fundcode", "orderdatetime", "navdate", "bankaccount", "orderid", "opendate", "ผู้ถือหน่วย",
+          "กองทุน", "รหัสกองทุน"}}
+LF_MIN_MARKERS = 2
+# the type-specific meaning of a role, shown next to the role name in Intake Review section A (spec 2)
+ROLE_MEANING_BY_TYPE = {
+    "L": {"record_id": "รหัสรายการกรมธรรม์", "date": "วันที่ทำรายการ", "entity": "ผู้เอาประกัน",
+          "contract": "เลขที่กรมธรรม์", "category": "ประเภทรายการ (เช่น เวนคืน กู้ เคลม) หรือลักษณะการชำระเบี้ย",
+          "limit": "มูลค่าเวนคืน", "counterparty": "ผู้รับเงิน / ผู้รับผลประโยชน์", "opened_at": "วันออกกรมธรรม์",
+          "created_by": "ตัวแทนหรือพนักงานที่ทำรายการ"},
+    "F": {"record_id": "รหัสคำสั่งซื้อขาย", "date": "วันเวลาที่ทำคำสั่ง", "entity": "ผู้ถือหน่วย", "contract": "กองทุน",
+          "category": "ประเภทรายการ (ซื้อ ขาย สับเปลี่ยน)", "due_date": "วันที่ได้ราคา NAV", "channel": "ตัวแทนขาย",
+          "counterparty": "บัญชีชำระ/รับเงิน", "opened_at": "วันเปิดบัญชีผู้ถือหน่วย"}}
+# internal meaning of a category code -> Thai / English phrases an auditor may write (spec 2, "Category codes")
+CODE_MEANINGS = {
+    "surrender": ["เวนคืน", "surrender", "surr"],
+    "loan": ["เงินกู้", "กู้", "loan", "policy loan", "apl"],
+    "claim": ["สินไหม", "เคลม", "เรียกร้อง", "claim", "clm"],
+    "benefit_change": ["เปลี่ยนผู้รับผลประโยชน์", "ผู้รับผลประโยชน์", "benefit change", "beneficiary change", "benchg"],
+    "buy": ["ซื้อ", "buy", "subscription", "subscribe", "purchase", "sub"],
+    "sell": ["ขาย", "ไถ่ถอน", "sell", "redemption", "redeem", "red"],
+    "switch_in": ["สับเปลี่ยนเข้า", "สับเปลี่ยนซื้อ", "switch in", "switchin", "swin"],
+    "switch_out": ["สับเปลี่ยนออก", "สับเปลี่ยนขาย", "switch out", "switchout", "swout"]}
+# codes assumed per meaning when the intake has no confirmed code values; the checks Skip until they are confirmed
+PRESET_DEFAULT_CODES = {
+    "L": {"surrender": ["SURR"], "loan": ["LOAN"], "claim": ["CLAIM"], "benefit_change": ["BENCHG"]},
+    "F": {"buy": ["BUY"], "sell": ["SELL"], "switch_in": ["SWIN"], "switch_out": ["SWOUT"]}}
 ROLE_CONF_DEFAULT = (0.8, 0.5)
 LEVEL_HIGH, LEVEL_MID, LEVEL_LOW = "สูง", "กลาง", "ต่ำ"
 
@@ -1836,7 +1897,7 @@ def _join_matches(rows: list, auxs: list) -> None:
             if u is not None and len(u) >= 3:
                 cands.append((i, u, set(u), _norm_key(u)))
     for i, u, raw, norm in cands:
-        best = None
+        best, by_table = None, {}
         for i2, u2, raw2, norm2 in cands:
             if rows[i2]["table"] == rows[i]["table"]:
                 continue
@@ -1844,6 +1905,11 @@ def _join_matches(rows: list, auxs: list) -> None:
             if n_pct >= 20 and (best is None or n_pct > best["normalized"]):
                 best = {"with": f"{rows[i2]['table']}.{rows[i2]['column']}", "raw": round(r_pct, 1),
                         "normalized": round(n_pct, 1)}
+            t2 = rows[i2]["table"]
+            if n_pct >= 20 and (t2 not in by_table or n_pct > by_table[t2]["normalized"]):
+                by_table[t2] = {"raw": round(r_pct, 1), "normalized": round(n_pct, 1)}
+        if best is not None:  # per other table: the best matching column (the event table is joined to the transactions)
+            best["by_table"] = by_table
         rows[i]["join_match"] = best
 
 
@@ -1851,7 +1917,8 @@ def profile_columns(frames: dict) -> pd.DataFrame:
     """One row per (table, column): type guess, null/unique %, range, top-5, samples, patterns, relations, join_match.
 
     Percentages are 0-100. join_match is None or {"with": "table.column", "raw": % of this column's distinct
-    values found exactly in the other column, "normalized": the same after strip / case / leading-zero removal}.
+    values found exactly in the other column, "normalized": the same after strip / case / leading-zero removal,
+    "by_table": {other table: {"raw", "normalized"}} for the best column of every other table that matches}.
     """
     rows, auxs = [], []
     for tname, df in frames.items():
@@ -1996,12 +2063,27 @@ def check_descriptions(profile: pd.DataFrame, brief_columns=None) -> list:
     return out
 
 
+def _lf_type(profile: pd.DataFrame):
+    """"L" (life insurance) or "F" (fund orders) when at least LF_MIN_MARKERS column names are those of the type
+    (the preset columns and their synonyms), and more of them than the other type; else None."""
+    names = {_norm_name(c) for c in profile["column"]}
+    n = {t: len(names & m) for t, m in LF_MARKERS.items()}
+    best = max(n, key=n.get)
+    if n[best] >= LF_MIN_MARKERS and sorted(n.values())[-1] > sorted(n.values())[-2]:
+        return best
+    return None
+
+
 def detect_dataset_type(profile: pd.DataFrame):
-    """"E" (transactions between accounts), "C" (loan payments), "A" (accounts payable) or None, from the
-    roles the column names point to. Contract + due date -> C; created/approved by or document no -> A;
+    """"E" (transactions between accounts), "C" (loan payments), "A" (accounts payable), "L" (life insurance),
+    "F" (fund orders) or None, from the roles the column names point to. L / F are decided first, by their
+    own column names (a fund order has a contract and a due date too). Contract + due date -> C; created/approved by or document no -> A;
     entity + counterparty + date + amount -> E."""
     if profile is None or len(profile) == 0:
         return None
+    lf = _lf_type(profile)
+    if lf:
+        return lf
     roles = {match_role(c)[0] for c in profile["column"]} - {None}
     if {"contract", "due_date"} <= roles:
         return "C"
@@ -2376,7 +2458,8 @@ def _spec(func, risk, family, requires, registry, types, optional=(), alt=()):
 
 
 _GEN = ["record_id", "date", "amount", "entity"]
-_ALL = ["E", "C", "A"]
+DATA_TYPES = ("E", "C", "A", "L", "F")  # every data type; the general checks and risks list all of them
+_ALL = list(DATA_TYPES)
 CHECKS = {
     # migrated B1 cards (data type E; the general risks apply to any data type)
     "STAT-MAD": _spec(stat_mad, "R1", "5.1 Statistical", _GEN, ["STAT.MAD.THRESHOLD", "GATE.SAMPLE.MIN"], _ALL,
@@ -2444,7 +2527,8 @@ def plan_checks(tables: dict, cfg: dict = None) -> pd.DataFrame:
 # a joined master table (opened_at) must match >= cfg["INTAKE.JOIN_MIN_PCT"] (AIDA-14, 90%) of the transaction keys
 JOIN_ROLES = ("opened_at",)  # roles that normally live in a secondary table joined by the entity id
 NEEDS_TIME_CHECKS = {"TEMP-OFFHOURS"}  # checks that read the time of day, not only the date
-TYPE_TEXT = {"E": "รายการโอนเงินระหว่างบัญชี", "C": "รับชำระค่างวดสินเชื่อ", "A": "จ่ายเงินเจ้าหนี้"}
+TYPE_TEXT = {"E": "รายการโอนเงินระหว่างบัญชี", "C": "รับชำระค่างวดสินเชื่อ", "A": "จ่ายเงินเจ้าหนี้",
+             "L": "รายการกรมธรรม์ประกันชีวิต", "F": "ธุรกรรมกองทุนรวมของผู้ถือหน่วย"}
 REQ_TRANSFERS = ("รายการเงินฝากและโอนเงินของบัญชีผู้ชำระ (รหัสรายการ, วันเวลา, บัญชีต้นทาง, บัญชีปลายทาง, ยอดเงิน) "
                  "เพื่อดูการรับโอนและส่งต่อเงิน")
 REQ_TIME = "วันที่ของรายการที่มีเวลา (ชั่วโมง:นาที) เพื่อดูรายการนอกเวลาทำการ"
@@ -2484,22 +2568,22 @@ RISK_LIBRARY = {
     "G-R1": _risk("ยอดโดดเด่น",
                   "รายการหรือบัญชีที่ยอดโดดเด่นหรือถี่ผิดปกติเมื่อเทียบกับพฤติกรรมปกติของตนเองและของกลุ่ม",
                   ["ยอดโดดเด่น", "ยอดสูงผิดปกติ", "ยอดผิดปกติ", "outlier amount", "unusual amount", "amount outlier"],
-                  ["E", "C", "A"], ["STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE"], _GENR, 1, 100),
+                  list(DATA_TYPES), ["STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE"], _GENR, 1, 100),
     "G-R2": _risk("ช่วงสิ้นงวด",
                   "รายการกระจุกตัวในช่วงสิ้นเดือนหรือสิ้นงวดบัญชีมากกว่าปกติ",
                   ["ช่วงสิ้นงวด", "สิ้นงวด", "สิ้นเดือน", "ปิดงวด", "period end", "period-end", "month end", "cut-off"],
-                  ["E", "C", "A"], ["GEN-PERIOD-END"], _GENR),
+                  list(DATA_TYPES), ["GEN-PERIOD-END"], _GENR),
     "G-R3": _risk("นอกเวลาทำการ",
                   "รายการที่เกิดนอกเวลาทำการหรือวันหยุดเป็นสัดส่วนสูง (ต้องมีเวลาของรายการ ไม่ใช่เฉพาะวันที่)",
                   ["นอกเวลาทำการ", "นอกเวลางาน", "วันหยุด", "off-hours", "off hours", "after hours", "after-hours"],
-                  ["E", "C", "A"], ["TEMP-OFFHOURS"], ["record_id", "date", "entity"], 1, 100,
+                  list(DATA_TYPES), ["TEMP-OFFHOURS"], ["record_id", "date", "entity"], 1, 100,
                   {"date": REQ_TIME, "_time": REQ_TIME}),
     "G-R4": _risk("ตัวเลขผิดธรรมชาติ",
                   "การกระจายตัวเลขหลักแรกผิดจาก Benford ยอดกลมหรือยอดซ้ำถี่ผิดปกติ ซึ่งอาจเกิดจากการกำหนดตัวเลข "
                   "ไม่ใช่ธุรกรรมจริง",
                   ["ตัวเลขผิดธรรมชาติ", "ยอดกลม", "ยอดซ้ำ", "benford", "round amount", "round number", "repeated amount",
                    "unnatural number"],
-                  ["E", "C", "A"], ["FOR-BENFORD", "FOR-ROUND", "FOR-REPEAT"], _GENR, 1, 100),
+                  list(DATA_TYPES), ["FOR-BENFORD", "FOR-ROUND", "FOR-REPEAT"], _GENR, 1, 100),
     "C-R1": _risk("ผู้ชำระคนเดียวหลายสัญญา",
                   "ผู้ชำระรายเดียวชำระแทนผู้กู้หลายสัญญา (ตั้งแต่ PAYER.MIN_CONTRACTS สัญญา) อาจเป็นการชำระแทนที่ไม่ได้"
                   "เปิดเผยความสัมพันธ์ — ไม่ครอบคลุม pattern ปิดบัญชีก่อนกำหนดจากผู้ชำระอื่นที่ไม่ถึงจำนวนสัญญานี้ "
@@ -2593,8 +2677,15 @@ def _roles_by_table(roles_confirmed: dict) -> tuple:
     return tx_name, by[tx_name], {n: d for n, d in by.items() if n != tx_name}
 
 
-def _type_from_roles(roles: set, profile=None):
-    """Dataset type E / C / A from the confirmed roles (same rules as detect_dataset_type), else from the profile."""
+def _type_from_roles(roles: set, profile=None, declared=None):
+    """Dataset type E / C / A from the confirmed roles (same rules as detect_dataset_type), else from the profile.
+    L and F share their roles with C / E (a fund order has a contract and a due date), so they are taken from the
+    column names in the profile, or from `declared` (the type the intake / the meta of the tables recorded)."""
+    if declared in ("L", "F"):
+        return declared
+    lf = _lf_type(profile) if profile is not None and len(profile) else None
+    if lf:
+        return lf
     if {"contract", "due_date"} <= roles:
         return "C"
     if {"approved_by", "created_by"} & roles and ("document_no" in roles or "amount" in roles) \
@@ -2618,7 +2709,9 @@ def _intake_ctx(roles_confirmed: dict, profile=None, tables=None, cfg: dict = No
     profile when given, else from the internal tables. With tables, also the data-volume skips of the checks
     (what gate_volume did in B1) and with cfg the join threshold."""
     tx_name, tx_roles, others = _roles_by_table(roles_confirmed)
-    ctx = {"roles": set(tx_roles), "dtype": _type_from_roles(set(tx_roles), profile), "rows": None, "months": None,
+    declared = ((tables or {}).get("meta") or {}).get("dtype")
+    ctx = {"roles": set(tx_roles), "dtype": _type_from_roles(set(tx_roles), profile, declared), "rows": None,
+           "months": None,
            "has_time": None, "joins": {}, "vol": {},
            "join_min": 100.0 * cfg["INTAKE.JOIN_MIN_PCT"] if cfg else 100.0 * 0.9}
     if profile is not None and len(profile) and tx_name is not None:
@@ -2638,6 +2731,13 @@ def _intake_ctx(roles_confirmed: dict, profile=None, tables=None, cfg: dict = No
                     jm = j.iloc[0]["join_match"] if len(j) else None
                     ok = isinstance(jm, dict) and str(jm["with"]).startswith(f"{tname}.")
                     ctx["joins"][role] = (tname, float(jm["normalized"]) if ok else 0.0)
+        ev_names = _event_tables(roles_confirmed, tx_name)
+        c_tx, c_ev = tx_roles.get("contract"), (others.get(ev_names[0], {}).get("contract") if ev_names else None)
+        if c_tx and c_ev:  # events <-> transactions on contract: share of the events' contract ids found in the transactions
+            pe = profile[(profile["table"] == ev_names[0]) & (profile["column"] == c_ev)]
+            jm = pe.iloc[0]["join_match"] if len(pe) else None
+            hit = ((jm or {}).get("by_table") or {}).get(tx_name)
+            ctx["joins"]["events"] = (ev_names[0], float(hit["normalized"]) if hit else 0.0)
     if profile is None and tables is not None and "transactions" in tables:
         tx = tables["transactions"]
         ctx["rows"] = int(len(tx))
@@ -2851,7 +2951,9 @@ DATE_ROLES = ("date", "due_date", "opened_at")
 SIG_PATTERNS = ("date", "datetime", "thai_id13", "account_like", "thai_text")  # stable patterns a mapping compares
 MULE_STAGE = ["MULE-PATTERN", "MULE-CROSS-TX", "MULE-NETWORK"]  # read the Evidence of the cards before them
 # entity_type names of a Finding per data type (the checks say entity / counterparty / account)
-ENTITY_LABELS = {"C": {"entity": "borrower", "account": "borrower", "counterparty": "payer"},
+ENTITY_LABELS = {"L": {"entity": "insured", "account": "policy", "counterparty": "payee"},
+                 "F": {"entity": "unitholder", "account": "fund", "counterparty": "account"},
+                 "C": {"entity": "borrower", "account": "borrower", "counterparty": "payer"},
                  "A": {"entity": "vendor", "account": "vendor", "counterparty": "payee"}}
 # Evidence of these checks whose records are all records of the key check's Evidence (same entity and period) is the
 # same pattern (equal split amounts repeat and are round): it joins that Finding instead of making a second one
@@ -3073,8 +3175,9 @@ def _internal(frames: dict, roles: dict) -> tuple:
     primary, extra = _split_roles(roles)
     tables = to_internal(frames, primary)
     tx_name = _roles_by_table(primary)[0]
+    ev_names = _event_tables(primary, tx_name)
     for t, c, r in extra:
-        target = "transactions" if t == tx_name else "accounts"
+        target = "transactions" if t == tx_name else "events" if t in ev_names else "accounts"
         if target in tables:
             tables[target][r] = frames[t][c]
     return tables, tx_name
@@ -3092,6 +3195,14 @@ def _prep_internal(tables: dict, cfg: dict) -> dict:
         tx["limit"] = pd.to_numeric(lim, errors="coerce").astype(float)
     if "contract" in tx.columns or "to_acct" not in tx.columns:
         t["_prep"]["excluded_self"] = 0  # base_tx keeps borrower == payer rows: normal for loan / AP data
+    if "events" in tables:  # the event table (L / F): dates with the same B1 parsing, ids as stripped text
+        ev = tables["events"].copy()
+        if "ts" in ev.columns:
+            ev["ts"], _ = to_naive_ts(ev["ts"])
+        for c in ("tx_id", "contract", "from_acct", "to_acct"):
+            if c in ev.columns:
+                ev[c] = ev[c].map(lambda x: x if pd.isna(x) else str(x).strip())
+        t["events"] = ev
     return t
 
 
@@ -3404,6 +3515,8 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
     else:
         status = _status_th(status, tx_roles0)
     dtype = _type_from_roles(set(_roles_by_table(primary)[1]) if primary else set(), profile)
+    if tables is not None:
+        attach_meta(tables, {"roles": roles, "code_values": codes, "dataset_type": dtype})
     suff = assess_sufficiency(requested, primary, profile, run_cfg, tables)
     pl = plan(requested, primary, profile, run_cfg, tables)
     if tables is not None:
@@ -3664,6 +3777,113 @@ def _load_intake(intake) -> dict:
     return intake
 
 
+# ---- C2: meta of the confirmed intake (code values) and category code meanings ----
+def norm_id(s: pd.Series) -> pd.Series:
+    """Ids as join keys: text, stripped, case-folded, leading zeros removed ("00123" == " 123 "); same rule as _norm_key.
+    Use it to join the event table to the transactions on `contract`."""
+    t = s.astype(str).str.strip().str.casefold().str.lstrip("0")
+    return t.where(t != "", "0").where(s.notna(), None)
+
+
+def norm_code(x) -> str:
+    """A category code for comparison: text, stripped, case-folded."""
+    return str(x).strip().casefold()
+
+
+def _meaning_text(x) -> str:
+    return " ".join(re.sub(r"[_\-]+", " ", str(x).casefold()).split())
+
+
+def resolve_code_meaning(text):
+    """The internal meaning (a key of CODE_MEANINGS) a Thai or English meaning text resolves to, else None.
+    Case and spacing are ignored; a phrase matches as a substring (short ASCII phrases such as "sub" only as a word);
+    the longest matching phrase wins. "Surrender", "surrender " and "เวนคืน" all give "surrender"."""
+    t = _meaning_text(text)
+    if not t:
+        return None
+    words = set(re.findall(r"[a-z0-9]+", t))
+    best = (0, None)
+    for meaning, phrases in CODE_MEANINGS.items():
+        for ph in [_meaning_text(meaning)] + [_meaning_text(p) for p in phrases]:
+            hit = (ph in words) if (ph.isascii() and len(ph) <= 4) else (ph in t)
+            if hit and len(ph) > best[0]:
+                best = (len(ph), meaning)
+    return best[1]
+
+
+def attach_meta(tables: dict, intake: dict) -> dict:
+    """Put what the confirmed intake says about the data into tables["meta"] (run and trace do this before the checks):
+    {"code_values": {"table.column": {code: meaning}}, "category_key": "table.column" of the transactions column
+    with the role category (original names, before the role adapter renames it), "dtype", "tx_table", "events_table"}.
+    Returns `tables` (the same dict, changed) so tests can build tables with meta."""
+    it = intake or {}
+    roles = it.get("roles") or {}
+    primary, _ = _split_roles(roles) if roles else ({}, [])
+    tx_name, tx_roles, _ = _roles_by_table(primary) if primary else (None, {}, {})
+    cat = tx_roles.get("category")
+    ev = _event_tables(primary, tx_name) if primary else []
+    tables["meta"] = {"code_values": {k: dict(v) for k, v in (it.get("code_values") or {}).items()},
+                      "category_key": f"{tx_name}.{cat}" if tx_name and cat else None,
+                      "dtype": it.get("dataset_type"), "tx_table": tx_name, "events_table": ev[0] if ev else None}
+    return tables
+
+
+def _confirmed_codes(tables: dict):
+    """{code: meaning} confirmed for the transactions' category column, or None when the intake has none."""
+    meta = tables.get("meta") or {}
+    cv = meta.get("code_values") or {}
+    key = meta.get("category_key")
+    if key is not None:
+        entry = cv.get(key)
+    else:  # tables built without roles: a single confirmed column is the category column
+        entry = next(iter(cv.values())) if len(cv) == 1 else None
+    return dict(entry) if entry else None
+
+
+def code_set(tables: dict, meaning: str) -> set:
+    """The raw codes of tables["transactions"]["category"] whose confirmed meaning resolves to `meaning`
+    (surrender, loan, claim, benefit_change, buy, sell, switch_in, switch_out). Codes are compared after casefold and
+    strip, so "SURR " confirmed matches "surr" in the data; the meaning text may be Thai or English (CODE_MEANINGS).
+    Without confirmed code values for the column it falls back to the preset default codes of the data type
+    (PRESET_DEFAULT_CODES); missing_codes then still reports every meaning as missing, so the checks Skip."""
+    confirmed = _confirmed_codes(tables)
+    if confirmed is not None:
+        want = {norm_code(c) for c, m in confirmed.items() if resolve_code_meaning(m) == meaning}
+    else:
+        dtype = (tables.get("meta") or {}).get("dtype")
+        want = {norm_code(c) for c in PRESET_DEFAULT_CODES.get(dtype, {}).get(meaning, [])}
+    if not want:
+        return set()
+    tx = tables.get("transactions")
+    if tx is not None and "category" in tx.columns:
+        return {v for v in pd.unique(tx["category"].dropna()) if norm_code(v) in want}
+    return {c for c in (confirmed or {}) if norm_code(c) in want}  # no data column to read: the confirmed codes
+
+
+def code_mask(tx: pd.DataFrame, codes) -> pd.Series:
+    """Boolean mask of the transactions rows whose category is one of `codes` (casefold + strip)."""
+    want = {norm_code(c) for c in codes}
+    if "category" not in tx.columns or not want:
+        return pd.Series(False, index=tx.index)
+    return tx["category"].map(lambda v: not pd.isna(v) and norm_code(v) in want)
+
+
+def missing_codes(tables: dict, meanings: list) -> list:
+    """The meanings (of `meanings`) for which the intake has no confirmed code: no code_values for the category column,
+    or none of its codes resolves to the meaning. A check that needs them Skips with missing_codes_reason."""
+    confirmed = _confirmed_codes(tables)
+    if confirmed is None:
+        return list(meanings)
+    have = {resolve_code_meaning(m) for m in confirmed.values()}
+    return [m for m in meanings if m not in have]
+
+
+def missing_codes_reason(missing: list) -> str:
+    """The Thai Skip reason for missing_codes."""
+    return ("ยังไม่ได้ยืนยันความหมายรหัสประเภทรายการ: " + ", ".join(missing) +
+            " — ระบุความหมายของรหัสในคอลัมน์ประเภทรายการ (บทบาท category) ใน Intake Review แล้วยืนยันและรันใหม่")
+
+
 def _prepare(files, it: dict, cfg: dict) -> dict:
     """Read the files again, compare sha256 with the intake, apply filters, role adapter and B1 parsing."""
     if files is None:
@@ -3688,7 +3908,7 @@ def _prepare(files, it: dict, cfg: dict) -> dict:
     frames, flog = _apply_filters(frames, it.get("filters", []), it["roles"], it.get("profile", []))
     events += [{"stage": 2, "status": "OK", "detail": x} for x in flog]
     tables, tx_name = _internal(frames, it["roles"])
-    tables = _prep_internal(tables, cfg)
+    tables = attach_meta(_prep_internal(tables, cfg), it)
     return {"frames": frames, "meta": meta, "tables": tables, "tx_name": tx_name, "warnings": warnings,
             "events": events, "filter_log": flog}
 
@@ -3801,7 +4021,7 @@ def run(files, intake, out_dir: str = ".", cfg: dict = None, registry_path: str 
     events.append({"stage": 4, "status": "OK", "detail": "ความเสี่ยงที่ยืนยัน: " + (", ".join(risk_ids) or "ไม่มี")
                    + (f"; โหมดสำรวจ: {', '.join(it['risks'].get('exploratory', []))}" if it["risks"].get("exploratory") else "")})
     prof = profile_columns(pre["frames"])
-    dtype = _type_from_roles(set(tx_roles), prof)
+    dtype = _type_from_roles(set(tx_roles), prof, it.get("dataset_type"))
     pl = plan(risk_ids, primary, prof, cfg_run, tables) if not status.startswith("STOP") else \
         pd.DataFrame(columns=["check_id", "decision", "reason", "missing"])
     plan_df = _plan_all(pl)
@@ -4084,20 +4304,23 @@ def data(files=None, intake=None) -> dict:
     pre = _prepare(files, it, base_cfg)
     primary, extra = _split_roles(it["roles"])
     tx_name = _roles_by_table(primary)[0]
-    names = {"transactions": {}, "accounts": {}}
+    names = {"transactions": {}, "accounts": {}, "events": {}}
+    ev_names = _event_tables(primary, tx_name)
     for t, rmap in primary.items():
         for col, role in rmap.items():
             if t == tx_name:
                 names["transactions"][ROLE_TO_INTERNAL.get(role, role)] = col
+            elif t in ev_names:
+                names["events"][ROLE_TO_INTERNAL.get(role, role)] = col
             elif role == ACCOUNT_ID_ROLE:
                 names["accounts"]["acct_id"] = col
-            elif role == "opened_at" or role.startswith("custom:"):
+            elif role in MASTER_KEEP_ROLES or role.startswith("custom:"):
                 names["accounts"][role] = col
     for t, col, role in extra:
-        names["transactions" if t == tx_name else "accounts"][role] = col
+        names["transactions" if t == tx_name else "events" if t in ev_names else "accounts"][role] = col
     out = {}
     for k, df in pre["tables"].items():
-        if k.startswith("_"):
+        if k.startswith("_") or not isinstance(df, pd.DataFrame):
             continue
         df = df.copy()
         df.attrs["original_names"] = {c: names.get(k, {})[c] for c in df.columns if c in names.get(k, {})}
@@ -4356,6 +4579,9 @@ def _review_a(it: dict) -> list:
         role = s["role"] if s["role"] != UNKNOWN_ROLE else "ไม่ทราบ"
         ex = ", ".join(p.get("samples", [])[:3])
         line = f"{icon} {s['table']}.{s['column']} → {role}"
+        meaning = ROLE_MEANING_BY_TYPE.get(it.get("dataset_type"), {}).get(role)
+        if meaning:  # the role's meaning for this data type, e.g. limit = มูลค่าเวนคืน for life insurance
+            line += f" ({meaning})"
         if s["role"] != UNKNOWN_ROLE:
             line += f" (ความมั่นใจ{s['level']} {s['confidence']:.2f})"
         line += f": {s['reason']}"
@@ -4376,6 +4602,18 @@ def _review_a(it: dict) -> list:
             L.append(f"การเชื่อมตาราง: {p['table']}.{p['column']} พบใน {jm['with']} {jm['normalized']:.1f}% ของรหัส "
                      f"(ตรงทุกตัวอักษร {jm['raw']:.1f}%)")
     prim = _split_roles(it["roles"])[0]
+    tx_t = _roles_by_table(prim)[0] if prim else None
+    for ev in _event_tables(prim, tx_t) if prim else []:  # the event table (L / F): the auditor confirms which it is
+        L.append(f"ตารางเหตุการณ์ (event table): {ev} — ตารางที่มีรหัสรายการ วันที่ และเลขที่กรมธรรม์/สัญญาของตัวเอง "
+                 f"แยกจาก {tx_t} (ยืนยันว่าถูกต้อง หรือแก้บทบาทของตาราง)")
+        c_ev = _roles_by_table(prim)[2].get(ev, {}).get("contract")
+        pe = [p for p in it["profile"] if p["table"] == ev and p["column"] == c_ev]
+        hit = (((pe[0].get("join_match") or {}).get("by_table") or {}).get(tx_t)) if pe else None
+        if hit:
+            L.append(f"การเชื่อมตาราง: {ev}.{c_ev} พบใน {tx_t} {hit['normalized']:.1f}% ของรหัส "
+                     f"(ตรงทุกตัวอักษร {hit['raw']:.1f}%)")
+        else:
+            L.append(f"การเชื่อมตาราง: {ev}.{c_ev} ไม่พบใน {tx_t} เลย — ตรวจรูปแบบเลขที่กรมธรรม์/สัญญาของสองตาราง")
     if "record_id" not in (_roles_by_table(prim)[1] if prim else {}):
         cand = [f"{p['table']}.{p['column']}" for p in it["profile"]
                 if p.get("unique_pct") == 100 and not p.get("null_pct")]

@@ -315,30 +315,30 @@ class RealPackTests(unittest.TestCase):
         self.assertTrue(any("differs" in e for e in vp.validate(self.d)))
 
     def test_engine_version_matches_index(self):
-        self.assertEqual(vp.engine_constants(self.engine)["__version__"], "3.0.0")
+        self.assertEqual(vp.engine_constants(self.engine)["__version__"], "3.1.0")
         self.assertEqual(vp.check_engine_version(self.engine, self.k), [])
         a00 = self.k / "AIDA-00-index-principles.md"
-        self.edit(a00, "v3.0.0", "v3.0.1")
+        self.edit(a00, "v3.1.0", "v3.1.1")
         errors = vp.check_engine_version(self.engine, self.k)
         self.assertEqual(len(errors), 1)
         self.assertIn("AIDA-00", errors[0])
-        self.edit(a00, "v3.0.1", "v3.0.0")
+        self.edit(a00, "v3.1.1", "v3.1.0")
         a19 = self.k / "AIDA-19-engine-guide.md"
         a19.write_text(re.sub(r"aida_engine\.py`?\s+v\d+(?:\.\d+)+", "engine", a19.read_text(encoding="utf-8")),
                        encoding="utf-8")
         errors = vp.check_engine_version(self.engine, self.k)
         self.assertEqual(len(errors), 1)
         self.assertIn("AIDA-19", errors[0])
-        self.edit(self.engine, '__version__ = "3.0.0"', '__version__ = "3.1.0"')
+        self.edit(self.engine, '__version__ = "3.1.0"', '__version__ = "3.2.0"')
         self.assertGreaterEqual(len(vp.check_engine_version(self.engine, self.k)), 1)
 
     def test_engine_registry_version_matches_aida14(self):
         reg = self.k / vp.REGISTRY_NAME
         self.assertEqual(vp.check_engine_registry_version(self.engine, reg), [])
-        self.edit(self.engine, 'REGISTRY_VERSION = "1.2"', 'REGISTRY_VERSION = "1.3"')
+        self.edit(self.engine, 'REGISTRY_VERSION = "1.3"', 'REGISTRY_VERSION = "1.4"')
         errors = vp.check_engine_registry_version(self.engine, reg)
         self.assertEqual(len(errors), 1)
-        self.assertIn("1.3", errors[0])
+        self.assertIn("1.4", errors[0])
 
     def test_engine_cfg_keys_exist(self):
         reg = self.k / vp.REGISTRY_NAME

@@ -1,17 +1,17 @@
 # AIDA-14 · Configuration Registry (ค่ามาตรฐาน)
-> ไฟล์: AIDA-14 | เวอร์ชัน: 1.2 | ส่วนหนึ่งของ AIDA Knowledge Pack
+> ไฟล์: AIDA-14 | เวอร์ชัน: 1.3 | ส่วนหนึ่งของ AIDA Knowledge Pack
 > ไฟล์นี้ตอบคำถาม: เกณฑ์/Threshold ของแต่ละ skill ใช้ค่าเท่าไหร่, ค่ามาตรฐานมาจากไหน, Materiality คิดอย่างไร, ตาราง Priority เป็นอย่างไร, จะเปลี่ยนค่าได้อย่างไร
 
 ## สรุปสั้น
-ไฟล์นี้เป็น **แหล่งค่ามาตรฐานเพียงแหล่งเดียว (single source of truth)** ของ AIDA Registry เวอร์ชัน 1.2
+ไฟล์นี้เป็น **แหล่งค่ามาตรฐานเพียงแหล่งเดียว (single source of truth)** ของ AIDA Registry เวอร์ชัน 1.3
 ทุกค่าเป็น **ค่ามาตรฐานทั่วไป** ที่ใช้ในวงการตรวจสอบ/สถิติ ไม่ใช่นโยบายที่องค์กรอนุมัติ
 ทุกครั้งที่ AIDA อ้างค่าจากไฟล์นี้ ต้องแจ้งผู้ใช้ว่าเป็นค่ามาตรฐานและปรับได้ตามบริบทองค์กร
 ค่าเขียนในรูปแบบ `KEY = ค่า` เพื่อให้ไฟล์อื่นอ้างอิงได้ตรงกัน
 ค่าที่ engine (`aida_engine.py` ดู AIDA-19) อ่านเป็นตัวเลข อยู่ใน JSON ของหัวข้อ "Machine Config (สำหรับ recipe)" ท้ายไฟล์นี้ (ชื่อหัวข้อคงเดิมเพื่อให้ engine หาเจอ) ซึ่งต้องตรงกับตารางเสมอ
 
 ## วิธีใช้ค่ามาตรฐาน
-- **Registry version:** `REGISTRY.VERSION = 1.2` (2026-11-06)
-- **ข้อความแจ้งผู้ใช้ (ใช้ทุกครั้งที่อ้างค่า):** "ค่านี้เป็นค่ามาตรฐานทั่วไป (AIDA Registry v1.2) — ปรับได้ตามบริบทองค์กร"
+- **Registry version:** `REGISTRY.VERSION = 1.3` (2026-11-09)
+- **ข้อความแจ้งผู้ใช้ (ใช้ทุกครั้งที่อ้างค่า):** "ค่านี้เป็นค่ามาตรฐานทั่วไป (AIDA Registry v1.3) — ปรับได้ตามบริบทองค์กร"
 - **การใช้ค่าขององค์กรแทน:** ผู้ใช้ระบุค่าขององค์กร + แหล่ง/ผู้อนุมัติ + เวอร์ชัน แล้ว AIDA ใช้ค่านั้นในคำตอบ พร้อมระบุว่าใช้ค่าขององค์กร ไม่ใช่ค่ามาตรฐาน
 - **การเปลี่ยนค่าในไฟล์นี้:** แก้ค่า → เพิ่มเวอร์ชัน → บันทึกใน "ประวัติการเปลี่ยนแปลง" → รัน validator (ดู README)
 - ทุก Finding/Evidence ควรบันทึก `Registry version` ที่ใช้ เพื่อให้ Reproducible (ดู AIDA-13)
@@ -155,11 +155,33 @@ Priority = ตาราง Confidence × Materiality แล้ว **ปรับ
 | `FOR.ROUND.MIN_SHARE = 50%` | สัดส่วนขั้นต่ำของยอดกลม (`FOR.ROUND.UNIT`) ต่อรายการทั้งหมดของ entity จึงนับเป็นสัญญาณ (FOR-ROUND ใช้ `GATE.SAMPLE.MIN` เป็นจำนวนรายการขั้นต่ำของ entity) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
 | `SOD.SAME_USER = ผู้บันทึกและผู้อนุมัติเป็นผู้ใช้คนเดียวกัน` | กฎ (ไม่มีค่าตัวเลข) ของการ์ด SOD-SAME-USER — Evidence อ้าง key นี้ | หลักการแบ่งแยกหน้าที่ (Segregation of Duties) |
 
+## 13. ประกันชีวิต (L) และธุรกรรมกองทุนรวม (F) (เพิ่มใน v1.3)
+แหล่งที่มาของค่าในหมวดนี้: แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ (ค่าเริ่มต้นสำหรับการ์ดของข้อมูลประเภท L และ F ผู้ตรวจสอบยืนยันหรือกำหนดค่าขององค์กรใน Intake Review) — LIFE-STAFF-CONC (L-R6) ใช้ `CONC.SINGLE_ENTITY_SHARE` และ `CONC.HHI` เดิมของหมวด 7
+| ค่า | ความหมาย | ที่มา |
+|---|---|---|
+| `LIFE.EARLY_SURR.MONTHS = 12` | เวนคืนกรมธรรม์ภายในกี่เดือนนับจากวันออกกรมธรรม์ (`opened_at`) จึงนับเป็นสัญญาณเวนคืนเร็ว (LIFE-EARLY-SURR, L-R1) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `LIFE.BENCHG_CASH.WINDOW_DAYS = 30` | หลังเปลี่ยนผู้รับผลประโยชน์ มีรายการเวนคืน/กู้/เคลมในกรมธรรม์เดียวกันภายในกี่วัน (LIFE-BENCHG-CASH, L-R2) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `LIFE.LOAN.NEAR_PCT = 90%` | ยอดกู้ตามกรมธรรม์ตั้งแต่กี่ % ของมูลค่าเวนคืน (`limit`) ถือว่าเกือบเต็มมูลค่า (LIFE-LOAN ข้อ a, L-R3) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `LIFE.LOAN.MIN_COUNT = 3` | จำนวนครั้งที่กู้ตามกรมธรรม์ขั้นต่ำ ภายในช่วง `LIFE.LOAN.COUNT_MONTHS` (LIFE-LOAN ข้อ b, L-R3) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `LIFE.LOAN.COUNT_MONTHS = 12` | ช่วงเดือนที่นับจำนวนครั้งที่กู้ตามกรมธรรม์ (LIFE-LOAN ข้อ b) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `LIFE.LOAN_SURR.WINDOW_DAYS = 90` | กู้แล้วเวนคืนกรมธรรม์เดียวกันภายในกี่วัน (LIFE-LOAN ข้อ c, L-R3) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `LIFE.PAYEE.MIN_POLICIES = 3` | ผู้รับเงินรายเดียวได้รับเงินจากกรมธรรม์ของผู้เอาประกันต่างรายกันตั้งแต่กี่กรมธรรม์ (LIFE-THIRD-PAYEE ข้อ b, L-R4) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `LIFE.BENEF.MIN_POLICIES = 3` | ผู้รับผลประโยชน์รายเดียวอยู่ในกรมธรรม์ของผู้เอาประกันต่างรายกันตั้งแต่กี่กรมธรรม์ (LIFE-BENEF-MULTI, L-R5) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `LIFE.BENCHG.MIN_COUNT = 2` | จำนวนครั้งที่เปลี่ยนผู้รับผลประโยชน์ขั้นต่ำ ภายในช่วง `LIFE.BENCHG.COUNT_MONTHS` (LIFE-BENEF-MULTI, L-R5) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `LIFE.BENCHG.COUNT_MONTHS = 12` | ช่วงเดือนที่นับจำนวนครั้งที่เปลี่ยนผู้รับผลประโยชน์ (LIFE-BENEF-MULTI) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `FUND.ROUNDTRIP.DAYS = 30` | ขายคืนภายในกี่วันหลังซื้อ (ผู้ถือหน่วยและกองทุนเดียวกัน) จึงนับเป็นซื้อแล้วขายคืนเร็ว (FUND-ROUNDTRIP, F-R1) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `FUND.ROUNDTRIP.AMOUNT_BAND = 80%–120%` | ยอดขายอยู่ในช่วงกี่ % ของยอดซื้อ จึงนับว่าใกล้เคียงกัน (FUND-ROUNDTRIP, F-R1) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `FUND.SHARED_ACCT.MIN_HOLDERS = 3` | บัญชีรับเงินเดียวถูกใช้กับผู้ถือหน่วยต่างรายกันตั้งแต่กี่ราย (FUND-SHARED-ACCT, F-R3) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `FUND.FREQ.MIN_TX_MONTH = 6` | จำนวนรายการซื้อ ขาย หรือสับเปลี่ยนขั้นต่ำต่อผู้ถือหน่วยต่อเดือน จึงนับว่าถี่ (FUND-FREQUENT, F-R4) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `FUND.CHURN.MIN_CLIENT_SHARE = 30%` | สัดส่วนลูกค้าของตัวแทนขายที่ทำรายการถี่ (ตาม F-R4) ขั้นต่ำ (FUND-CHURN, F-R5) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `FUND.CHURN.MIN_CLIENTS = 5` | จำนวนลูกค้าที่ทำรายการถี่ของตัวแทนขายรายเดียวขั้นต่ำ (FUND-CHURN, F-R5) | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+| `FUND.CUTOFF_TIME = 15:30` | เวลาตัดรอบของคำสั่งซื้อขายต่อการรัน 1 ครั้ง รายการหลังเวลานี้ที่ได้ราคา NAV วันเดียวกับวันที่ทำรายการ สอดคล้องกับ pattern ทำรายการหลังเวลาตัดรอบ (FUND-LATE-TRADE, F-R6) — ผู้ตรวจสอบกำหนดเวลาขององค์กรแทนได้ | แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ |
+
 ## Machine Config (สำหรับ recipe)
 JSON ก้อนเดียวนี้คือค่าที่ engine อ่านเป็น `cfg[<key>]` — key ระดับบนสุดต้องมีในตาราง/หัวข้อของไฟล์นี้ (key ที่ขึ้นต้นด้วย `_` ใช้เป็น runtime context) และ `ASSESS.PRIORITY` เรียง Confidence ก่อน แล้วจึง Materiality ตามตาราง Priority (ไม่รวมหมายเหตุ Human Review)
 ```json
 {
-  "REGISTRY.VERSION": "1.2",
+  "REGISTRY.VERSION": "1.3",
   "GATE.COMPLETENESS.MIN": 0.95,
   "GATE.SAMPLE.MIN": 30,
   "STAT.MAD.THRESHOLD": 3.5,
@@ -207,6 +229,23 @@ JSON ก้อนเดียวนี้คือค่าที่ engine อ�
   "PAYER.MIN_CONTRACTS": 3,
   "INTAKE.ROLE_CONF": {"สูง": 0.8, "กลาง": 0.5},
   "INTAKE.JOIN_MIN_PCT": 0.9,
+  "LIFE.EARLY_SURR.MONTHS": 12,
+  "LIFE.BENCHG_CASH.WINDOW_DAYS": 30,
+  "LIFE.LOAN.NEAR_PCT": 0.9,
+  "LIFE.LOAN.MIN_COUNT": 3,
+  "LIFE.LOAN.COUNT_MONTHS": 12,
+  "LIFE.LOAN_SURR.WINDOW_DAYS": 90,
+  "LIFE.PAYEE.MIN_POLICIES": 3,
+  "LIFE.BENEF.MIN_POLICIES": 3,
+  "LIFE.BENCHG.MIN_COUNT": 2,
+  "LIFE.BENCHG.COUNT_MONTHS": 12,
+  "FUND.ROUNDTRIP.DAYS": 30,
+  "FUND.ROUNDTRIP.AMOUNT_BAND": {"low": 0.8, "high": 1.2},
+  "FUND.SHARED_ACCT.MIN_HOLDERS": 3,
+  "FUND.FREQ.MIN_TX_MONTH": 6,
+  "FUND.CHURN.MIN_CLIENT_SHARE": 0.3,
+  "FUND.CHURN.MIN_CLIENTS": 5,
+  "FUND.CUTOFF_TIME": "15:30",
   "ASSESS.CLEARLY_TRIVIAL": 0.05,
   "ASSESS.PRIORITY": {
     "สูง": {"สูง": "สูง", "กลาง": "กลาง", "ต่ำ": "ต่ำ"},
@@ -222,6 +261,7 @@ JSON ก้อนเดียวนี้คือค่าที่ engine อ�
 | 1.0 | 2026-11-03 | ฉบับแรก: ค่ามาตรฐานทั่วไปทุก skill |
 | 1.1 | 2026-11-03 | เพิ่มหมวด 11 (MULE / CPTY / FLOW รวม `MULE.DWELL_MIN_PAIRS`, `MULE.NEW_ACCT_MIN_TX`), `BEH.VELOCITY.SD_FLOOR`, `NET.CYCLE.MAX_PATHS` (ต่อเดือน), `FLOW.MAX_TRAIL_ROWS`, `TEMP.OFF_HOURS.MIN_TX`, `TEMP.OFF_HOURS.MIN_SHARE`, `REGISTRY.VERSION` และ Machine Config JSON สำหรับ recipe (ไม่เปลี่ยนค่าเดิม) |
 | 1.2 | 2026-11-06 | เพิ่มหมวด 12 สำหรับการ์ดใหม่ของ engine (`DUP.WINDOW_DAYS`, `SPLIT.WINDOW_DAYS`, `SPLIT.MIN_TX`, `DUE.NEAR_DAYS`, `DUE.MIN_SHARE`, `DUE.MIN_PERIODS`, `PAYER.MIN_CONTRACTS`, `INTAKE.ROLE_CONF`, `INTAKE.JOIN_MIN_PCT`, `TEMP.PERIOD_END.MIN_TX`, `TEMP.PERIOD_END.MIN_SHARE`, `FOR.ROUND.MIN_SHARE`) และเพิ่มค่า `FOR.*`, `CONC.*`, `TEMP.PERIOD_END.WINDOW` เดิมเข้า Machine Config (ค่าเดิมไม่เปลี่ยน; แก้ข้อความ `FOR.THRESHOLD_AVOID.BAND` เป็น 90%–99.99% เท่านั้น); บันทึกกฎ `SOD.SAME_USER` ที่ Evidence ของ SOD-SAME-USER อ้าง (ไม่มีค่าตัวเลข) |
+| 1.3 | 2026-11-09 | เพิ่มหมวด 13 สำหรับการ์ดของข้อมูลประเภท L (ประกันชีวิต) และ F (ธุรกรรมกองทุนรวม): `LIFE.EARLY_SURR.MONTHS`, `LIFE.BENCHG_CASH.WINDOW_DAYS`, `LIFE.LOAN.NEAR_PCT`, `LIFE.LOAN.MIN_COUNT`, `LIFE.LOAN.COUNT_MONTHS`, `LIFE.LOAN_SURR.WINDOW_DAYS`, `LIFE.PAYEE.MIN_POLICIES`, `LIFE.BENEF.MIN_POLICIES`, `LIFE.BENCHG.MIN_COUNT`, `LIFE.BENCHG.COUNT_MONTHS`, `FUND.ROUNDTRIP.DAYS`, `FUND.ROUNDTRIP.AMOUNT_BAND`, `FUND.SHARED_ACCT.MIN_HOLDERS`, `FUND.FREQ.MIN_TX_MONTH`, `FUND.CHURN.MIN_CLIENT_SHARE`, `FUND.CHURN.MIN_CLIENTS`, `FUND.CUTOFF_TIME` (ค่าเดิมไม่เปลี่ยน; LIFE-STAFF-CONC ใช้ `CONC.SINGLE_ENTITY_SHARE` และ `CONC.HHI` เดิม) |
 
 ## ข้อห้าม (Guardrails)
 - ห้ามนำเสนอค่าในไฟล์นี้ว่าเป็นนโยบายที่องค์กรอนุมัติแล้ว — ต้องแจ้งว่าเป็นค่ามาตรฐานทุกครั้ง

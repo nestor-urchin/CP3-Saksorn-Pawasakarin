@@ -12,7 +12,7 @@ engine ใช้ข้อมูลชุดเดียวกันนี้ค�
 - ข้อมูลประเภทที่ยังไม่มีการ์ดเฉพาะ (บัตรเครดิต, ประกันชีวิต ใน C2; กองทุน/การลงทุน, มูลนิธิ, สหกรณ์ ใน C3) ใช้ความเสี่ยงทั่วไป G-R1–G-R4 เมื่อบทบาทพอ + โหมดสำรวจ
 
 ## ภาพรวม Risk Library
-engine `aida_engine.py` v3.0.0 · Registry 1.2 · 15 ความเสี่ยง · 24 การ์ดรับรอง
+engine `aida_engine.py` v3.1.0 · Registry 1.3 · 15 ความเสี่ยง · 24 การ์ดรับรอง
 
 | Risk | ชื่อ | ประเภทข้อมูล | การ์ดรับรอง |
 |---|---|---|---|
@@ -20,10 +20,10 @@ engine `aida_engine.py` v3.0.0 · Registry 1.2 · 15 ความเสี่ย
 | R2 | บัญชีที่รับแล้วส่งต่อเงินอย่างรวดเร็ว | E | MULE-PATTERN |
 | R3 | เครือข่ายบัญชีที่เชื่อมโยงกัน | E | MULE-CROSS-TX, MULE-NETWORK |
 | R4 | ความผิดปกติของคู่ค้า | E | CPTY-PROFILE, CPTY-NEW-LARGE |
-| G-R1 | ยอดโดดเด่น | E / C / A | STAT-MAD, BEH-VELOCITY, BEH-SPIKE |
-| G-R2 | ช่วงสิ้นงวด | E / C / A | GEN-PERIOD-END |
-| G-R3 | นอกเวลาทำการ | E / C / A | TEMP-OFFHOURS |
-| G-R4 | ตัวเลขผิดธรรมชาติ | E / C / A | FOR-BENFORD, FOR-ROUND, FOR-REPEAT |
+| G-R1 | ยอดโดดเด่น | E / C / A / L / F | STAT-MAD, BEH-VELOCITY, BEH-SPIKE |
+| G-R2 | ช่วงสิ้นงวด | E / C / A / L / F | GEN-PERIOD-END |
+| G-R3 | นอกเวลาทำการ | E / C / A / L / F | TEMP-OFFHOURS |
+| G-R4 | ตัวเลขผิดธรรมชาติ | E / C / A / L / F | FOR-BENFORD, FOR-ROUND, FOR-REPEAT |
 | C-R1 | ผู้ชำระคนเดียวหลายสัญญา | C | PAYER-MULTI |
 | C-R2 | ชำระใกล้วันครบกำหนดซ้ำ ๆ (อาจตกแต่งสถานะค้างชำระ) | C | DUE-NEAR |
 | C-R3 | ชำระซ้ำ/คืนเงินผิดปกติ | C | DUP-PAY |
@@ -79,7 +79,7 @@ engine `aida_engine.py` v3.0.0 · Registry 1.2 · 15 ความเสี่ย
 ## ความเสี่ยงทั่วไป (ใช้ได้ทุกประเภทข้อมูล)
 ### G-R1 · ยอดโดดเด่น
 - คำอธิบาย: รายการหรือบัญชีที่ยอดโดดเด่นหรือถี่ผิดปกติเมื่อเทียบกับพฤติกรรมปกติของตนเองและของกลุ่ม
-- ประเภทข้อมูล: E โอนเงินระหว่างบัญชี / C รับชำระค่างวดสินเชื่อ / A จ่ายเงินเจ้าหนี้
+- ประเภทข้อมูล: E โอนเงินระหว่างบัญชี / C รับชำระค่างวดสินเชื่อ / A จ่ายเงินเจ้าหนี้ / L / F
 - การ์ดรับรอง: STAT-MAD, BEH-VELOCITY, BEH-SPIKE
 - บทบาทขั้นต่ำ: `record_id`, `date`, `amount`, `entity`
 - ข้อมูลขั้นต่ำ: อย่างน้อย 1 เดือน และ 100 รายการ
@@ -88,7 +88,7 @@ engine `aida_engine.py` v3.0.0 · Registry 1.2 · 15 ความเสี่ย
 
 ### G-R2 · ช่วงสิ้นงวด
 - คำอธิบาย: รายการกระจุกตัวในช่วงสิ้นเดือนหรือสิ้นงวดบัญชีมากกว่าปกติ
-- ประเภทข้อมูล: E โอนเงินระหว่างบัญชี / C รับชำระค่างวดสินเชื่อ / A จ่ายเงินเจ้าหนี้
+- ประเภทข้อมูล: E โอนเงินระหว่างบัญชี / C รับชำระค่างวดสินเชื่อ / A จ่ายเงินเจ้าหนี้ / L / F
 - การ์ดรับรอง: GEN-PERIOD-END
 - บทบาทขั้นต่ำ: `record_id`, `date`, `amount`, `entity`
 - ข้อมูลขั้นต่ำ: อย่างน้อย 1 เดือน และ 30 รายการ
@@ -97,7 +97,7 @@ engine `aida_engine.py` v3.0.0 · Registry 1.2 · 15 ความเสี่ย
 
 ### G-R3 · นอกเวลาทำการ
 - คำอธิบาย: รายการที่เกิดนอกเวลาทำการหรือวันหยุดเป็นสัดส่วนสูง (ต้องมีเวลาของรายการ ไม่ใช่เฉพาะวันที่)
-- ประเภทข้อมูล: E โอนเงินระหว่างบัญชี / C รับชำระค่างวดสินเชื่อ / A จ่ายเงินเจ้าหนี้
+- ประเภทข้อมูล: E โอนเงินระหว่างบัญชี / C รับชำระค่างวดสินเชื่อ / A จ่ายเงินเจ้าหนี้ / L / F
 - การ์ดรับรอง: TEMP-OFFHOURS
 - บทบาทขั้นต่ำ: `record_id`, `date`, `entity`
 - ข้อมูลขั้นต่ำ: อย่างน้อย 1 เดือน และ 100 รายการ
@@ -107,7 +107,7 @@ engine `aida_engine.py` v3.0.0 · Registry 1.2 · 15 ความเสี่ย
 
 ### G-R4 · ตัวเลขผิดธรรมชาติ
 - คำอธิบาย: การกระจายตัวเลขหลักแรกผิดจาก Benford ยอดกลมหรือยอดซ้ำถี่ผิดปกติ ซึ่งอาจเกิดจากการกำหนดตัวเลข ไม่ใช่ธุรกรรมจริง
-- ประเภทข้อมูล: E โอนเงินระหว่างบัญชี / C รับชำระค่างวดสินเชื่อ / A จ่ายเงินเจ้าหนี้
+- ประเภทข้อมูล: E โอนเงินระหว่างบัญชี / C รับชำระค่างวดสินเชื่อ / A จ่ายเงินเจ้าหนี้ / L / F
 - การ์ดรับรอง: FOR-BENFORD, FOR-ROUND, FOR-REPEAT
 - บทบาทขั้นต่ำ: `record_id`, `date`, `amount`, `entity`
 - ข้อมูลขั้นต่ำ: อย่างน้อย 1 เดือน และ 100 รายการ
@@ -185,10 +185,10 @@ engine `aida_engine.py` v3.0.0 · Registry 1.2 · 15 ความเสี่ย
 
 | การ์ด | ชื่อ | ตรวจอะไร | ความเสี่ยงหลัก (รอง) | Skill family | บทบาทที่ต้องมี | บทบาทเสริม | ประเภทข้อมูล | Registry key (AIDA-14) |
 |---|---|---|---|---|---|---|---|---|
-| STAT-MAD | ยอดโดดเด่น (MAD) | เทียบยอดแต่ละรายการกับค่ากลางของกลุ่ม (แยกตาม channel ถ้ามี) ด้วย modified z-score จาก MAD รายการที่ห่างจากค่ากลางเกินเกณฑ์เป็นสัญญาณยอดโดดเด่น | R1 (G-R1) | 5.1 Statistical | record_id, date, amount, entity | channel | E / C / A | `STAT.MAD.THRESHOLD`, `GATE.SAMPLE.MIN` |
-| BEH-VELOCITY | ความถี่ผิดปกติ (Velocity) | จำนวนรายการต่อวันของ entity สูงกว่าพฤติกรรมเดิมของตนเองเกินเกณฑ์ (ต้องมี baseline หลายงวดก่อน) | R1 (G-R1) | 5.3 Behavioral | record_id, date, amount, entity | - | E / C / A | `BEH.DEVIATION`, `BEH.BASELINE.MIN_PERIODS`, `BEH.VELOCITY.SD_FLOOR` |
-| BEH-SPIKE | ยอดพุ่งขึ้นผิดปกติ (Spike) | ยอดรวมต่องวดของ entity สูงกว่าพฤติกรรมเดิมของตนเองเกินเกณฑ์ | R1 (G-R1) | 5.3 Behavioral | record_id, date, amount, entity | - | E / C / A | `BEH.DEVIATION`, `BEH.BASELINE.MIN_PERIODS` |
-| TEMP-OFFHOURS | นอกเวลาทำการ | สัดส่วนรายการนอกเวลาทำการหรือวันหยุดของ entity สูงทั้งจำนวนและสัดส่วน (ต้องมีเวลาของรายการ) | R1 (G-R3) | 5.4 Temporal | record_id, date, entity | - | E / C / A | `TEMP.OFF_HOURS`, `TEMP.OFF_HOURS.MIN_TX`, `TEMP.OFF_HOURS.MIN_SHARE` |
+| STAT-MAD | ยอดโดดเด่น (MAD) | เทียบยอดแต่ละรายการกับค่ากลางของกลุ่ม (แยกตาม channel ถ้ามี) ด้วย modified z-score จาก MAD รายการที่ห่างจากค่ากลางเกินเกณฑ์เป็นสัญญาณยอดโดดเด่น | R1 (G-R1) | 5.1 Statistical | record_id, date, amount, entity | channel | E / C / A / L / F | `STAT.MAD.THRESHOLD`, `GATE.SAMPLE.MIN` |
+| BEH-VELOCITY | ความถี่ผิดปกติ (Velocity) | จำนวนรายการต่อวันของ entity สูงกว่าพฤติกรรมเดิมของตนเองเกินเกณฑ์ (ต้องมี baseline หลายงวดก่อน) | R1 (G-R1) | 5.3 Behavioral | record_id, date, amount, entity | - | E / C / A / L / F | `BEH.DEVIATION`, `BEH.BASELINE.MIN_PERIODS`, `BEH.VELOCITY.SD_FLOOR` |
+| BEH-SPIKE | ยอดพุ่งขึ้นผิดปกติ (Spike) | ยอดรวมต่องวดของ entity สูงกว่าพฤติกรรมเดิมของตนเองเกินเกณฑ์ | R1 (G-R1) | 5.3 Behavioral | record_id, date, amount, entity | - | E / C / A / L / F | `BEH.DEVIATION`, `BEH.BASELINE.MIN_PERIODS` |
+| TEMP-OFFHOURS | นอกเวลาทำการ | สัดส่วนรายการนอกเวลาทำการหรือวันหยุดของ entity สูงทั้งจำนวนและสัดส่วน (ต้องมีเวลาของรายการ) | R1 (G-R3) | 5.4 Temporal | record_id, date, entity | - | E / C / A / L / F | `TEMP.OFF_HOURS`, `TEMP.OFF_HOURS.MIN_TX`, `TEMP.OFF_HOURS.MIN_SHARE` |
 | NET-CYCLE | เงินวนกลับ (Cycle) | เงินโอนวนกลับมาที่บัญชีเดิมภายในจำนวนทอดและช่วงเวลาที่กำหนด | R1 | 5.9 Network | record_id, date, entity, counterparty, amount | - | E | `NET.CYCLE`, `NET.CYCLE.MAX_PATHS` |
 | NET-FUNNEL | รับหลายแหล่งแล้วโอนออก (Funnel) | บัญชีรับเงินจากหลายแหล่งแล้วโอนออกเกือบทั้งหมด | R1 | 5.9 Network | record_id, date, entity, counterparty, amount | - | E | `NET.FUNNEL` |
 | MULE-DWELL | เงินพักสั้น (Dwell) | เงินที่รับเข้าถูกโอนออกภายในเวลาสั้นซ้ำหลายครั้ง | R1 | 5.4 Temporal | record_id, date, entity, counterparty, amount | - | E | `MULE.DWELL_HOURS`, `MULE.DWELL_MIN_PAIRS` |
@@ -199,13 +199,13 @@ engine `aida_engine.py` v3.0.0 · Registry 1.2 · 15 ความเสี่ย
 | CPTY-PROFILE | สัดส่วนคู่ค้าใหม่เปลี่ยนไป | สัดส่วนคู่ค้าใหม่ในงวดสูงกว่าพฤติกรรมเดิมของ entity | R4 | 5.3 Behavioral | record_id, date, entity, counterparty, amount | - | E | `CPTY.NEW_RATIO`, `BEH.BASELINE.MIN_PERIODS` |
 | CPTY-NEW-LARGE | โอนยอดสูงไปคู่ค้าใหม่ | รายการแรกไปยังคู่ค้าใหม่มียอดสูงกว่าปกติของ entity หลายเท่า | R4 | 5.3 Behavioral | record_id, date, entity, counterparty, amount | - | E | `CPTY.NEW_LARGE.MULTIPLIER` |
 | FLOW-LAYERING | ส่งต่อเป็นทอด (Layering) | เงินถูกส่งต่อหลายทอดโดยแต่ละทอดส่งต่อเกือบทั้งหมดภายในช่วงเวลาที่กำหนด | R1 | 5.9 Network | record_id, date, entity, counterparty, amount | - | E | `FLOW.MIN_PASS_RATIO`, `FLOW.WINDOW_DAYS` |
-| GEN-CONC | การกระจุกตัว (share / HHI) | ส่วนแบ่งยอดของ entity (และ counterparty ถ้ามี) ต่อยอดรวมทั้งชุดถึงเกณฑ์ พร้อมระดับ HHI ของทั้งชุด | A-R4 | 5.2 Concentration | record_id, date, amount, entity | counterparty | E / C / A | `CONC.SINGLE_ENTITY_SHARE`, `CONC.HHI`, `CONC.TOPN` |
-| GEN-PERIOD-END | ช่วงสิ้นงวด | รายการของ entity กระจุกในช่วงวันทำการสุดท้ายของเดือนและวันแรกของเดือนถัดไป ครบทั้งจำนวนและสัดส่วน | G-R2 | 5.4 Temporal | record_id, date, amount, entity | - | E / C / A | `TEMP.PERIOD_END.WINDOW`, `TEMP.PERIOD_END.MIN_TX`, `TEMP.PERIOD_END.MIN_SHARE` |
+| GEN-CONC | การกระจุกตัว (share / HHI) | ส่วนแบ่งยอดของ entity (และ counterparty ถ้ามี) ต่อยอดรวมทั้งชุดถึงเกณฑ์ พร้อมระดับ HHI ของทั้งชุด | A-R4 | 5.2 Concentration | record_id, date, amount, entity | counterparty | E / C / A / L / F | `CONC.SINGLE_ENTITY_SHARE`, `CONC.HHI`, `CONC.TOPN` |
+| GEN-PERIOD-END | ช่วงสิ้นงวด | รายการของ entity กระจุกในช่วงวันทำการสุดท้ายของเดือนและวันแรกของเดือนถัดไป ครบทั้งจำนวนและสัดส่วน | G-R2 | 5.4 Temporal | record_id, date, amount, entity | - | E / C / A / L / F | `TEMP.PERIOD_END.WINDOW`, `TEMP.PERIOD_END.MIN_TX`, `TEMP.PERIOD_END.MIN_SHARE` |
 | DUP-PAY | จ่ายซ้ำ / ชำระซ้ำ | รายการยอดเท่ากันของ entity เดียวกัน (และ counterparty / เลขที่เอกสาร ถ้ามี) ที่เกิดห่างกันไม่เกินช่วงวันที่กำหนด ข้อมูลสินเชื่อที่ไม่มีเลขที่เอกสารรายงานตามสัญญา (C-R3) ข้อมูลเจ้าหนี้รายงานเป็น A-R1 | A-R1 (C-R3) | 5.6 Forensic | record_id, date, amount, entity | counterparty, document_no, contract | C / A | `DUP.WINDOW_DAYS` |
 | SPLIT-LIMIT | แบ่งรายการต่ำกว่าวงเงิน | หลายรายการของ entity เดียวกันในช่วงวันสั้น ๆ ที่แต่ละรายการใกล้วงเงินแต่ต่ำกว่า และรวมกันเกินวงเงิน | A-R2 | 5.6 Forensic | record_id, date, amount, entity, limit | counterparty | A | `SPLIT.WINDOW_DAYS`, `SPLIT.MIN_TX`, `FOR.THRESHOLD_AVOID.BAND` |
-| FOR-BENFORD | Benford หลักแรก | การกระจายตัวเลขหลักแรกของ entity ที่มีรายการมากพอ เบี่ยงจาก Benford เกินระดับที่ยอมรับได้ | G-R4 | 5.6 Forensic | record_id, date, amount, entity | - | E / C / A | `FOR.BENFORD.MIN_N`, `FOR.BENFORD.MAD_1ST` |
-| FOR-ROUND | ยอดกลม | สัดส่วนยอดที่หารด้วยหน่วยกลมลงตัวของ entity สูงกว่าเกณฑ์ | G-R4 | 5.6 Forensic | record_id, date, amount, entity | - | E / C / A | `FOR.ROUND.UNIT`, `FOR.ROUND.MIN_SHARE`, `GATE.SAMPLE.MIN` |
-| FOR-REPEAT | ยอดซ้ำ | ยอดเดียวกันของ entity เดียวกันซ้ำหลายครั้งในงวดเดียวกัน | G-R4 | 5.6 Forensic | record_id, date, amount, entity | - | E / C / A | `FOR.REPEAT.MIN_COUNT` |
+| FOR-BENFORD | Benford หลักแรก | การกระจายตัวเลขหลักแรกของ entity ที่มีรายการมากพอ เบี่ยงจาก Benford เกินระดับที่ยอมรับได้ | G-R4 | 5.6 Forensic | record_id, date, amount, entity | - | E / C / A / L / F | `FOR.BENFORD.MIN_N`, `FOR.BENFORD.MAD_1ST` |
+| FOR-ROUND | ยอดกลม | สัดส่วนยอดที่หารด้วยหน่วยกลมลงตัวของ entity สูงกว่าเกณฑ์ | G-R4 | 5.6 Forensic | record_id, date, amount, entity | - | E / C / A / L / F | `FOR.ROUND.UNIT`, `FOR.ROUND.MIN_SHARE`, `GATE.SAMPLE.MIN` |
+| FOR-REPEAT | ยอดซ้ำ | ยอดเดียวกันของ entity เดียวกันซ้ำหลายครั้งในงวดเดียวกัน | G-R4 | 5.6 Forensic | record_id, date, amount, entity | - | E / C / A / L / F | `FOR.REPEAT.MIN_COUNT` |
 | SOD-SAME-USER | ผู้บันทึก = ผู้อนุมัติ | รายการที่ผู้บันทึกและผู้อนุมัติเป็นผู้ใช้คนเดียวกัน (ไม่มีค่าเกณฑ์) | A-R3 | 5.7 Rule-Based | record_id, date, created_by, approved_by | - | A | - |
 | DUE-NEAR | ชำระใกล้วันครบกำหนด | สัญญาที่ชำระก่อนวันครบกำหนดเพียงไม่กี่วันในสัดส่วนงวดสูง และมีจำนวนงวดถึงขั้นต่ำ | C-R2 | 5.4 Temporal | record_id, date, contract, due_date | - | C | `DUE.NEAR_DAYS`, `DUE.MIN_SHARE`, `DUE.MIN_PERIODS` |
 | PAYER-MULTI | ผู้ชำระคนเดียวหลายสัญญา | ผู้ชำระ (counterparty) ที่ไม่ใช่ผู้กู้ของสัญญา ชำระให้สัญญาที่ต่างกันตั้งแต่จำนวนขั้นต่ำ | C-R1 | 5.3 Behavioral | record_id, date, entity, counterparty, contract | - | C | `PAYER.MIN_CONTRACTS` |

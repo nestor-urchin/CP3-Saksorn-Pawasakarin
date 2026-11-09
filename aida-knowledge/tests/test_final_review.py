@@ -308,7 +308,7 @@ class TestInstructions(unittest.TestCase):
 
     def test_c1_flow_calls(self):
         for call in ("aida.inspect(", 'r["review_th"]', "aida.confirm(", "aida.run(", "aida.data(", "aida.explore_log(",
-                     "aida.promote(", "aida.save_mapping(", "AIDA-16", '__version__ == "3.0.0"'):
+                     "aida.promote(", "aida.save_mapping(", "AIDA-16", '__version__ == "3.1.0"'):
             self.assertIn(call, self.TEXT)
 
     def test_confirmation_rules(self):

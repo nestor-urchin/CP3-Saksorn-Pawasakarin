@@ -114,7 +114,7 @@ class ChecksCA(unittest.TestCase):
         # the four general checks read only entity / date / amount (no counterparty) and apply to every data type
         for cid in ("STAT-MAD", "BEH-VELOCITY", "BEH-SPIKE", "TEMP-OFFHOURS"):
             self.assertNotIn("counterparty", e.CHECKS[cid]["requires"])
-            self.assertEqual(set(e.CHECKS[cid]["data_types"]), {"E", "C", "A"})
+            self.assertEqual(set(e.CHECKS[cid]["data_types"]), set(e.DATA_TYPES))
         self.assertEqual(set(e.CHECKS["STAT-MAD"]["requires"]), {"record_id", "date", "entity", "amount"})
         self.assertEqual(set(e.CHECKS["TEMP-OFFHOURS"]["requires"]), {"record_id", "date", "entity"})
 
@@ -168,7 +168,7 @@ class ChecksCA(unittest.TestCase):
         row = ev.iloc[0]
         self.assertEqual(row["recipe_id"], "SOD-SAME-USER")
         self.assertEqual(row["risk"], "A-R3")
-        self.assertEqual(row["registry_version"], "1.2")
+        self.assertEqual(row["registry_version"], e.REGISTRY_VERSION)
         self.assertIn("created_by", row["roles_used"])
         self.assertTrue(all(isinstance(r, list) and r for r in ev["record_refs"]))
         self.assertRegex(row["explanation"], r"[ก-๙]")

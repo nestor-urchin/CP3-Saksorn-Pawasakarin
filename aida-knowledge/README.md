@@ -3,10 +3,10 @@
 ชุดไฟล์ Knowledge สำหรับ **AIDA Agent** ใน Microsoft 365 Copilot Agent Builder
 - ระยะ A: AIDA เป็นที่ปรึกษาด้านวิธีการ (เลือก skill, gate, การตีความ, output)
 - ระยะ B1: วิเคราะห์ธุรกรรมโอนเงิน (Mule Accounts) ด้วยการ์ดสูตร 34 ใบ — **ถูกแทนที่ใน C1**
-- ระยะ C1 (Knowledge Pack **3.0**): วิเคราะห์ข้อมูลจริงด้วย engine ไฟล์เดียวที่ทดสอบแล้ว `engine/aida_engine.py` v3.0.0 ซึ่งทำงานตามบทบาทคอลัมน์ — ข้อมูล **E โอนเงิน**, **C รับชำระค่างวดสินเชื่อ**, **A จ่ายเงินเจ้าหนี้**; Intake Review ยืนยันครั้งเดียว; โหมดสำรวจสำหรับคำถามนอกการ์ด
+- ระยะ C1 (Knowledge Pack **3.0**): วิเคราะห์ข้อมูลจริงด้วย engine ไฟล์เดียวที่ทดสอบแล้ว `engine/aida_engine.py` v3.1.0 ซึ่งทำงานตามบทบาทคอลัมน์ — ข้อมูล **E โอนเงิน**, **C รับชำระค่างวดสินเชื่อ**, **A จ่ายเงินเจ้าหนี้**; Intake Review ยืนยันครั้งเดียว; โหมดสำรวจสำหรับคำถามนอกการ์ด
 
 - Spec: `docs/superpowers/specs/2026-11-03-aida-knowledge-pack-design.md` (A), `2026-11-03-aida-phase-b1-design.md` (B1), `2026-11-06-aida-c1-generic-engine-design.md` (C1)
-- เวอร์ชัน: Knowledge Pack 3.0 · engine 3.0.0 · Registry 1.2
+- เวอร์ชัน: Knowledge Pack 3.1 · engine 3.1.0 · Registry 1.3
 
 ## โครงสร้าง
 ```
@@ -75,7 +75,7 @@ cd aida-knowledge/tests && python3 -m unittest                  # unit + end-to-
 
 validator ตรวจ:
 - Knowledge มี **20 ไฟล์พอดี** และไฟล์ .md มีหัวข้อบังคับครบ
-- engine (`engine/aida_engine.py`): `__version__` ตรงกับที่ AIDA-00 และ AIDA-19 ระบุ (`` `aida_engine.py` v3.0.0 ``), `REGISTRY_VERSION` ตรงกับ `REGISTRY.VERSION` ใน AIDA-14, import เฉพาะ pandas / numpy / openpyxl / standard library (ไม่มีไลบรารีเครือข่าย), ทุก `cfg["KEY"]` มีใน Machine Config ของ AIDA-14
+- engine (`engine/aida_engine.py`): `__version__` ตรงกับที่ AIDA-00 และ AIDA-19 ระบุ (`` `aida_engine.py` v3.1.0 ``), `REGISTRY_VERSION` ตรงกับ `REGISTRY.VERSION` ใน AIDA-14, import เฉพาะ pandas / numpy / openpyxl / standard library (ไม่มีไลบรารีเครือข่าย), ทุก `cfg["KEY"]` มีใน Machine Config ของ AIDA-14
 - Risk Library: ทุกความเสี่ยงอ้างการ์ดที่มีใน engine และบทบาทใน 14 บทบาท; AIDA-18 ตรงกับที่ `build_risk_library_md.py` สร้างจาก engine ทุกตัวอักษร
 - Registry key ตรงกับ AIDA-14 และ Machine Config ตรงกับตาราง
 - คำกล่าวหานอกหัวข้อ Guardrails (ทุจริต, กระทำผิด, กระทำความผิด, โกง, ยักยอก, คอร์รัปชัน, ฉ้อโกง, สมรู้ร่วมคิด, fraudster) — ยกเว้นเมื่อมีคำปฏิเสธ (≠ / ไม่ / ห้าม / not) อยู่ภายใน 20 ตัวอักษรก่อนคำนั้น
@@ -85,7 +85,7 @@ validator ตรวจ:
 
 `tools/extract_recipes.py` (ดึงการ์ด B1 จาก Markdown) ถูกลบใน C1 เพราะไม่มีการ์ดใน Knowledge แล้ว — tests โหลด engine โดยตรง (`tests/_engine.py`)
 
-## ชุดไฟล์สำหรับส่งมอบ (AIDA-Knowledge-Pack-v3.0.zip)
+## ชุดไฟล์สำหรับส่งมอบ (AIDA-Knowledge-Pack-v3.1.zip)
 ```
 AIDA-Knowledge-Pack/
 ├── 1-upload-knowledge/      ← 20 ไฟล์ อัปโหลดเป็น Knowledge

@@ -3,7 +3,7 @@
 > ไฟล์นี้ตอบคำถาม: จะโหลด `aida_engine.py` จาก SharePoint/OneDrive หรือไฟล์แนบเข้า Code Interpreter อย่างไร, ตรวจเวอร์ชันอย่างไร, ถ้าโหลดไม่ได้หรือหา AIDA-14 ไม่พบต้องบอกผู้ใช้ว่าอะไร
 
 ## สรุปสั้น
-AIDA วิเคราะห์ข้อมูลด้วย engine ไฟล์เดียวที่ทดสอบแล้ว: `aida_engine.py` v3.0.0 (Registry 1.2) — AIDA ไม่เขียนโค้ดวิเคราะห์เอง
+AIDA วิเคราะห์ข้อมูลด้วย engine ไฟล์เดียวที่ทดสอบแล้ว: `aida_engine.py` v3.1.0 (Registry 1.3) — AIDA ไม่เขียนโค้ดวิเคราะห์เอง
 ใน Knowledge Pack ชุดนี้ (แนวทาง 2) engine **ไม่อยู่ใน Knowledge** ผู้ใช้วางไฟล์ไว้ที่ SharePoint/OneDrive ของทีม หรือแนบในแชต แล้ว AIDA โหลดเข้า Code Interpreter **ที่ต้นการสนทนาทุกครั้ง** ก่อนเรียก `inspect`
 engine อ่านค่าเกณฑ์จาก `AIDA-14-configuration-registry.md` ที่อยู่ **โฟลเดอร์เดียวกับ engine** ดังนั้นให้วางหรือแนบ AIDA-14 คู่กับ engine เสมอ
 - ถ้าผล spike (`6-spike-c1/` ใน zip) แสดงว่าข้อ 2 ผ่าน (Code Interpreter import ไฟล์จาก Knowledge ได้) ให้อัปโหลด `aida_engine.py` เข้า Knowledge **แทนไฟล์นี้** (แนวทาง 3) — Knowledge ยังเป็น 20 ไฟล์ และขั้นตอนตรวจเวอร์ชันข้างล่างยังใช้เหมือนเดิม
@@ -39,7 +39,7 @@ reg_ver = aida.load_registry(reg).get("REGISTRY.VERSION") if reg else "NOT FOUND
 print(aida.__version__, aida.REGISTRY_VERSION, reg_ver, reg)
 ```
 3. **ตรวจผล** — บรรทัด ENGINE / AIDA-14 ต้องไม่เป็น `NOT FOUND` และบรรทัดสุดท้ายต้องได้ `3.0.0 1.2 1.2 <ที่อยู่ของ AIDA-14>`:
-   - `__version__ == "3.0.0"` → engine ถูกรุ่น
+   - `__version__ == "3.1.0"` → engine ถูกรุ่น
    - `REGISTRY.VERSION` ของไฟล์ AIDA-14 ที่แนบ (ค่าที่ 3) **ต้องเท่ากับ** `aida.REGISTRY_VERSION` (ค่าที่ 2) — ไม่เท่า → หยุดและแจ้งตามข้อ 4 (engine เองก็ปฏิเสธ AIDA-14 ต่างรุ่นด้วยข้อความภาษาไทยเมื่อเรียก `inspect` / `run`)
    - ค่าที่ 3 เป็น `NOT FOUND` → ยังไม่มี AIDA-14 ข้าง engine (ดูข้อ 4)
    - ไฟล์ probe ของ spike (`aida_engine_probe.*`) ไม่ถูกเลือก
@@ -61,7 +61,7 @@ exec(compile(open(path, encoding="utf-8").read(), path, "exec"), aida.__dict__)
 | อาการ | บอกผู้ใช้ว่า |
 |---|---|
 | ไม่พบไฟล์ `aida_engine*` (`ENGINE: NOT FOUND`) | "ยังไม่พบไฟล์ aida_engine.py — กรุณาแนบไฟล์จากโฟลเดอร์ 5-engine ของชุด Knowledge Pack หรือส่งลิงก์ SharePoint/OneDrive ที่เปิดสิทธิ์อ่านได้" |
-| `__version__` ไม่ใช่ 3.0.0 | "engine ที่แนบเป็นรุ่น X แต่ Knowledge Pack นี้ใช้รุ่น 3.0.0 — กรุณาแนบ aida_engine.py จาก Knowledge Pack ชุดเดียวกัน" แล้วหยุด ไม่วิเคราะห์ด้วยรุ่นที่ไม่ตรง |
+| `__version__` ไม่ใช่ 3.1.0 | "engine ที่แนบเป็นรุ่น X แต่ Knowledge Pack นี้ใช้รุ่น 3.1.0 — กรุณาแนบ aida_engine.py จาก Knowledge Pack ชุดเดียวกัน" แล้วหยุด ไม่วิเคราะห์ด้วยรุ่นที่ไม่ตรง |
 | ไม่พบ AIDA-14 (`NOT FOUND`) | "ยังไม่พบ AIDA-14-configuration-registry.md ข้าง engine — กรุณาแนบไฟล์นี้จากโฟลเดอร์ 1-upload-knowledge หรือวางไว้ในโฟลเดอร์เดียวกับ engine" |
 | `REGISTRY.VERSION` ของ AIDA-14 ที่แนบไม่เท่ากับ `aida.REGISTRY_VERSION` | "AIDA-14 ที่แนบเป็นรุ่น X — กรุณาแนบ AIDA-14 จาก Knowledge Pack ชุดเดียวกัน" แล้วหยุด ไม่วิเคราะห์ด้วยค่าเกณฑ์ต่างรุ่น |
 | `SyntaxError` / ไฟล์ถูกตัด | "ไฟล์ engine ไม่ครบ (อาจถูกตัดระหว่างอัปโหลด) — กรุณาแนบไฟล์ใหม่" |
@@ -73,7 +73,7 @@ exec(compile(open(path, encoding="utf-8").read(), path, "exec"), aida.__dict__)
 
 ## ข้อห้าม (Guardrails)
 - ห้ามแก้ไข เพิ่ม หรือตัดโค้ดใน engine และห้ามคัดลอกเฉพาะบางฟังก์ชันมาใช้
-- ห้ามใช้ engine รุ่นอื่นที่ไม่ใช่ 3.0.0 กับ Knowledge Pack ชุดนี้
+- ห้ามใช้ engine รุ่นอื่นที่ไม่ใช่ 3.1.0 กับ Knowledge Pack ชุดนี้
 - ห้ามเดาค่าเกณฑ์เมื่อหา AIDA-14 ไม่พบ — ขอให้ผู้ใช้แนบ AIDA-14
 - ห้ามแสดงผลวิเคราะห์ที่ไม่ได้มาจาก engine
 

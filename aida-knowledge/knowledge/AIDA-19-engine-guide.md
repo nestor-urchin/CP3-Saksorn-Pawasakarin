@@ -1,9 +1,9 @@
 # AIDA-19 · คู่มือเรียก engine (Intake Review, วิเคราะห์, โหมดสำรวจ)
-> ไฟล์: AIDA-19 | เวอร์ชัน: 3.0 | ส่วนหนึ่งของ AIDA Knowledge Pack | engine: `aida_engine.py` v3.0.0 · Registry 1.2
+> ไฟล์: AIDA-19 | เวอร์ชัน: 3.0 | ส่วนหนึ่งของ AIDA Knowledge Pack | engine: `aida_engine.py` v3.1.0 · Registry 1.3
 > ไฟล์นี้ตอบคำถาม: เรียก engine ตามลำดับใด, brief และคำตอบยืนยัน (answers) มีรูปแบบอย่างไร, Intake Review ข้อ A–E คืออะไร, คำตอบแบบใดถือว่ายืนยัน, โหมดสำรวจและการเลื่อนเป็น Finding ทำอย่างไร, mapping profile ใช้อย่างไร, Finding ของข้อมูล C/A รวมกันอย่างไร, ข้อความผิดพลาดหมายความว่าอะไร
 
 ## สรุปสั้น
-AIDA วิเคราะห์ข้อมูลด้วย engine ไฟล์เดียว `aida_engine.py` v3.0.0 ที่ทดสอบแล้ว (โหลดตาม AIDA-16) โดยเรียกเพียง **`inspect` → (ผู้ตรวจสอบยืนยันครั้งเดียว) → `confirm` + `run`**
+AIDA วิเคราะห์ข้อมูลด้วย engine ไฟล์เดียว `aida_engine.py` v3.1.0 ที่ทดสอบแล้ว (โหลดตาม AIDA-16) โดยเรียกเพียง **`inspect` → (ผู้ตรวจสอบยืนยันครั้งเดียว) → `confirm` + `run`**
 - ตัวเลขทุกตัวที่แสดงต้องมาจากผลของ engine — AIDA ไม่คำนวณเอง และไม่เขียนโค้ดวิเคราะห์แทนการ์ดรับรอง
 - จุดยืนยันมีจุดเดียวคือ **Intake Review** (แทนจุดยืนยัน 1 และ 2 ของ B1)
 - คำถามที่ไม่มีการ์ดรับรอง → **โหมดสำรวจ** (ข้อ 5) ซึ่งผลมีป้ายและเลื่อนเป็น Finding ได้เมื่อผู้ตรวจสอบสั่งเท่านั้น
@@ -12,7 +12,7 @@ AIDA วิเคราะห์ข้อมูลด้วย engine ไฟล�
 ## 1. ลำดับการเรียก
 | ขั้น | เรียก | ได้ |
 |---|---|---|
-| 0 | โหลด engine ตาม AIDA-16 | `aida` (ตรวจ `aida.__version__ == "3.0.0"`) |
+| 0 | โหลด engine ตาม AIDA-16 | `aida` (ตรวจ `aida.__version__ == "3.1.0"`) |
 | 1 | `r = aida.inspect(files, brief)` (หรือ `mapping=` ข้อ 6) | `r["intake"]` (ร่าง), `r["review_th"]` (ข้อความ Intake Review), `r["changes"]`, `r["draft_path"]` (ไฟล์ร่าง `intake_draft.json`) |
 | 2 | แสดง `r["review_th"]` **ทั้งข้อความตามตัวอักษร** แล้วรอผู้ตรวจสอบ | — |
 | 3 | `it = aida.confirm(r["intake"], answers, "intake.json")` (หรือ `aida.confirm("intake_draft.json", answers, "intake.json")`) | intake ที่ยืนยัน + ไฟล์ `intake.json` (มี `it["intake_path"]`) |
