@@ -345,6 +345,46 @@ class FixesReview(unittest.TestCase):
         roles = {"record_id", "date", "amount", "entity", "counterparty"}
         self.assertEqual(e._type_from_roles(roles, prof), "E")
 
+    def test_c_with_stray_policy_no_stays_C(self):
+        e = E()
+        c = pd.DataFrame({"loan_no": ["L1", "L2", "L3"], "pay_date": ["2026-01-05", "2026-01-06", "2026-01-07"],
+                          "due_date": ["2026-01-01"] * 3, "amount": ["1", "2", "3"],
+                          "policy_no": ["P1", "P2", "P3"], "customer_id": ["C1", "C2", "C3"],
+                          "payer": ["a", "b", "c"]})
+        prof = e.profile_columns({"pay": c})
+        self.assertEqual(e.detect_dataset_type(prof), "C")
+        roles = {"pay": {"loan_no": "contract", "pay_date": "date", "due_date": "due_date", "amount": "amount",
+                         "customer_id": "entity", "payer": "counterparty"}}  # policy_no has no role
+        self.assertEqual(e._type_from_roles({"contract", "due_date", "date", "amount", "entity", "counterparty"}, prof,
+                                            None, e._colroles(roles)), "C")
+        roles["pay"]["policy_no"] = "custom:policy"  # a custom role does not count either
+        self.assertEqual(e._type_from_roles({"contract", "due_date"}, prof, None, e._colroles(roles)), "C")
+
+    def test_a_with_stray_fund_code_stays_A(self):
+        e = E()
+        ap = pd.DataFrame({"payment_id": ["P1", "P2", "P3"], "pay_date": ["2026-01-05", "2026-01-06", "2026-01-07"],
+                           "amount": ["10", "20", "30"], "vendor_id": ["V1", "V2", "V3"], "fund_code": ["F", "F", "G"],
+                           "created_by": ["U1", "U2", "U3"], "approved_by": ["U2", "U3", "U1"]})
+        prof = e.profile_columns({"ap": ap})
+        roles = {"ap": {"payment_id": "record_id", "pay_date": "date", "amount": "amount", "vendor_id": "entity",
+                        "created_by": "created_by", "approved_by": "approved_by"}}
+        self.assertEqual(e._type_from_roles({"record_id", "date", "amount", "entity", "created_by", "approved_by"},
+                                            prof, None, e._colroles(roles)), "A")
+
+    def test_review_names_anchor_columns(self):
+        e = E()
+        with tempfile.TemporaryDirectory() as d:
+            paths = {}
+            for k, df in l_frames().items():
+                paths[k] = str(Path(d) / f"{k}.csv")
+                df.to_csv(paths[k], index=False)
+            r = e.inspect(paths, {})
+        line = [x for x in r["review_th"].splitlines() if x.startswith("ประเภทข้อมูลที่ตรวจพบ")][0]
+        self.assertIn("L (", line)
+        self.assertIn("policy_no", line)
+        self.assertIn("insured_id", line)
+        self.assertIn("ให้ระบุ dataset_type", line)
+
     def _legacy(self, d):
         """The L fixture with cryptic column names: detection alone reads it as E."""
         fr = l_frames()
@@ -364,7 +404,7 @@ class FixesReview(unittest.TestCase):
             ins = e.inspect(files, {})
             self.assertNotEqual(ins["intake"]["dataset_type"], "L")
             self.assertIn("ประเภทข้อมูลที่ตรวจพบ", ins["review_th"])
-            self.assertIn("แก้ได้ในคำตอบ", ins["review_th"])
+            self.assertIn("ให้ระบุ dataset_type", ins["review_th"])
             code_key = f"tx.{names['tx']['txn_type']}"
             it = e.confirm(ins["intake"], {"roles": roles, "dataset_type": "L", "code_values": {code_key: {"SURR": "เวนคืน"}}},
                            str(Path(d) / "intake.json"))

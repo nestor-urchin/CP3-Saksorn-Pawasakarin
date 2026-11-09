@@ -2067,15 +2067,42 @@ def check_descriptions(profile: pd.DataFrame, brief_columns=None) -> list:
     return out
 
 
-def _lf_type(profile: pd.DataFrame):
-    """"L" (life insurance) or "F" (fund orders) when the column names include at least LF_MIN_ANCHORS anchor names of
-    exactly one type (or more of one type than the other); else None. Generic names never count."""
-    names = {_norm_name(c) for c in profile["column"]}
-    n = {t: len(names & m) for t, m in LF_ANCHORS.items()}
+def _colroles(roles: dict) -> dict:
+    """{(table, column): role} from {table: {column: role}} (a role may be a list: the first is used)."""
+    out = {}
+    for t, rmap in (roles or {}).items():
+        for c, r in rmap.items():
+            lst = _role_list(r) if not isinstance(r, str) else [r]
+            if lst:
+                out[(t, c)] = lst[0]
+    return out
+
+
+def _lf_detect(profile: pd.DataFrame, colroles: dict = None) -> tuple:
+    """(type, ["table.column", ...]) for data type L / F, else (None, []). An anchor name (LF_ANCHORS) counts only on a
+    column that holds a certified role: in `colroles` {(table, column): role} (the confirmed roles) or, when None, the
+    role suggest_roles proposes for it. A stray policy_no with no role (or a custom: role) is ignored. The type needs
+    at least LF_MIN_ANCHORS such columns and more of them than the other type."""
+    if colroles is None:
+        sug = suggest_roles(profile)
+        colroles = {(r["table"], r["column"]): r["role"] for _, r in sug.iterrows() if r["role"] != UNKNOWN_ROLE}
+    hits = {t: [] for t in LF_ANCHORS}
+    for tbl, col in zip(profile["table"], profile["column"]):
+        role = colroles.get((tbl, col))
+        if not role or role == UNKNOWN_ROLE or str(role).startswith("custom:"):
+            continue
+        for t, anchors in LF_ANCHORS.items():
+            if _norm_name(col) in anchors:
+                hits[t].append(f"{tbl}.{col}")
+    n = {t: len(v) for t, v in hits.items()}
     best = max(n, key=n.get)
     if n[best] >= LF_MIN_ANCHORS and sorted(n.values())[-1] > sorted(n.values())[-2]:
-        return best
-    return None
+        return best, hits[best]
+    return None, []
+
+
+def _lf_type(profile: pd.DataFrame, colroles: dict = None):
+    return _lf_detect(profile, colroles)[0]
 
 
 def detect_dataset_type(profile: pd.DataFrame):
@@ -2681,13 +2708,13 @@ def _roles_by_table(roles_confirmed: dict) -> tuple:
     return tx_name, by[tx_name], {n: d for n, d in by.items() if n != tx_name}
 
 
-def _type_from_roles(roles: set, profile=None, declared=None):
+def _type_from_roles(roles: set, profile=None, declared=None, colroles: dict = None):
     """Dataset type E / C / A from the confirmed roles (same rules as detect_dataset_type), else from the profile.
     L and F share their roles with C / E (a fund order has a contract and a due date), so they are taken from
-    type-exclusive column names (LF_ANCHORS) in the profile, or from `declared` (the type confirmed in the intake)."""
+    type-exclusive column names (LF_ANCHORS) on columns that hold a role (`colroles`, the confirmed roles), or from `declared` (the type confirmed in the intake)."""
     if declared in DATA_TYPES:  # the type the auditor confirmed (or the intake recorded) wins over every detection
         return declared
-    lf = _lf_type(profile) if profile is not None and len(profile) else None
+    lf = _lf_type(profile, colroles) if profile is not None and len(profile) else None
     if lf:
         return lf
     if {"contract", "due_date"} <= roles:
@@ -2714,7 +2741,7 @@ def _intake_ctx(roles_confirmed: dict, profile=None, tables=None, cfg: dict = No
     (what gate_volume did in B1) and with cfg the join threshold."""
     tx_name, tx_roles, others = _roles_by_table(roles_confirmed)
     declared = ((tables or {}).get("meta") or {}).get("dtype")
-    ctx = {"roles": set(tx_roles), "dtype": _type_from_roles(set(tx_roles), profile, declared), "rows": None,
+    ctx = {"roles": set(tx_roles), "dtype": _type_from_roles(set(tx_roles), profile, declared, _colroles(roles_confirmed)), "rows": None,
            "months": None,
            "has_time": None, "joins": {}, "vol": {},
            "join_min": 100.0 * cfg["INTAKE.JOIN_MIN_PCT"] if cfg else 100.0 * 0.9}
@@ -3521,7 +3548,7 @@ def inspect(files, brief: dict = None, mapping=None, cfg: dict = None, registry_
         status = _status_th(status, tx_roles0)
     declared = m.get("dataset_type") if m is not None else None  # a mapping profile remembers the confirmed type
     dtype = _type_from_roles(set(_roles_by_table(primary)[1]) if primary else set(), profile,
-                             declared if declared in DATA_TYPES else None)
+                             declared if declared in DATA_TYPES else None, _colroles(primary))
     if tables is not None:
         attach_meta(tables, {"roles": roles, "code_values": codes, "dataset_type": dtype})
     suff = assess_sufficiency(requested, primary, profile, run_cfg, tables)
@@ -4042,7 +4069,7 @@ def run(files, intake, out_dir: str = ".", cfg: dict = None, registry_path: str 
     events.append({"stage": 4, "status": "OK", "detail": "ความเสี่ยงที่ยืนยัน: " + (", ".join(risk_ids) or "ไม่มี")
                    + (f"; โหมดสำรวจ: {', '.join(it['risks'].get('exploratory', []))}" if it["risks"].get("exploratory") else "")})
     prof = profile_columns(pre["frames"])
-    dtype = _type_from_roles(set(tx_roles), prof, it.get("dataset_type"))
+    dtype = _type_from_roles(set(tx_roles), prof, it.get("dataset_type"), _colroles(primary))
     pl = plan(risk_ids, primary, prof, cfg_run, tables) if not status.startswith("STOP") else \
         pd.DataFrame(columns=["check_id", "decision", "reason", "missing"])
     plan_df = _plan_all(pl)
@@ -4567,8 +4594,17 @@ def _review_text(it: dict) -> str:
     L.append(f"Intake Review — ไฟล์ {len(it['files']):,} ตาราง: {files}")
     L.append("จำนวนแถว: " + ", ".join(f"{t} {n:,} แถว" for t, n in rows.items()))
     dt = it.get("dataset_type")
-    L.append(f"ประเภทข้อมูลที่ตรวจพบ: {dt} ({TYPE_TEXT[dt]}) " if dt else "ประเภทข้อมูลที่ตรวจพบ: ไม่ระบุ ")
-    L[-1] += f"(แก้ได้ในคำตอบ: dataset_type เป็น {', '.join(DATA_TYPES)})"
+    prim_r = _split_roles(it["roles"])[0]
+    anchors = []
+    if dt in ("L", "F") and it.get("profile"):
+        kind, anchors = _lf_detect(pd.DataFrame(it["profile"]), _colroles(prim_r))
+        anchors = anchors if kind == dt else []
+    if dt:
+        why = f"จากคอลัมน์ {', '.join(anchors)}" if anchors else "จากบทบาทคอลัมน์ที่กำหนด หรือที่ผู้ตรวจสอบระบุไว้"
+        L.append(f"ประเภทข้อมูลที่ตรวจพบ: {dt} ({TYPE_TEXT[dt]}) — {why}; ถ้าไม่ถูก ให้ระบุ dataset_type "
+                 f"({', '.join(DATA_TYPES)}) ในคำตอบ")
+    else:
+        L.append(f"ประเภทข้อมูลที่ตรวจพบ: ไม่ระบุ — ถ้าทราบประเภทข้อมูล ให้ระบุ dataset_type ({', '.join(DATA_TYPES)}) ในคำตอบ")
     if it.get("brief", {}).get("context"):
         L.append(f"บริบท: {it['brief']['context']}")
     if it.get("mapping"):
