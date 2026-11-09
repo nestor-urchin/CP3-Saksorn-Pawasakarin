@@ -1,5 +1,5 @@
 # AIDA-16 · ติดตั้ง engine ใน Code Interpreter (แนวทาง 2)
-> ไฟล์: AIDA-16 | เวอร์ชัน: 3.0 | ส่วนหนึ่งของ AIDA Knowledge Pack
+> ไฟล์: AIDA-16 | เวอร์ชัน: 3.1 | ส่วนหนึ่งของ AIDA Knowledge Pack
 > ไฟล์นี้ตอบคำถาม: จะโหลด `aida_engine.py` จาก SharePoint/OneDrive หรือไฟล์แนบเข้า Code Interpreter อย่างไร, ตรวจเวอร์ชันอย่างไร, ถ้าโหลดไม่ได้หรือหา AIDA-14 ไม่พบต้องบอกผู้ใช้ว่าอะไร
 
 ## สรุปสั้น
@@ -38,7 +38,7 @@ reg = aida.default_registry_path()
 reg_ver = aida.load_registry(reg).get("REGISTRY.VERSION") if reg else "NOT FOUND"
 print(aida.__version__, aida.REGISTRY_VERSION, reg_ver, reg)
 ```
-3. **ตรวจผล** — บรรทัด ENGINE / AIDA-14 ต้องไม่เป็น `NOT FOUND` และบรรทัดสุดท้ายต้องได้ `3.0.0 1.2 1.2 <ที่อยู่ของ AIDA-14>`:
+3. **ตรวจผล** — บรรทัด ENGINE / AIDA-14 ต้องไม่เป็น `NOT FOUND` และบรรทัดสุดท้ายต้องได้ `3.1.0 1.3 1.3 <ที่อยู่ของ AIDA-14>`:
    - `__version__ == "3.1.0"` → engine ถูกรุ่น
    - `REGISTRY.VERSION` ของไฟล์ AIDA-14 ที่แนบ (ค่าที่ 3) **ต้องเท่ากับ** `aida.REGISTRY_VERSION` (ค่าที่ 2) — ไม่เท่า → หยุดและแจ้งตามข้อ 4 (engine เองก็ปฏิเสธ AIDA-14 ต่างรุ่นด้วยข้อความภาษาไทยเมื่อเรียก `inspect` / `run`)
    - ค่าที่ 3 เป็น `NOT FOUND` → ยังไม่มี AIDA-14 ข้าง engine (ดูข้อ 4)
