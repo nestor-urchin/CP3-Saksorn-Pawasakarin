@@ -2190,6 +2190,19 @@ def _ids_text(ids: list, n: int = 5) -> str:
     return ", ".join(ids[:n]) + (f" และอีก {len(ids) - n} รายการ" if len(ids) > n else "")
 
 
+def _conc_stats(g: pd.Series, cfg: dict) -> tuple:
+    """The C1 concentration rule on a series of weights per entity (amounts, or record counts): (share per entity,
+    HHI, HHI level text, small, quiet). `small`: so few entities that an equal split already reaches
+    CONC.SINGLE_ENTITY_SHARE; `quiet`: small and the HHI is not above its high level, so nothing is reported.
+    Entities with share >= CONC.SINGLE_ENTITY_SHARE are reported unless `quiet`. Used by GEN-CONC and LIFE-STAFF-CONC."""
+    thr, h = cfg["CONC.SINGLE_ENTITY_SHARE"], cfg["CONC.HHI"]
+    share = g / g.sum()
+    hhi = float(((share * 100) ** 2).sum())
+    level = "ต่ำ" if hhi < h["low"] else "ปานกลาง" if hhi <= h["high"] else "สูง"
+    small = len(g) * thr <= 1
+    return share, hhi, level, small, bool(small and hhi <= h["high"])
+
+
 # ---- GEN-CONC ----
 def gen_conc(tables: dict, cfg: dict) -> pd.DataFrame:
     t = _gen_tx(tables)
@@ -2203,11 +2216,8 @@ def gen_conc(tables: dict, cfg: dict) -> pd.DataFrame:
         g = d.groupby(_col(role))["amount"].sum()
         if len(g) == 0:
             continue
-        share = g / g.sum()
-        hhi = float(((share * 100) ** 2).sum())
-        level = "ต่ำ" if hhi < h["low"] else "ปานกลาง" if hhi <= h["high"] else "สูง"
-        small = len(g) * thr <= 1  # so few parties that an equal split already reaches the share threshold
-        if small and hhi <= h["high"]:
+        share, hhi, level, small, quiet = _conc_stats(g, cfg)
+        if quiet:
             card_note(tables, "GEN-CONC", "1.0",
                       f"{label}: มีเพียง {len(g):,} ราย ซึ่งแต่ละรายถึง CONC.SINGLE_ENTITY_SHARE {thr:.0%} ได้แม้แบ่งยอดเท่ากัน "
                       f"จึงรายงานเฉพาะเมื่อ HHI สูงกว่าระดับสูงของ CONC.HHI ({h['high']:,}); HHI ของชุดนี้ {hhi:,.0f} "
@@ -2483,9 +2493,351 @@ def payer_multi(tables: dict, cfg: dict) -> pd.DataFrame:
 B1_ROLES = ["record_id", "date", "entity", "counterparty", "amount"]  # the five columns every B1 card needs
 
 
-def _spec(func, risk, family, requires, registry, types, optional=(), alt=()):
+# ---- LIFE (data type L): L-R1..L-R6 ----
+LIFE_FAMILY = "5.7 Rule-Based"
+MONEY_LABEL = {"surrender": "เวนคืน", "loan": "กู้ตามกรมธรรม์", "claim": "เคลม"}
+SINGLE_PREMIUM_WORDS = ("single", "เบี้ยเดียว", "ชำระครั้งเดียว", "lump")
+REQ_POLICY = "ขอข้อมูลกรมธรรม์ (วันออกกรมธรรม์)"
+REQ_BENEF_HISTORY = "ขอประวัติการเปลี่ยนผู้รับผลประโยชน์"
+
+
+def id_shape(v) -> str:
+    """The value pattern of an id: letter runs -> A (length kept), digit runs -> 9 (a digits-only id keeps its length),
+    other characters kept; case and spaces around do not matter. "I-0505" -> "A-9", "ACC-9001" -> "AAA-9",
+    "1234567890" -> "9999999999". Two ids with the same shape are written in the same format, so comparing them is
+    meaningful. Shared by LIFE-THIRD-PAYEE rule (a) and FUND-THIRD-PARTY."""
+    t = " ".join(str(v).split())
+    whole = t.isdigit()
+    t = re.sub(r"[^\W\d_]+", lambda m: "A" * len(m.group()), t)
+    return re.sub(r"\d+", lambda m: "9" * len(m.group()) if whole else "9", t)
+
+
+def comparable_ids(a: pd.Series, b: pd.Series) -> pd.Series:
+    """Per row: True when both values are present and have the same id_shape (same prefix / format class)."""
+    both = a.notna() & b.notna()
+    out = pd.Series(False, index=a.index)
+    if both.any():
+        out[both] = a[both].map(id_shape) == b[both].map(id_shape)
+    return out
+
+
+def _to_dt(s: pd.Series) -> pd.Series:
+    return pd.to_datetime(s, errors="coerce")
+
+
+def _life_skip(tables: dict, recipe_id: str, meanings: list, events: str = "") -> bool:
+    """True (and a card note with the Thai reason) when the check cannot run: a transaction code of `meanings` is not
+    confirmed, or `events` is "required" and there is no event table."""
+    reason = require_codes(tables, meanings) if meanings else None
+    if events == "required" and "events" not in tables:
+        reason = reason or (f"ไม่มีตารางประวัติการเปลี่ยนผู้รับผลประโยชน์ — {REQ_BENEF_HISTORY} "
+                            "(ตารางที่มีเลขที่กรมธรรม์ วันที่เปลี่ยน และผู้รับผลประโยชน์)")
+    if reason:
+        card_note(tables, recipe_id, "1.0", reason)
+    return bool(reason)
+
+
+def _life_rows(tables: dict, meaning: str, t: pd.DataFrame = None) -> pd.DataFrame:
+    """Transactions (date order) whose category code has the confirmed meaning, with the normalised policy key `_k`
+    and the day `_day`."""
+    t = _gen_tx(tables) if t is None else t
+    t = t[code_mask(t, code_set(tables, meaning))]
+    return t.assign(_k=norm_id(t["contract"]), _day=t["ts"].dt.normalize())
+
+
+def _last_window(days: list, n: int, months: int):
+    """In the sorted dates `days`, the last start index i with days[i + n - 1] <= days[i] + `months` months, as
+    (i, j) where j is the last index inside that span; None when no span holds n dates."""
+    last = None
+    for i in range(len(days) - n + 1):
+        end = days[i] + pd.DateOffset(months=months)
+        if days[i + n - 1] <= end:
+            last = (i, max(k for k in range(i, len(days)) if days[k] <= end))
+    return last
+
+
+def _empty_life(recipe_id: str, risk: str, key: str, cfg: dict, roles: list) -> pd.DataFrame:
+    return _finish(recipe_id, LIFE_FAMILY, risk, key, [], cfg, roles)
+
+
+# ---- LIFE-EARLY-SURR (L-R1) ----
+def life_early_surr(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid, months = "LIFE-EARLY-SURR", cfg["LIFE.EARLY_SURR.MONTHS"]
+    roles = ["record_id", "date", "contract", "category", "opened_at"]
+    empty = _empty_life(rid, "L-R1", "LIFE.EARLY_SURR.MONTHS", cfg, roles)
+    if _life_skip(tables, rid, ["surrender"]):
+        return empty
+    acc = tables.get("accounts")
+    if acc is None or "opened_at" not in acc.columns or "contract" not in acc.columns:
+        card_note(tables, rid, "1.0", f"ไม่มีวันออกกรมธรรม์ (opened_at) หรือเลขที่กรมธรรม์ในตารางกรมธรรม์ — {REQ_POLICY}; "
+                                      "การ์ดนี้เทียบวันเวนคืนกับวันออกกรมธรรม์ไม่ได้ จึงไม่รายงาน")
+        return empty
+    m = acc.assign(_k=norm_id(acc["contract"]), _o=_to_dt(acc["opened_at"]).dt.normalize())
+    m = m[m["_k"].notna()].sort_values("_o", kind="mergesort").drop_duplicates("_k")
+    keep = ["_k", "_o"] + (["category"] if "category" in m.columns else [])
+    s = _life_rows(tables, "surrender").merge(m[keep].rename(columns={"category": "_mode"}), on="_k", how="left")
+    no_open = s[s["_o"].isna()]
+    if len(no_open):
+        ids = sorted({str(x).strip() for x in no_open["contract"]})
+        card_note(tables, rid, "1.0", f"กรมธรรม์ {len(ids):,} รายการมีการเวนคืนแต่ไม่มีแถวในตารางกรมธรรม์หรือไม่มีวันออกกรมธรรม์ "
+                                      f"({_ids_text(ids)}) จึงข้ามและไม่รายงาน — {REQ_POLICY}")
+    s = s[s["_o"].notna()]
+    hit = s[(s["_day"] >= s["_o"]) & (s["_day"] <= s["_o"] + pd.DateOffset(months=months))]
+    found = []
+    for _, g in hit.groupby("_k", sort=False):
+        last = g.iloc[-1]
+        mode = str(last["_mode"]) if "_mode" in g.columns and pd.notna(last["_mode"]) else ""
+        single = any(w in mode.casefold() for w in SINGLE_PREMIUM_WORDS)
+        used = (last["_day"] - last["_o"]).days / 30.4375
+        pol = str(last["contract"]).strip()
+        found.append({
+            "entity_type": "policy", "entity_id": pol, "period": last["period"],
+            "metric": "months_issue_to_surrender", "value": round(used, 1), "threshold": months,
+            "explanation": (f"กรมธรรม์ {pol} ออกเมื่อ {last['_o']:%Y-%m-%d} และมีรายการเวนคืนเมื่อ "
+                            f"{last['_day']:%Y-%m-%d} ห่างกัน {used:.1f} เดือน ซึ่งอยู่ภายใน LIFE.EARLY_SURR.MONTHS {months} เดือน "
+                            f"({STD_NOTE})" + (" — เป็นกรมธรรม์เบี้ยเดียว (single premium)" if single else "")
+                            + " — สอดคล้องกับ pattern การเวนคืนเร็วหลังทำกรมธรรม์ ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": list(g["tx_id"])})
+    return _finish(rid, LIFE_FAMILY, "L-R1", "LIFE.EARLY_SURR.MONTHS", found, cfg, roles)
+
+
+# ---- LIFE-BENCHG-CASH (L-R2) ----
+def life_benchg_cash(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid, win = "LIFE-BENCHG-CASH", cfg["LIFE.BENCHG_CASH.WINDOW_DAYS"]
+    has_ev = "events" in tables
+    roles = ["record_id", "date", "contract", "category", "counterparty"]
+    empty = _empty_life(rid, "L-R2", "LIFE.BENCHG_CASH.WINDOW_DAYS", cfg, roles)
+    # every row of the event table is a beneficiary change; without it, the rows coded benefit_change are
+    if _life_skip(tables, rid, ["surrender", "loan", "claim"] + ([] if has_ev else ["benefit_change"])):
+        return empty
+    t = _gen_tx(tables)
+    if has_ev:
+        ev = tables["events"]
+        ben = ev["to_acct"] if "to_acct" in ev.columns else pd.Series(None, index=ev.index, dtype="object")
+        ch = pd.DataFrame({"_cid": ev["tx_id"].astype(str), "_cts": _to_dt(ev["ts"]).dt.normalize(),
+                           "_k": norm_id(ev["contract"]), "_ben": ben})
+    else:
+        c = _life_rows(tables, "benefit_change", t)
+        ben = c["to_acct"] if "to_acct" in c.columns else pd.Series(None, index=c.index, dtype="object")
+        ch = pd.DataFrame({"_cid": c["tx_id"], "_cts": c["_day"], "_k": c["_k"], "_ben": ben})
+    ch = ch.dropna(subset=["_cts", "_k"])
+    money = pd.concat([_life_rows(tables, mn, t).assign(_what=mn) for mn in ("surrender", "loan", "claim")])
+    pair = ch.merge(money, on="_k")
+    pair = pair.assign(_d=(pair["_day"] - pair["_cts"]).dt.days)
+    pair = pair[(pair["_d"] >= 0) & (pair["_d"] <= win)].sort_values(["ts", "_cts"], kind="mergesort")
+    found = []
+    for _, g in pair.groupby("_k", sort=False):
+        last = g.iloc[-1]
+        ben_text = f" ผู้รับผลประโยชน์ใหม่ {last['_ben']}" if pd.notna(last["_ben"]) else ""
+        pol = str(last["contract"]).strip()
+        found.append({
+            "entity_type": "policy", "entity_id": pol, "period": last["period"],
+            "metric": "days_change_to_money", "value": int(last["_d"]), "threshold": win,
+            "explanation": (f"กรมธรรม์ {pol} เปลี่ยนผู้รับผลประโยชน์เมื่อ {last['_cts']:%Y-%m-%d}{ben_text} "
+                            f"แล้วมีรายการ{MONEY_LABEL[last['_what']]}เมื่อ {last['_day']:%Y-%m-%d} ห่างกัน {int(last['_d'])} วัน "
+                            f"ภายใน LIFE.BENCHG_CASH.WINDOW_DAYS {win} วัน ({STD_NOTE}) — สอดคล้องกับ pattern การเปลี่ยนผู้รับผลประโยชน์"
+                            f"แล้วมีรายการเงินตามมาเร็ว ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": sorted(set(g["_cid"]) | set(g["tx_id"]))})
+    return _finish(rid, LIFE_FAMILY, "L-R2", "LIFE.BENCHG_CASH.WINDOW_DAYS", found, cfg, roles)
+
+
+# ---- LIFE-LOAN (L-R3) ----
+def life_loan(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid = "LIFE-LOAN"
+    near, nmin, nmon, swin = (cfg["LIFE.LOAN.NEAR_PCT"], cfg["LIFE.LOAN.MIN_COUNT"], cfg["LIFE.LOAN.COUNT_MONTHS"],
+                              cfg["LIFE.LOAN_SURR.WINDOW_DAYS"])
+    roles = ["record_id", "date", "amount", "contract", "category", "limit"]
+    empty = _empty_life(rid, "L-R3", "LIFE.LOAN.NEAR_PCT", cfg, roles)
+    if _life_skip(tables, rid, ["loan"]):
+        return empty
+    loans = _life_rows(tables, "loan")
+    found = []
+    if "limit" in loans.columns:  # (a) a loan at or above LIFE.LOAN.NEAR_PCT of the cash value
+        lim = pd.to_numeric(loans["limit"], errors="coerce")
+        ratio = (loans["amount"] / lim).where(lim > 0)
+        scored = loans.assign(_r=ratio)
+        for _, r in scored[scored["_r"].round(10) >= near].iterrows():
+            pol = str(r["contract"]).strip()
+            found.append({
+                "entity_type": "policy", "entity_id": pol, "period": r["period"], "metric": "loan_to_cash_value",
+                "value": round(float(r["_r"]), 4), "threshold": near,
+                "explanation": (f"กรมธรรม์ {pol} มีรายการกู้ยอด {r['amount']:,.2f} เมื่อ {r['_day']:%Y-%m-%d} คิดเป็น "
+                                f"{r['_r']:.1%} ของมูลค่าเวนคืน {float(r['limit']):,.2f} ตั้งแต่ LIFE.LOAN.NEAR_PCT {near:.0%} ขึ้นไป "
+                                f"({STD_NOTE}) — สอดคล้องกับ pattern การกู้เกือบเต็มมูลค่า ควรตรวจสอบเพิ่มเติม"),
+                "record_refs": [r["tx_id"]]})
+    for _, g in loans.groupby("_k", sort=False):  # (b) at least LIFE.LOAN.MIN_COUNT loans within LIFE.LOAN.COUNT_MONTHS
+        w = _last_window(list(g["_day"]), nmin, nmon)
+        if w:
+            sub = g.iloc[w[0]:w[1] + 1]
+            last = sub.iloc[-1]
+            pol = str(last["contract"]).strip()
+            found.append({
+                "entity_type": "policy", "entity_id": pol, "period": last["period"], "metric": "loan_count",
+                "value": len(sub), "threshold": nmin,
+                "explanation": (f"กรมธรรม์ {pol} มีรายการกู้ {len(sub)} ครั้ง ({sub['_day'].min():%Y-%m-%d} ถึง "
+                                f"{sub['_day'].max():%Y-%m-%d}) ภายใน LIFE.LOAN.COUNT_MONTHS {nmon} เดือน ซึ่งถึง LIFE.LOAN.MIN_COUNT "
+                                f"{nmin} ครั้ง ({STD_NOTE}) — สอดคล้องกับ pattern การกู้ถี่ ควรตรวจสอบเพิ่มเติม"),
+                "record_refs": list(sub["tx_id"])})
+    if code_set(tables, "surrender"):  # (c) a loan followed by a surrender within LIFE.LOAN_SURR.WINDOW_DAYS
+        surr = _life_rows(tables, "surrender")
+        pair = loans.merge(surr, on="_k", suffixes=("", "_s"))
+        pair = pair.assign(_d=(pair["_day_s"] - pair["_day"]).dt.days)
+        pair = pair[(pair["_d"] >= 0) & (pair["_d"] <= swin)].sort_values(["ts_s", "ts"], kind="mergesort")
+        for _, g in pair.groupby("_k", sort=False):
+            last = g.iloc[-1]
+            pol = str(last["contract"]).strip()
+            found.append({
+                "entity_type": "policy", "entity_id": pol, "period": last["period_s"], "metric": "days_loan_to_surrender",
+                "value": int(last["_d"]), "threshold": swin,
+                "explanation": (f"กรมธรรม์ {pol} มีรายการกู้เมื่อ {last['_day']:%Y-%m-%d} แล้วเวนคืนเมื่อ {last['_day_s']:%Y-%m-%d} "
+                                f"ห่างกัน {int(last['_d'])} วัน ภายใน LIFE.LOAN_SURR.WINDOW_DAYS {swin} วัน ({STD_NOTE}) — "
+                                f"สอดคล้องกับ pattern การกู้แล้วเวนคืน ควรตรวจสอบเพิ่มเติม"),
+                "record_refs": sorted(set(g["tx_id"]) | set(g["tx_id_s"]))})
+    else:
+        card_note(tables, rid, "1.0", "ยังไม่ได้ยืนยันความหมายรหัสเวนคืน (surrender) จึงไม่ตรวจข้อ (c) กู้แล้วเวนคืน; "
+                                      "ข้อ (a) และ (b) ยังรันตามปกติ")
+    return _finish(rid, LIFE_FAMILY, "L-R3", "LIFE.LOAN.NEAR_PCT", found, cfg, roles)
+
+
+# ---- LIFE-THIRD-PAYEE (L-R4) ----
+def life_third_payee(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid, kmin = "LIFE-THIRD-PAYEE", cfg["LIFE.PAYEE.MIN_POLICIES"]
+    roles = ["record_id", "date", "entity", "counterparty", "contract"]
+    t = _gen_tx(tables)
+    t = t[t["from_acct"].notna() & t["to_acct"].notna()].copy()
+    t["_e"], t["_p"], t["_k"] = norm_id(t["from_acct"]), norm_id(t["to_acct"]), norm_id(t["contract"])
+    found = []
+    cmp_ = comparable_ids(t["from_acct"], t["to_acct"])  # (a) per row: only payees written like the insured id are compared
+    if len(t) and not cmp_.any():
+        card_note(tables, rid, "1.0", "รูปแบบผู้รับเงินกับผู้เอาประกันเทียบกันไม่ได้ (รหัสผู้รับเงินกับรหัสผู้เอาประกันเขียนคนละรูปแบบ) "
+                                      "จึงไม่ตรวจข้อ (a) ผู้รับเงินไม่ใช่ผู้เอาประกัน; ข้อ (b) ผู้รับเงินรายเดียวจากหลายกรมธรรม์ยังรันตามปกติ")
+    diff = t[cmp_ & (t["_e"] != t["_p"])]
+    for _, g in diff.groupby("_k", sort=False):
+        last = g.iloc[-1]
+        pol = str(last["contract"]).strip()
+        found.append({
+            "entity_type": "policy", "entity_id": pol, "period": last["period"], "metric": "payee_differs_count",
+            "value": len(g), "threshold": 1,
+            "explanation": (f"กรมธรรม์ {pol} ของผู้เอาประกัน {str(last['from_acct']).strip()} มีรายการจ่ายให้ {str(last['to_acct']).strip()} "
+                            f"ซึ่งเป็นผู้รับเงินที่ไม่ใช่ผู้เอาประกัน (รหัสอยู่ในรูปแบบเดียวกับรหัสผู้เอาประกัน จึงเทียบได้) {len(g)} รายการ "
+                            f"({_ids_text(list(g['tx_id']))}) — สอดคล้องกับ pattern การจ่ายเงินเข้าบัญชีบุคคลที่สาม ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": list(g["tx_id"])})
+    other = t[t["_e"] != t["_p"]]  # (b) one payee paid from policies of at least LIFE.PAYEE.MIN_POLICIES different insured
+    for _, g in other.groupby("_p", sort=False):
+        n_ins = g["_e"].nunique()
+        if n_ins >= kmin:
+            pay = str(g["to_acct"].iloc[0]).strip()
+            found.append({
+                "entity_type": "payee", "entity_id": pay, "period": g["period"].iloc[-1], "metric": "insured_count",
+                "value": int(n_ins), "threshold": kmin,
+                "explanation": (f"ผู้รับเงิน {pay} ได้รับเงินจาก {g['_k'].nunique()} กรมธรรม์ของผู้เอาประกันต่างกัน "
+                                f"{n_ins} ราย ({_ids_text(list(g['tx_id']))}) ตั้งแต่ LIFE.PAYEE.MIN_POLICIES {kmin} ราย ({STD_NOTE}) — "
+                                f"สอดคล้องกับ pattern ผู้รับเงินรายเดียวรับจากหลายกรมธรรม์ ควรตรวจสอบเพิ่มเติม"),
+                "record_refs": list(g["tx_id"])})
+    return _finish(rid, LIFE_FAMILY, "L-R4", "LIFE.PAYEE.MIN_POLICIES", found, cfg, roles)
+
+
+# ---- LIFE-BENEF-MULTI (L-R5) ----
+def life_benef_multi(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid = "LIFE-BENEF-MULTI"
+    pmin, cmin, cmon = cfg["LIFE.BENEF.MIN_POLICIES"], cfg["LIFE.BENCHG.MIN_COUNT"], cfg["LIFE.BENCHG.COUNT_MONTHS"]
+    roles = ["record_id", "date", "contract", "counterparty"]
+    empty = _empty_life(rid, "L-R5", "LIFE.BENEF.MIN_POLICIES", cfg, roles)
+    if _life_skip(tables, rid, [], events="required"):
+        return empty
+    ev = tables["events"]
+    if "to_acct" not in ev.columns:
+        card_note(tables, rid, "1.0", f"ตารางประวัติการเปลี่ยนผู้รับผลประโยชน์ไม่มีคอลัมน์ผู้รับผลประโยชน์ (บทบาท counterparty) — {REQ_BENEF_HISTORY}")
+        return empty
+    ch = pd.DataFrame({"tx_id": ev["tx_id"].astype(str), "_day": _to_dt(ev["ts"]).dt.normalize(),
+                       "_k": norm_id(ev["contract"]), "ben": ev["to_acct"]}).dropna(subset=["ben", "_day", "_k"])
+    ch["ben"] = ch["ben"].astype(str).str.strip()
+    ch = ch[ch["ben"] != ""].sort_values("_day", kind="mergesort")
+    ins = {}  # policy key -> insured, from the policy table, then the transactions
+    acc = tables.get("accounts")
+    if acc is not None and "contract" in acc.columns and "acct_id" in acc.columns:
+        ins.update(dict(zip(norm_id(acc["contract"]), norm_id(acc["acct_id"]))))
+    t = tables["transactions"]
+    if "contract" in t.columns and "from_acct" in t.columns:
+        ins.update(dict(zip(norm_id(t["contract"]), norm_id(t["from_acct"]))))
+    ch["_ins"] = [ins[k] if isinstance(ins.get(k), str) else f"policy:{k}" for k in ch["_k"]]
+    hits = {}  # beneficiary -> {"parts", "refs", "day", "value", "thr", "metric"}
+
+    def hit(ben, part, refs, day, value, thr, metric):
+        h = hits.setdefault(ben, {"parts": [], "refs": set(), "day": day, "value": value, "thr": thr, "metric": metric})
+        h["parts"].append(part)
+        h["refs"] |= set(refs)
+        h["day"] = max(h["day"], day)
+    for ben, g in ch.groupby("ben", sort=False):  # (a) one beneficiary on policies of different insured
+        n_ins, n_pol = g["_ins"].nunique(), g["_k"].nunique()
+        if n_ins >= pmin:
+            hit(ben, f"ปรากฏในกรมธรรม์ {n_pol} กรมธรรม์ของผู้เอาประกันต่างกัน {n_ins} ราย ตั้งแต่ LIFE.BENEF.MIN_POLICIES {pmin} ราย",
+                g["tx_id"], g["_day"].max(), int(n_ins), pmin, "beneficiary_policies")
+    for k, g in ch.groupby("_k", sort=False):  # (b) a policy whose beneficiary changed LIFE.BENCHG.MIN_COUNT times in the window
+        w = _last_window(list(g["_day"]), cmin, cmon)
+        if w:
+            sub = g.iloc[w[0]:w[1] + 1]
+            last = sub.iloc[-1]
+            hit(last["ben"], f"เป็นผู้รับผลประโยชน์ล่าสุดของกรมธรรม์ {k} ซึ่งเปลี่ยนผู้รับผลประโยชน์ {len(sub)} ครั้ง "
+                f"({sub['_day'].min():%Y-%m-%d} ถึง {sub['_day'].max():%Y-%m-%d}) ภายใน LIFE.BENCHG.COUNT_MONTHS {cmon} เดือน "
+                f"ตั้งแต่ LIFE.BENCHG.MIN_COUNT {cmin} ครั้ง", sub["tx_id"], last["_day"], len(sub), cmin, "policy_benef_changes")
+    found = [{"entity_type": "beneficiary", "entity_id": ben, "period": f"{h['day']:%Y-%m}", "metric": h["metric"],
+              "value": h["value"], "threshold": h["thr"],
+              "explanation": (f"ผู้รับผลประโยชน์ {ben} " + "; ".join(h["parts"]) + f" ({STD_NOTE}) — สอดคล้องกับ pattern "
+                              f"ผู้รับผลประโยชน์ซ้ำข้ามกรมธรรม์ ควรตรวจสอบเพิ่มเติม"),
+              "record_refs": sorted(h["refs"])} for ben, h in hits.items()]
+    return _finish(rid, LIFE_FAMILY, "L-R5", "LIFE.BENEF.MIN_POLICIES", found, cfg, roles)
+
+
+# ---- LIFE-STAFF-CONC (L-R6) ----
+def life_staff_conc(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid, thr, topn, h = "LIFE-STAFF-CONC", cfg["CONC.SINGLE_ENTITY_SHARE"], cfg["CONC.TOPN"], cfg["CONC.HHI"]
+    roles = ["record_id", "date", "category", "created_by"]
+    empty = _empty_life(rid, "L-R6", "CONC.SINGLE_ENTITY_SHARE", cfg, roles)
+    if _life_skip(tables, rid, ["surrender"]):
+        return empty
+    s = _life_rows(tables, "surrender")
+    parts = [s[["tx_id", "ts", "created_by"]]] if "created_by" in s.columns else []
+    ev = tables.get("events")
+    if ev is not None and "created_by" in ev.columns:  # every event-table row is a beneficiary change
+        parts.append(pd.DataFrame({"tx_id": ev["tx_id"].astype(str), "ts": _to_dt(ev["ts"]), "created_by": ev["created_by"]}))
+    if not parts:
+        card_note(tables, rid, "1.0", "ไม่มีผู้บันทึก/ตัวแทน (created_by) ของรายการเวนคืนหรือการเปลี่ยนผู้รับผลประโยชน์ จึงรันไม่ได้ — ขอข้อมูลผู้ทำรายการ")
+        return empty
+    r = pd.concat(parts, ignore_index=True)
+    r["created_by"] = r["created_by"].where(r["created_by"].notna(), "").astype(str).str.strip()
+    r = r[(r["created_by"] != "") & r["ts"].notna()]
+    g = r.groupby("created_by").size()
+    if len(g) == 0:
+        return empty
+    share, hhi, level, small, quiet = _conc_stats(g, cfg)
+    if quiet:
+        card_note(tables, rid, "1.0",
+                  f"ผู้ทำรายการมีเพียง {len(g):,} ราย ซึ่งแต่ละรายถึง CONC.SINGLE_ENTITY_SHARE {thr:.0%} ได้แม้แบ่งจำนวนรายการเท่ากัน "
+                  f"จึงรายงานเฉพาะเมื่อ HHI สูงกว่าระดับสูงของ CONC.HHI ({h['high']:,}); HHI ของชุดนี้ {hhi:,.0f} (ระดับ{level}) "
+                  f"จึงไม่รายงานการกระจุกตัว")
+        return empty
+    found = []
+    for who in share[share >= thr].index:
+        e = r[r["created_by"] == who].sort_values("ts", kind="mergesort")
+        top = e.tail(topn)
+        found.append({
+            "entity_type": "staff", "entity_id": str(who), "period": f"{e['ts'].max():%Y-%m}", "metric": "record_share",
+            "value": round(float(share[who]), 4), "threshold": thr,
+            "explanation": (f"ผู้ทำรายการ {who} เป็นผู้บันทึก {int(g[who]):,} จาก {int(g.sum()):,} รายการเวนคืนและเปลี่ยนผู้รับผลประโยชน์ "
+                            f"({share[who]:.1%}) ตั้งแต่ CONC.SINGLE_ENTITY_SHARE {thr:.0%} ขึ้นไป; HHI ของทั้งชุด {hhi:,.0f} ระดับ{level} "
+                            f"(CONC.HHI; {STD_NOTE}) — สอดคล้องกับ pattern การกระจุกตัวของตัวแทน/พนักงาน ควรตรวจสอบเพิ่มเติม "
+                            f"(รายการอ้างอิงคือ {len(top)} รายการล่าสุดตาม CONC.TOPN)"),
+            "record_refs": list(top["tx_id"])})
+    return _finish(rid, LIFE_FAMILY, "L-R6", "CONC.SINGLE_ENTITY_SHARE", found, cfg, roles)
+
+
+def _spec(func, risk, family, requires, registry, types, optional=(), alt=(), codes=(), events=""):
+    """`codes`: transaction-code meanings the check needs confirmed (require_codes); `events`: "required" when the
+    check cannot run without the event table."""
     return {"func": func, "risk": risk, "risk_alt": list(alt), "skill_family": family, "requires": list(requires),
-            "optional": list(optional), "registry": list(registry), "data_types": list(types)}
+            "optional": list(optional), "registry": list(registry), "data_types": list(types), "codes": list(codes),
+            "events": events}
 
 
 _GEN = ["record_id", "date", "amount", "entity"]
@@ -2532,6 +2884,22 @@ CHECKS = {
                       ["DUE.NEAR_DAYS", "DUE.MIN_SHARE", "DUE.MIN_PERIODS"], ["C"]),
     "PAYER-MULTI": _spec(payer_multi, "C-R1", "5.3 Behavioral", ["record_id", "date", "entity", "counterparty", "contract"],
                          ["PAYER.MIN_CONTRACTS"], ["C"]),
+    # C2 checks, data type L (life insurance)
+    "LIFE-EARLY-SURR": _spec(life_early_surr, "L-R1", LIFE_FAMILY, ["record_id", "date", "contract", "category"],
+                             ["LIFE.EARLY_SURR.MONTHS"], ["L"], ["opened_at"], codes=["surrender"]),
+    "LIFE-BENCHG-CASH": _spec(life_benchg_cash, "L-R2", LIFE_FAMILY, ["record_id", "date", "contract", "category"],
+                              ["LIFE.BENCHG_CASH.WINDOW_DAYS"], ["L"], ["counterparty"],
+                              codes=["surrender", "loan", "claim"]),
+    "LIFE-LOAN": _spec(life_loan, "L-R3", LIFE_FAMILY, ["record_id", "date", "amount", "contract", "category", "limit"],
+                       ["LIFE.LOAN.NEAR_PCT", "LIFE.LOAN.MIN_COUNT", "LIFE.LOAN.COUNT_MONTHS", "LIFE.LOAN_SURR.WINDOW_DAYS"],
+                       ["L"], codes=["loan"]),
+    "LIFE-THIRD-PAYEE": _spec(life_third_payee, "L-R4", LIFE_FAMILY,
+                              ["record_id", "date", "entity", "counterparty", "contract"], ["LIFE.PAYEE.MIN_POLICIES"], ["L"]),
+    "LIFE-BENEF-MULTI": _spec(life_benef_multi, "L-R5", LIFE_FAMILY, ["record_id", "date", "contract"],
+                              ["LIFE.BENEF.MIN_POLICIES", "LIFE.BENCHG.MIN_COUNT", "LIFE.BENCHG.COUNT_MONTHS"], ["L"],
+                              events="required"),
+    "LIFE-STAFF-CONC": _spec(life_staff_conc, "L-R6", "5.2 Concentration", ["record_id", "date", "category", "created_by"],
+                             ["CONC.SINGLE_ENTITY_SHARE", "CONC.HHI", "CONC.TOPN"], ["L"], codes=["surrender"]),
 }
 
 
@@ -2547,7 +2915,21 @@ def plan_checks(tables: dict, cfg: dict = None) -> pd.DataFrame:
             rows.append((cid, "Skip", f"ไม่มีบทบาทคอลัมน์ {what} หรือคอลัมน์ว่างทั้งคอลัมน์ ซึ่งการ์ดนี้ต้องใช้ จึงรันไม่ได้ — "
                                       f"แก้โดยกำหนดบทบาท {', '.join(miss)} ให้คอลัมน์ในไฟล์ใน Intake Review (ข้อ A) แล้วยืนยันและรันใหม่", ", ".join(miss)))
         else:
-            rows.append((cid, "Run", "มีบทบาทคอลัมน์ที่ต้องใช้ครบ", "-"))
+            why = None
+            dt = (tables.get("meta") or {}).get("dtype") if tables is not None else None
+            if set(spec["data_types"]) <= {"L", "F"} and dt not in spec["data_types"]:
+                why = ("การ์ดนี้ใช้กับข้อมูลประเภท " + "/".join(TYPE_TEXT[t] for t in spec["data_types"]) + " (ยืนยันประเภทข้อมูลใน "
+                       "Intake Review) แต่ข้อมูลนี้ไม่ได้ยืนยันเป็นประเภทดังกล่าว จึงไม่รัน", "ประเภทข้อมูล")
+            elif spec["events"] == "required" and tables is not None and "events" not in tables:
+                why = (f"ไม่มีตารางประวัติการเปลี่ยนผู้รับผลประโยชน์ ซึ่งการ์ดนี้ต้องใช้ — {REQ_BENEF_HISTORY} (ตารางที่มีเลขที่กรมธรรม์ "
+                       "วันที่เปลี่ยน และผู้รับผลประโยชน์) แล้วกำหนดบทบาท record_id, date, contract ให้ตารางนั้นใน Intake Review",
+                       "ตารางประวัติการเปลี่ยนผู้รับผลประโยชน์")
+            elif spec["codes"] and tables is not None:
+                need = list(spec["codes"]) + (["benefit_change"] if cid == "LIFE-BENCHG-CASH" and "events" not in tables else [])
+                r = require_codes(tables, need)
+                if r:
+                    why = (r, "ความหมายรหัสประเภทรายการ")
+            rows.append((cid, "Skip", why[0], why[1]) if why else (cid, "Run", "มีบทบาทคอลัมน์ที่ต้องใช้ครบ", "-"))
     return pd.DataFrame(rows, columns=["recipe_id", "decision", "reason", "missing"])
 
 
@@ -2655,6 +3037,48 @@ RISK_LIBRARY = {
                   ["ผู้ขายกระจุกตัว", "กระจุกตัว", "พึ่งพาผู้ขายรายเดียว", "vendor concentration", "concentration",
                    "single vendor"],
                   ["A"], ["GEN-CONC"], _GENR, 1, 50),
+    # C2: data type L (life insurance)
+    "L-R1": _risk("เวนคืนเร็วหลังทำกรมธรรม์",
+                  "การเวนคืนกรมธรรม์ภายใน LIFE.EARLY_SURR.MONTHS เดือนนับจากวันออกกรมธรรม์ (กรมธรรม์เบี้ยเดียวจะระบุไว้ใน Evidence) "
+                  "สอดคล้องกับ pattern ที่ควรทบทวน — ต้องมีวันออกกรมธรรม์จากตารางกรมธรรม์",
+                  ["เวนคืนเร็ว", "เวนคืนหลังทำกรมธรรม์", "เวนคืนกรมธรรม์เร็ว", "early surrender", "quick surrender",
+                   "surrender soon after issue"],
+                  ["L"], ["LIFE-EARLY-SURR"], ["record_id", "date", "contract", "category"], 1, 30,
+                  {"opened_at": REQ_POLICY, "category": "ประเภทรายการ (เวนคืน/กู้/เคลม) ของแต่ละรายการ"}, ["opened_at"]),
+    "L-R2": _risk("เปลี่ยนผู้รับผลประโยชน์แล้วมีรายการเงินตามมาเร็ว",
+                  "กรมธรรม์ที่เปลี่ยนผู้รับผลประโยชน์แล้วมีรายการเวนคืน กู้ หรือเคลมตามมาภายใน LIFE.BENCHG_CASH.WINDOW_DAYS วัน",
+                  ["เปลี่ยนผู้รับผลประโยชน์แล้ว", "เปลี่ยนผู้รับผลประโยชน์ก่อนเวนคืน", "เปลี่ยนผู้รับผลประโยชน์ก่อนเคลม",
+                   "beneficiary change followed by", "change of beneficiary then payout", "beneficiary change before surrender"],
+                  ["L"], ["LIFE-BENCHG-CASH"], ["record_id", "date", "contract", "category"], 1, 30,
+                  {"_events": REQ_BENEF_HISTORY, "category": "ประเภทรายการ (เวนคืน/กู้/เคลม) ของแต่ละรายการ"}),
+    "L-R3": _risk("กู้ตามกรมธรรม์ผิดปกติ",
+                  "การกู้ตามกรมธรรม์เกือบเต็มมูลค่าเวนคืน กู้ถี่ภายในช่วงเวลาสั้น หรือกู้แล้วเวนคืนภายใน LIFE.LOAN_SURR.WINDOW_DAYS วัน",
+                  ["กู้ตามกรมธรรม์", "กู้ตามกรมธรรม์ผิดปกติ", "กู้เต็มมูลค่า", "กู้แล้วเวนคืน", "policy loan", "abnormal policy loan",
+                   "loan then surrender"],
+                  ["L"], ["LIFE-LOAN"], ["record_id", "date", "amount", "contract", "category", "limit"], 1, 30,
+                  {"limit": "มูลค่าเวนคืน (cash value) ของกรมธรรม์ ณ วันที่ทำรายการ",
+                   "category": "ประเภทรายการ (เวนคืน/กู้/เคลม) ของแต่ละรายการ"}),
+    "L-R4": _risk("จ่ายเงินเข้าบัญชีบุคคลที่สาม",
+                  "รายการจ่ายที่ผู้รับเงินไม่ใช่ผู้เอาประกัน (เทียบเมื่อรหัสอยู่ในรูปแบบเดียวกัน) หรือผู้รับเงินรายเดียวรับจาก"
+                  "กรมธรรม์ของผู้เอาประกันต่างรายตั้งแต่ LIFE.PAYEE.MIN_POLICIES กรมธรรม์",
+                  ["จ่ายเงินเข้าบัญชีบุคคลที่สาม", "บุคคลที่สาม", "ผู้รับเงินไม่ใช่ผู้เอาประกัน", "ผู้รับเงินรายเดียวหลายกรมธรรม์",
+                   "third-party payee", "third party payee", "payee not the insured", "one payee many policies"],
+                  ["L"], ["LIFE-THIRD-PAYEE"], ["record_id", "date", "entity", "counterparty", "contract"], 1, 30,
+                  {"counterparty": "ผู้รับเงิน (payee) ของแต่ละรายการจ่าย"}),
+    "L-R5": _risk("ผู้รับผลประโยชน์ซ้ำข้ามกรมธรรม์",
+                  "ผู้รับผลประโยชน์รายเดียวอยู่ในกรมธรรม์ของผู้เอาประกันต่างรายตั้งแต่ LIFE.BENEF.MIN_POLICIES กรมธรรม์ หรือกรมธรรม์ที่"
+                  "เปลี่ยนผู้รับผลประโยชน์ถี่ตั้งแต่ LIFE.BENCHG.MIN_COUNT ครั้งในช่วงเวลาที่กำหนด — ต้องมีประวัติการเปลี่ยนผู้รับผลประโยชน์",
+                  ["ผู้รับผลประโยชน์ซ้ำ", "ผู้รับผลประโยชน์รายเดียวหลายกรมธรรม์", "เปลี่ยนผู้รับผลประโยชน์ถี่",
+                   "repeated beneficiary", "same beneficiary across policies", "frequent beneficiary change"],
+                  ["L"], ["LIFE-BENEF-MULTI"], ["record_id", "date", "contract"], 1, 30,
+                  {"_events": REQ_BENEF_HISTORY}),
+    "L-R6": _risk("ตัวแทนหรือพนักงานกระจุกตัว",
+                  "ผู้ทำรายการเวนคืนและเปลี่ยนผู้รับผลประโยชน์รายเดียวมีสัดส่วนสูงตามกฎการกระจุกตัวของ AIDA (CONC.SINGLE_ENTITY_SHARE และ CONC.HHI)",
+                  ["ตัวแทนกระจุกตัว", "พนักงานกระจุกตัว", "ตัวแทนหรือพนักงาน", "ตัวแทนรายเดียว", "agent concentration",
+                   "staff concentration", "agent or staff concentration"],
+                  ["L"], ["LIFE-STAFF-CONC"], ["record_id", "date", "category", "created_by"], 1, 30,
+                  {"created_by": "ตัวแทนหรือพนักงานผู้ทำรายการ (created_by) ของแต่ละรายการ",
+                   "category": "ประเภทรายการ (เวนคืน/กู้/เคลม) ของแต่ละรายการ"}),
 }
 
 
