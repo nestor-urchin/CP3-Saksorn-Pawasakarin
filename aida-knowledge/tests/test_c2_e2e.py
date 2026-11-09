@@ -243,9 +243,11 @@ class Variants(unittest.TestCase):
                     roles, extra = roles_of(ds, v)
                     fs = files(ds, v)
                     ins, d = inspect_(fs, brief(ds, v))
-                    ans = {"roles": roles, "add_risks": key(ds)["intake"]["suggested_risks"], **extra}
+                    # no roles: en / th answer only the D suggestions, legacy also confirms the data type
+                    ans = {"add_risks": key(ds)["intake"]["suggested_risks"], **extra}
                     it = e.confirm(ins["intake"], ans, str(d / "intake.json"))
                     self.assertEqual(it["dataset_type"], ds)
+                    self.assertEqual(it["roles"], roles)
                     r = e.run(fs, it, str(d / "out"))
                     self.assertEqual(finding_set(r["findings"]), key_set(ds))
 
@@ -281,6 +283,55 @@ class Regression(unittest.TestCase):
                     if k["recipes"].get(cid):
                         self.assertEqual(got, set(k["recipes"][cid]), cid)
                 self.assertEqual(finding_set(r["findings"]), key_set(ds))
+
+    def test_e_c_a_realistic_answers_no_roles(self):
+        """E / C / A with the answers an auditor types (no roles json): inspect -> confirm -> run equals the C1 key."""
+        import test_orchestration as to
+        e = engine()
+        for ds in ("E", "C", "A"):
+            with self.subTest(dataset=ds):
+                d = tmp()
+                ins = e.inspect(to.files(ds), to.brief(ds), draft_path=str(d / "intake_draft.json"))
+                ans = {k: v for k, v in to.answers(ds).items() if k != "roles"}
+                it = e.confirm(ins["intake"], ans, str(d / "intake.json"))
+                r = e.run(to.files(ds), it, str(d / "out"))
+                self.assertEqual(to.finding_set(r["findings"]), to.key_set(ds))
+
+    def test_unique_wording_keeps_named_role(self):
+        e = engine()
+        cases = {"รหัสลูกค้าไม่ซ้ำ": "entity", "วันที่ไม่ซ้ำกัน": "date", "จำนวนเงิน ไม่ซ้ำ": "amount",
+                 "เลขที่สัญญา ไม่ซ้ำกัน": "contract", "เลขที่ใบแจ้งหนี้ ไม่ซ้ำ": "document_no",
+                 "customer id (non-unique)": "entity", "invoice number, not unique": "document_no",
+                 "รหัสบัญชี ไม่ซ้ำกัน": "entity",
+                 "รหัสการเปลี่ยนผู้รับผลประโยชน์ ไม่ซ้ำกัน": "record_id", "รหัสรายการ ไม่ซ้ำกัน": "record_id"}
+        for text, role in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(e.match_description(text), role)
+
+    def test_unique_wording_in_c1_briefs_bare_confirm(self):
+        """C contract_id / E acct_id described as unique still run end to end with a bare "ยืนยัน"."""
+        import test_orchestration as to
+        e = engine()
+        want = {"C": {("payer", "PY01", "C-R1", "2026-08"), ("contract", "HP-0042", "C-R2", "2026-08")},
+                "E": to.key_set("E")}
+        for ds, col, text in (("C", "contract_id", "เลขที่สัญญา ไม่ซ้ำกัน"), ("E", "acct_id", "รหัสบัญชี ไม่ซ้ำกัน")):
+            with self.subTest(dataset=ds):
+                d = tmp()
+                br = to.brief(ds)
+                br.setdefault("columns", {})[col] = text
+                ins = e.inspect(to.files(ds), br, draft_path=str(d / "intake_draft.json"))
+                it = e.confirm(ins["intake"], {}, str(d / "intake.json"))
+                r = e.run(to.files(ds), it, str(d / "out"))
+                self.assertEqual(r["status"], "OK")
+                self.assertEqual(to.finding_set(r["findings"]), want[ds])
+
+    def test_nav_rule_needs_fund_data_or_another_date(self):
+        e = engine()
+        prof = e.profile_columns({"t": pd.DataFrame({"d": ["2026-01-05", "2026-01-06"], "x": ["1", "2"]})})
+        sug = e.suggest_roles(prof, {"d": "วันที่ที่รายการนั้นได้ราคา NAV"}, None)
+        self.assertEqual(sug.set_index("column").loc["d", "role"], "date")  # the only date of non-fund data
+        sug = e.suggest_roles(prof, {"d": "วันที่ที่รายการนั้นได้ราคา NAV"}, "F")
+        self.assertEqual(sug.set_index("column").loc["d", "role"], "due_date")
 
     def test_e_c_a_regression(self):
         import test_orchestration as to

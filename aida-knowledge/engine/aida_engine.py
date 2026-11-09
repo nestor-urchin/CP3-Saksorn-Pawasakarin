@@ -1671,8 +1671,10 @@ DESC_REL_TH = ("สำหรับ", "ของ", "ต่อ", "ที่")  # T
 DESC_WEAK = {"ยอด", "ยอดเงิน", "จำนวนเงิน", "มูลค่า", "amount", "amt", "value"}  # modifiers a named synonym outranks
 # "X เป็น Y" / "X คือ Y": the head X is named first and the copula explains its values ("ผู้รับเงิน เป็นรหัสผู้เอาประกัน")
 DESC_COPULA = re.compile(r"\s(?:เป็น|คือ)")
-DESC_UNIQUE = ("ไม่ซ้ำ", "unique")  # a column described as unique per row is the record id
-DESC_NAV = ("nav", "ได้ราคา")  # a date "on which the order got its NAV price" is the NAV date (due_date), not the order date
+# "unique per row" breaks a tie only: the head must also name a record id ("รหัสการเปลี่ยนผู้รับผลประโยชน์ ไม่ซ้ำกัน")
+DESC_UNIQUE = ("ไม่ซ้ำ", "unique")
+DESC_UNIQUE_NEG = re.compile(r"(?:\bnon|\bnot)[\s\-]*unique|ไม่ใช่[^,;()]*ไม่ซ้ำ|ซ้ำได้|อาจซ้ำ", re.I)
+DESC_NAV = ("nav", "ได้ราคา")  # a date "on which the order got its NAV price" is the NAV date (see suggest_roles)
 
 
 def _desc_hits(text: str) -> list:
@@ -1699,21 +1701,27 @@ def match_description(text):
     (ยอด, จำนวนเงิน, amount, ...) is weaker than any other synonym ("ยอดวงเงิน" and "limit amount" are limits),
     then the longest synonym wins. A description equal to a synonym, or a head with no synonym, is matched as
     match_role does on the whole text. The head also ends at a copula (" เป็น" / " คือ": "ผู้รับเงิน เป็นรหัสผู้เอาประกัน"
-    is the payee, a counterparty). A description that says the value is unique per row (ไม่ซ้ำ / unique) is the record
-    id, and a date the order got its NAV price on (NAV / ได้ราคา) is the NAV date (due_date), not the order date."""
-    role = _match_description(text)
-    low, norm = str(text).casefold(), _norm_name(text)
-    if any(w in low for w in DESC_UNIQUE):
+    is the payee, a counterparty). "Unique per row" (ไม่ซ้ำ / unique, not negated) only breaks a tie: it gives record_id
+    when the head also holds a record-id synonym ("รหัสการเปลี่ยนผู้รับผลประโยชน์ ไม่ซ้ำกัน"); "เลขที่สัญญา ไม่ซ้ำกัน"
+    stays a contract."""
+    role, hits = _match_description(text)
+    low = str(text).casefold()
+    if role != "record_id" and any(w in low for w in DESC_UNIQUE) and not DESC_UNIQUE_NEG.search(low) \
+            and any(h[3] == "record_id" and h[1] >= 4 for h in hits):
         return "record_id"
-    if role == "date" and ("nav" in {t.casefold() for t in _tokens(text)} or any(w in norm for w in DESC_NAV[1:])):
-        return "due_date"
     return role
 
 
+def mentions_nav(text) -> bool:
+    """Does a description say the date is the one the order got its NAV price on (NAV / ได้ราคา)?"""
+    return "nav" in {t.casefold() for t in _tokens(text)} or any(w in _norm_name(text) for w in DESC_NAV[1:])
+
+
 def _match_description(text):
+    """(role, synonym hits of the head) — see match_description."""
     role, strength = match_role(text)
     if strength == "exact" or role is None:
-        return role
+        return role, []
     head = DESC_COPULA.split(str(text))[0].strip() or str(text)
     head = DESC_REL_EN.split(head)[0].strip() or head
     hits = _desc_hits(head)
@@ -1732,9 +1740,9 @@ def _match_description(text):
             start = k + 1
     hits = [h for h in hits if h[0] + h[1] <= cut]
     if not hits:
-        return role
+        return role, []
     strong = [h for h in hits if h[2] not in {_norm_name(w) for w in DESC_WEAK}] or hits
-    return max(strong, key=lambda h: (h[1], -h[0]))[3]
+    return max(strong, key=lambda h: (h[1], -h[0]))[3], hits
 
 
 def _num_text(s: pd.Series):
@@ -2044,6 +2052,12 @@ def suggest_roles(profile: pd.DataFrame, brief_columns=None, preset=None, cfg=No
                     "level": _level(conf, thr) if role != UNKNOWN_ROLE else LEVEL_LOW, "reason": reason,
                     "source": src})
     res = pd.DataFrame(out, columns=["table", "column", "role", "confidence", "level", "reason", "source"])
+    # a date described as the day the order got its NAV price is the NAV date (due_date): for fund data (preset F), or
+    # when another column of the same table is also described as the date, so the NAV date is not the transaction date
+    for t, g in res[(res["source"] == "brief") & (res["role"] == "date")].groupby("table"):
+        nav = [i for i in g.index if mentions_nav(_brief_text(brief_columns, t, res.at[i, "column"]))]
+        if nav and (preset == "F" or len(nav) < len(g)):
+            res.loc[nav, "role"] = "due_date"
     # one column per role in a table: keep the most confident guess (auditor's own choices are never touched)
     for (t, r), g in res[(res["role"] != UNKNOWN_ROLE) & (res["source"] != "brief")].groupby(["table", "role"]):
         taken = res[(res["table"] == t) & (res["role"] == r) & (res["source"] == "brief")]
