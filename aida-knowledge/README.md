@@ -3,9 +3,10 @@
 ชุดไฟล์ Knowledge สำหรับ **AIDA Agent** ใน Microsoft 365 Copilot Agent Builder
 - ระยะ A: AIDA เป็นที่ปรึกษาด้านวิธีการ (เลือก skill, gate, การตีความ, output)
 - ระยะ B1: วิเคราะห์ธุรกรรมโอนเงิน (Mule Accounts) ด้วยการ์ดสูตร 34 ใบ — **ถูกแทนที่ใน C1**
-- ระยะ C1 (Knowledge Pack **3.0**): วิเคราะห์ข้อมูลจริงด้วย engine ไฟล์เดียวที่ทดสอบแล้ว `engine/aida_engine.py` v3.1.0 ซึ่งทำงานตามบทบาทคอลัมน์ — ข้อมูล **E โอนเงิน**, **C รับชำระค่างวดสินเชื่อ**, **A จ่ายเงินเจ้าหนี้**; Intake Review ยืนยันครั้งเดียว; โหมดสำรวจสำหรับคำถามนอกการ์ด
+- ระยะ C1 (Knowledge Pack **3.0**): วิเคราะห์ข้อมูลจริงด้วย engine ไฟล์เดียวที่ทดสอบแล้ว ซึ่งทำงานตามบทบาทคอลัมน์ — ข้อมูล **E โอนเงิน**, **C รับชำระค่างวดสินเชื่อ**, **A จ่ายเงินเจ้าหนี้**; Intake Review ยืนยันครั้งเดียว; โหมดสำรวจสำหรับคำถามนอกการ์ด
+- ระยะ C2 (Knowledge Pack **3.1**, `engine/aida_engine.py` v3.1.0, Registry 1.3): เพิ่มการ์ดรับรองของ **L ประกันชีวิต** (L-R1–L-R6) และ **F ธุรกรรมกองทุนรวมของผู้ถือหน่วย** (F-R1–F-R6) — ดู "มีอะไรใหม่ใน 3.1"
 
-- Spec: `docs/superpowers/specs/2026-11-03-aida-knowledge-pack-design.md` (A), `2026-11-03-aida-phase-b1-design.md` (B1), `2026-11-06-aida-c1-generic-engine-design.md` (C1)
+- Spec: `docs/superpowers/specs/2026-11-03-aida-knowledge-pack-design.md` (A), `2026-11-03-aida-phase-b1-design.md` (B1), `2026-11-06-aida-c1-generic-engine-design.md` (C1), `2026-11-09-aida-c2-life-fund-design.md` (C2)
 - เวอร์ชัน: Knowledge Pack 3.1 · engine 3.1.0 · Registry 1.3
 
 ## โครงสร้าง
@@ -14,32 +15,45 @@ aida-knowledge/
 ├── knowledge/                    ← อัปโหลดทั้งโฟลเดอร์ (20 ไฟล์ = โควตาเต็ม)
 ├── AIDA-agent-instructions.md    ← วางในช่อง Instructions (ไม่อัปโหลด, ≤ 8,000 ตัวอักษร)
 ├── engine/aida_engine.py         ← engine (แนวทาง 2: วางใน SharePoint/OneDrive หรือแนบในแชต — ไม่อยู่ใน knowledge/)
-├── samples/                      ← ข้อมูลตัวอย่าง E (ไฟล์ที่ราก + E/brief.md), C/, A/ พร้อม brief.md และเฉลย answer_key.json
+├── samples/                      ← ข้อมูลตัวอย่าง E (ไฟล์ที่ราก + E/brief.md), C/, A/, L/, F/ พร้อม brief.md และเฉลย answer_key.json
 ├── spike/, spike-c1/             ← ชุดทดสอบ Code Interpreter ของ B1 และ C1 (ไม่อัปโหลดเป็น Knowledge ถาวร)
-├── tests/                        ← eval-questions.md (47 ข้อ) + unit / end-to-end tests ของ engine
+├── tests/                        ← eval-questions.md (57 ข้อ) + unit / end-to-end tests ของ engine
 └── tools/                        ← validate_pack.py, build_risk_library_md.py
 ```
 
-| ไฟล์ Knowledge ของ C1 | เนื้อหา |
+| ไฟล์ Knowledge ของ C1–C2 | เนื้อหา |
 |---|---|
 | `AIDA-16-engine-install.md` | วิธีโหลด `aida_engine.py` จาก SharePoint/OneDrive หรือไฟล์แนบ, ตรวจเวอร์ชัน, สิ่งที่ต้องบอกเมื่อโหลดไม่ได้ |
-| `AIDA-17-roles-schema.md` | 14 บทบาท + custom, preset E/C/A, พจนานุกรมชื่อคอลัมน์, Schema และ output |
+| `AIDA-17-roles-schema.md` | 14 บทบาท + custom, preset E/C/A/L/F, ความหมายของบทบาทตามประเภทข้อมูล, ตารางเหตุการณ์, `code_values`, พจนานุกรมชื่อคอลัมน์, Schema และ output |
 | `AIDA-18-risk-library.md` | Risk Library + การ์ดรับรองทุกใบ (ภาษาไทย ไม่มีโค้ด) — **สร้างจาก engine** ด้วย `tools/build_risk_library_md.py` |
-| `AIDA-19-engine-guide.md` | ลำดับเรียก engine, brief / answers, Intake Review A–E, กติกาการยืนยัน, โหมดสำรวจ, mapping profile, การแก้ปัญหา |
+| `AIDA-19-engine-guide.md` | ลำดับเรียก engine, brief / answers (`code_values`, `dataset_type`), Intake Review A–E, การแนบตารางเหตุการณ์, การอ่านผล L / F, กติกาการยืนยัน, โหมดสำรวจ, mapping profile, การแก้ปัญหา |
 
 template Dashboard อยู่ใน engine แล้ว (ไม่มีไฟล์ output template ใน Knowledge อีก)
+
+## มีอะไรใหม่ใน 3.1 (ระยะ C2)
+- **ข้อมูล L ประกันชีวิต (ชุด L3)**: เวนคืน กู้ตามกรมธรรม์ และเปลี่ยนผู้รับผลประโยชน์ — การ์ด LIFE-EARLY-SURR, LIFE-BENCHG-CASH, LIFE-LOAN, LIFE-THIRD-PAYEE, LIFE-BENEF-MULTI, LIFE-STAFF-CONC (L-R1–L-R6)
+- **ข้อมูล F ธุรกรรมกองทุนรวม (ชุด F1)**: ซื้อ ขายคืน สับเปลี่ยน — การ์ด FUND-ROUNDTRIP, FUND-THIRD-PARTY, FUND-SHARED-ACCT, FUND-FREQUENT, FUND-CHURN, FUND-LATE-TRADE (F-R1–F-R6)
+- **ยังใช้ 14 บทบาทเดิม**: Intake Review แสดงความหมายของบทบาทตามประเภทข้อมูล (`ROLE_MEANING_BY_TYPE` เช่น limit = มูลค่าเวนคืน, due_date = วันที่ได้ราคา NAV)
+- **ตารางเหตุการณ์ (event table)** 1 ตารางต่อการวิเคราะห์ (เช่น ประวัติการเปลี่ยนผู้รับผลประโยชน์) เชื่อมด้วย contract และรายงาน % การเชื่อมใน Intake Review
+- **รหัสประเภทรายการ (`code_values`)**: ผู้ตรวจสอบยืนยันความหมายของรหัส (ข้อ A แสดง `รหัส = ความหมาย → surrender` หรือ ❓) — การ์ดที่ใช้รหัสที่ยังไม่ยืนยันข้ามพร้อมเหตุผลภาษาไทย
+- **`answers["dataset_type"]`**: ยืนยันประเภทข้อมูลเองเมื่อชื่อคอลัมน์ไม่สื่อความหมาย
+- **Data Request รวม** อยู่ที่ `inspect(...)["intake"]["data_request"]` รวมข้อมูลที่ Concern ของเฟสถัดไปต้องใช้ (เช่น เคลมเร็วหลังทำกรมธรรม์ → ขอข้อมูลการเคลม)
+- **AIDA-14 Registry 1.3**: key หมวด 13 `LIFE.*` และ `FUND.*` (แนวปฏิบัติทั่วไป — ไม่มีมาตรฐานทางการ) — engine 3.1.0 ต้องใช้คู่กับ AIDA-14 รุ่น 1.3 เท่านั้น
+- **ข้อมูลตัวอย่าง** `samples/L/` และ `samples/F/` (พร้อม variants ชื่อคอลัมน์ en / th / legacy และ F `date_only`) และ eval Q48–Q57
+- **ยังไม่มีการ์ดเฉพาะ (เฟสถัดไป)**: L1 เบี้ยประกัน, L2 สินไหม/เคลม, F2 พอร์ตลงทุนขององค์กร, บัตรเครดิต, มูลนิธิ, สหกรณ์ — ใช้การ์ดทั่วไป + โหมดสำรวจ
 
 ## แนวทาง 2 และ 3 (ผล spike)
 ยังไม่ได้รับผล spike ใน Copilot จึงใช้ **แนวทาง 2**: engine อยู่นอก Knowledge และ AIDA โหลดตาม `AIDA-16-engine-install.md`
 ถ้าผล spike (`spike-c1/`, ใน zip คือ `6-spike-c1/`) แสดงว่า **prompt ข้อ 2 ผ่าน** (import ไฟล์จาก Knowledge ได้) ให้ใช้ **แนวทาง 3**: อัปโหลด `aida_engine.py` เข้า Knowledge **แทน** `AIDA-16-engine-install.md` (ยังเป็น 20 ไฟล์) — validator รองรับทั้งสองแบบ (ถ้ามี `knowledge/aida_engine.py` ต้องเหมือน `engine/aida_engine.py` ทุกไบต์) และควรปรับข้อความที่อ้าง AIDA-16 ใน Instructions / AIDA-19 ให้บอกว่า engine อยู่ใน Knowledge
 
-## วิธีติดตั้งใน Agent Builder (ระยะ C1)
+## วิธีติดตั้งใน Agent Builder (ระยะ C1–C2)
 1. ลบไฟล์ Knowledge เดิมที่ไม่มีแล้ว: `AIDA-16-output-templates.md`, `AIDA-17-data-evidence-schema.md`, `AIDA-18-analysis-recipes.md`, `AIDA-19-pipeline-recipes.md` (และไฟล์ทดลองของ spike ถ้ามี)
 2. อัปโหลดไฟล์ทั้งหมดใน `knowledge/` (**20 ไฟล์**) แล้วรอให้ index เสร็จ
 3. เปิดใช้ **Code Interpreter** ใน Agent
 4. คัดลอกเนื้อหา `AIDA-agent-instructions.md` ไปวางแทนข้อความเดิมในช่อง **Instructions**
 5. วาง `engine/aida_engine.py` และ `knowledge/AIDA-14-configuration-registry.md` ไว้ในโฟลเดอร์เดียวกันบน SharePoint/OneDrive ของทีม (หรือแนบทั้งสองไฟล์ในแชตเมื่อจะวิเคราะห์)
-6. ทดสอบด้วย `tests/eval-questions.md` (Q1–Q47) แล้วบันทึกผลในตารางท้ายไฟล์
+6. ทดสอบด้วย `tests/eval-questions.md` (Q1–Q57) แล้วบันทึกผลในตารางท้ายไฟล์
+- **อัปเกรดจาก 3.0**: เปลี่ยน `engine/aida_engine.py` **และ** `AIDA-14-configuration-registry.md` ข้าง engine พร้อมกัน (engine 3.1.0 ปฏิเสธ AIDA-14 รุ่น 1.2) แล้วอัปโหลดไฟล์ Knowledge ที่เปลี่ยนใหม่ (AIDA-00, AIDA-14, AIDA-15, AIDA-16, AIDA-17, AIDA-18, AIDA-19) และวาง Instructions ใหม่
 
 ขั้นตอนที่ AIDA ทำเมื่อวิเคราะห์: โหลด engine (AIDA-16) → แยกคำอธิบายของผู้ตรวจสอบเป็น brief → `inspect` → แสดง **Intake Review** (A ความหมายคอลัมน์, B ความพอเพียง + Data Request, C เงื่อนไข, D ความเสี่ยงที่แนะนำ, E วันที่ / คุณภาพ / Materiality / แผน Run-Skip) → ผู้ตรวจสอบยืนยันครั้งเดียว → `confirm` + `run` ในคำตอบเดียวกัน → Workbook / Dashboard (+ CSV เครือข่ายสำหรับข้อมูล E)
 
@@ -47,11 +61,11 @@ template Dashboard อยู่ใน engine แล้ว (ไม่มีไฟ
 **ข้อมูลอ่อนไหว (PCI DSS / PDPA):** ทุก output แสดงข้อมูลบัญชีและธุรกรรมแบบเต็ม (ไม่ปิดบัง) ตามการตัดสินใจขององค์กร ไฟล์เหล่านี้จึงอาจอยู่ในขอบเขต PCI DSS / PDPA
 - องค์กรต้องควบคุมการเข้าถึงไฟล์ output, ที่เก็บ และการส่งต่อเอง
 - ทุก output มีป้ายเตือนข้อมูลอ่อนไหวข้อความเดียวกัน (`OUT_BANNER` ใน engine)
-- C1 ยังไม่รองรับการปิดบังข้อมูล (masking)
+- ยังไม่รองรับการปิดบังข้อมูล (masking)
 
 **ข้อจำกัดของการหาเครือข่าย:** ใช้ข้อมูลธุรกรรมเท่านั้น (ไม่มีบัตรประชาชน เบอร์โทร ที่อยู่ อุปกรณ์) จึงไม่พบกลุ่มบัญชีที่เชื่อมกันด้วยข้อมูลร่วมโดยไม่มีธุรกรรมระหว่างกัน และบัญชีที่เป็นจุดรวมเงิน (hub ที่ทำหน้าที่ collector) อาจทำให้กลุ่มที่ไม่เกี่ยวข้องกันถูกรวมเป็นเครือข่ายเดียว — ควรทบทวนสมาชิกของแต่ละเครือข่ายก่อนสรุปผล
 
-**ผลเป็นสัญญาณ ไม่ใช่ข้อสรุป:** ทุก Finding มีสถานะ "รอ Human Review"; ค่าเกณฑ์ Mule / Counterparty / Money Flow และหมวด 12 (จ่ายซ้ำ, แบ่งรายการ, ชำระใกล้วันครบกำหนด ฯลฯ) ใน AIDA-14 เป็นแนวปฏิบัติทั่วไป ไม่มีมาตรฐานทางการ องค์กรควรปรับตามบริบท
+**ผลเป็นสัญญาณ ไม่ใช่ข้อสรุป:** ทุก Finding มีสถานะ "รอ Human Review"; ค่าเกณฑ์ Mule / Counterparty / Money Flow และหมวด 12 (จ่ายซ้ำ, แบ่งรายการ, ชำระใกล้วันครบกำหนด ฯลฯ) และหมวด 13 (ประกันชีวิต / กองทุน) ใน AIDA-14 เป็นแนวปฏิบัติทั่วไป ไม่มีมาตรฐานทางการ องค์กรควรปรับตามบริบท
 
 **ขนาดไฟล์ (ขีดที่ทดสอบแล้ว):** ไฟล์ใหญ่ที่สุดที่ทดสอบทั้งสายงาน (ข้อมูลจำลองแบบไม่เรียบร้อย: วันที่ พ.ศ., ยอดมีจุลภาค, บัญชีกิจกรรมหนาแน่น + hub) คือ **80,000 รายการ / 3,000 บัญชี / 6 เดือนต่อการรัน 1 ครั้ง** — ในเครื่อง ~35–39 วินาที, หน่วยความจำสูงสุด ~0.7 GB (pandas 3.0 และ 1.5.3 ได้ผลเท่ากัน; รายละเอียดใน `spike/LOCAL-RESULTS.md`)
 - **ไฟล์เกิน 80,000 รายการ → แบ่งไฟล์ตามเดือน** แล้วรันทีละไฟล์ (Code Interpreter ใน Copilot มีขีดจำกัดเวลาและหน่วยความจำที่ยังไม่ได้วัด จึงไม่ควรเกินขนาดที่ทดสอบ)
@@ -70,7 +84,7 @@ template Dashboard อยู่ใน engine แล้ว (ไม่มีไฟ
 python3 aida-knowledge/tools/validate_pack.py aida-knowledge   # ตรวจทั้งชุด → "OK: 20 files validated"
 python3 aida-knowledge/tools/build_risk_library_md.py           # สร้าง AIDA-18 ใหม่จาก engine (เมื่อแก้ RISK_LIBRARY / CHECKS)
 cd aida-knowledge/tools && python3 -m unittest                  # ทดสอบ validator
-cd aida-knowledge/tests && python3 -m unittest                  # unit + end-to-end ของ engine บนข้อมูลตัวอย่าง E / C / A
+cd aida-knowledge/tests && python3 -m unittest                  # unit + end-to-end ของ engine บนข้อมูลตัวอย่าง E / C / A / L / F
 ```
 
 validator ตรวจ:
@@ -91,7 +105,7 @@ AIDA-Knowledge-Pack/
 ├── 1-upload-knowledge/      ← 20 ไฟล์ อัปโหลดเป็น Knowledge
 ├── 2-paste-instructions/    ← AIDA-agent-instructions.md วางในช่อง Instructions
 ├── 3-test/                  ← eval-questions.md
-├── 4-samples/E, C, A/       ← ข้อมูล, brief.md, answer_key.json (+ ชื่อคอลัมน์ 3 แบบใน variants/)
+├── 4-samples/E, C, A, L, F/ ← ข้อมูล, brief.md, answer_key.json (+ ชื่อคอลัมน์ 3 แบบใน variants/; F มี date_only)
 ├── 5-engine/                ← aida_engine.py (วางบน SharePoint/OneDrive คู่กับ AIDA-14 หรือแนบในแชต)
 ├── 6-spike-c1/              ← ชุด spike (ไม่บังคับ)
 └── README.md

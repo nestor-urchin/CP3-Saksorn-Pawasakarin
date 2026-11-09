@@ -459,5 +459,27 @@ class TestPlanting(unittest.TestCase):
             self.assertTrue(ids.map(lambda x: bool(re.match(r"^[A-Z]-\d{4}$", x))).all())
 
 
+class TestEvalC2(unittest.TestCase):
+    """eval-questions.md Q48-Q57 (C2): each item has the question, expected behaviour, pass criteria, a checklist tag
+    and a 4-samples/ path that exists in the repo samples/ (the zip layout), and says to paste only the letter."""
+
+    def test_q48_to_q57_complete(self):
+        t = (HERE / "eval-questions.md").read_text(encoding="utf-8")
+        section = t.split("## ระยะ C2", 1)[1].split("## ตารางผลทดสอบ", 1)[0]
+        self.assertIn("เฉพาะส่วนหนังสือภาษาไทย", section)
+        self.assertIn("```json", section)
+        for q in range(48, 58):
+            block = t.split(f"### Q{q} — ", 1)[1].split("\n### ", 1)[0].split("\n---", 1)[0]
+            for part in ("- ต้องมี: ", "- ต้องไม่มี: ", "- ไฟล์ที่ควรถูกอ้าง: AIDA-", "- Checklist ข้อ "):
+                self.assertIn(part, block, f"Q{q}: {part}")
+            paths = re.findall(r"`4-samples/([^`]+)`", block)
+            if q in (51, 55, 56):  # follow-ups of Q50 / Q53 / Q48 reuse those files
+                continue
+            self.assertTrue(paths, f"Q{q}: no 4-samples/ path")
+            for rel in paths:
+                self.assertTrue((SAMPLES / rel).exists(), f"Q{q}: samples/{rel} missing")
+            self.assertIn(f"| Q{q} | ", t)
+
+
 if __name__ == "__main__":
     unittest.main()
