@@ -2864,6 +2864,233 @@ def life_staff_conc(tables: dict, cfg: dict) -> pd.DataFrame:
     return _finish(rid, LIFE_FAMILY, "L-R6", "CONC.SINGLE_ENTITY_SHARE", found, cfg, roles)
 
 
+# ---- FUND (data type F): F-R1..F-R6 ----
+FUND_FAMILY = LIFE_FAMILY
+FUND_MEANINGS = ("buy", "sell", "switch_in", "switch_out")
+FUND_COUNT_CHECKS = ("FUND-FREQUENT", "FUND-CHURN")  # count every confirmed buy / sell / switch meaning (see _fund_codes)
+REQ_FUND_TIME = "วันที่ของคำสั่งซื้อขายที่มีเวลา (ชั่วโมง:นาที) เพื่อดูคำสั่งที่ทำหลังเวลาตัดรอบ"
+REQ_NAV_DATE = "ขอวันที่ได้ราคา NAV ของแต่ละคำสั่ง"
+EPS = 1e-9
+
+
+def _fund_codes(tables: dict) -> tuple:
+    """(Thai Skip reason or None, confirmed meanings, unconfirmed meanings) of the buy / sell / switch_in / switch_out
+    meanings for FUND-FREQUENT and FUND-CHURN: they count every confirmed one and Skip only when none is confirmed."""
+    miss = missing_codes(tables, list(FUND_MEANINGS))
+    have = [m for m in FUND_MEANINGS if m not in miss]
+    return (None if have else missing_codes_reason(miss)), have, [m for m in FUND_MEANINGS if m in miss]
+
+
+def _fund_tx(tables: dict) -> pd.DataFrame:
+    t = _gen_tx(tables)
+    return t.assign(_e=norm_id(t["from_acct"]))
+
+
+def _fund_count_rows(tables: dict, rid: str):
+    """(rows whose code is a confirmed buy / sell / switch meaning, with `_e` the holder key, None) or (None, Skip) when
+    none is confirmed; unconfirmed meanings are named in a card note."""
+    reason, have, lacking = _fund_codes(tables)
+    if reason:
+        card_note(tables, rid, "1.0", reason)
+        return None
+    if lacking:
+        card_note(tables, rid, "1.0", "นับเฉพาะรายการซื้อ/ขาย/สับเปลี่ยนที่ยืนยันความหมายรหัสแล้ว (" + ", ".join(have) +
+                  "); ยังไม่ได้ยืนยัน: " + ", ".join(lacking) + " — ยืนยันความหมายรหัสใน Intake Review เพื่อนับให้ครบ")
+    t = _fund_tx(tables)
+    codes = set().union(*(code_set(tables, m) for m in have))
+    t = t[code_mask(t, codes) & t["_e"].notna()]
+    return t
+
+
+def _freq_hits(t: pd.DataFrame, nmin: int) -> pd.DataFrame:
+    """(holder key, period) pairs with at least nmin counted rows: columns _e, period, n, refs, holder."""
+    g = t.groupby(["_e", "period"], sort=True)
+    out = g.agg(n=("tx_id", "size"), refs=("tx_id", list), holder=("from_acct", "last")).reset_index()
+    return out[out["n"] >= nmin].reset_index(drop=True)
+
+
+# ---- FUND-ROUNDTRIP (F-R1) ----
+def fund_roundtrip(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid, days, band = "FUND-ROUNDTRIP", cfg["FUND.ROUNDTRIP.DAYS"], cfg["FUND.ROUNDTRIP.AMOUNT_BAND"]
+    roles = ["record_id", "date", "entity", "contract", "category", "amount"]
+    empty = _finish(rid, FUND_FAMILY, "F-R1", "FUND.ROUNDTRIP.DAYS", [], cfg, roles)
+    if _life_skip(tables, rid, ["buy", "sell"]):
+        return empty
+    t = _fund_tx(tables)
+    t = t.assign(_c=norm_id(t["contract"]))
+    t = t[t["_e"].notna() & t["_c"].notna()]
+    buys, sells = t[code_mask(t, code_set(tables, "buy"))], t[code_mask(t, code_set(tables, "sell"))]
+    if buys.empty or sells.empty:
+        return empty
+    b = buys[["_e", "_c", "ts", "amount", "tx_id"]].rename(columns={"ts": "_bts", "amount": "_bamt", "tx_id": "_bid"})
+    m = pd.merge_asof(sells.sort_values("ts", kind="mergesort"), b.sort_values("_bts", kind="mergesort"),
+                      left_on="ts", right_on="_bts", by=["_e", "_c"], direction="backward")  # latest earlier buy, by time not file order
+    m = m[m["_bts"].notna()]
+    gap = (m["ts"].dt.normalize() - m["_bts"].dt.normalize()).dt.days
+    ratio = m["amount"] / m["_bamt"]
+    m = m.assign(_gap=gap, _ratio=ratio)
+    hit = m[(m["_gap"] <= days) & (m["_ratio"] >= band["low"] - EPS) & (m["_ratio"] <= band["high"] + EPS)]
+    found = []
+    for (_, per), g in hit.sort_values("ts", kind="mergesort").groupby(["_e", "period"], sort=False):
+        last = g.iloc[-1]
+        holder = str(last["from_acct"]).strip()
+        found.append({
+            "entity_type": "entity", "entity_id": holder, "period": per, "metric": "days_buy_to_sell",
+            "value": int(last["_gap"]), "threshold": days,
+            "explanation": (f"ผู้ถือหน่วย {holder} ซื้อกองทุน {str(last['contract']).strip()} เมื่อ {last['_bts']:%Y-%m-%d} "
+                            f"แล้วขายคืนเมื่อ {last['ts']:%Y-%m-%d} ห่างกัน {int(last['_gap'])} วัน (อยู่ภายใน FUND.ROUNDTRIP.DAYS {days} วัน) "
+                            f"ยอดขาย {last['amount']:,.2f} คิดเป็น {last['_ratio']:.1%} ของยอดซื้อ {last['_bamt']:,.2f} "
+                            f"(อยู่ในช่วง {band['low']:.0%}–{band['high']:.0%} ตาม FUND.ROUNDTRIP.AMOUNT_BAND; {STD_NOTE}) — "
+                            f"สอดคล้องกับ pattern การซื้อแล้วขายคืนเร็ว ควรตรวจสอบเพิ่มเติม (การสับเปลี่ยนไม่นับเป็นการซื้อหรือขาย)"),
+            "record_refs": sorted(set(g["_bid"]) | set(g["tx_id"]))})
+    return _finish(rid, FUND_FAMILY, "F-R1", "FUND.ROUNDTRIP.DAYS", found, cfg, roles)
+
+
+# ---- FUND-THIRD-PARTY (F-R2) ----
+def fund_third_party(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid = "FUND-THIRD-PARTY"
+    roles = ["record_id", "date", "entity", "counterparty"]
+    empty = _finish(rid, FUND_FAMILY, "F-R2", "FUND.SHARED_ACCT.MIN_HOLDERS", [], cfg, roles)
+    t = _gen_tx(tables)
+    t = t[t["from_acct"].notna() & t["to_acct"].notna()].copy()
+    cmp_ = comparable_ids(t["from_acct"], t["to_acct"])  # per row: only an account owner written like the unitholder id is compared
+    if not cmp_.any():
+        card_note(tables, rid, "1.0", "รูปแบบเจ้าของบัญชีกับรหัสผู้ถือหน่วยเทียบกันไม่ได้ (เขียนคนละรูปแบบ เช่น เลขบัญชีธนาคารกับรหัสผู้ถือหน่วย) "
+                                      "จึงไม่ตรวจว่าผู้ชำระหรือผู้รับเงินเป็นบุคคลที่สาม — ขอข้อมูลเจ้าของบัญชีที่ใช้รหัสผู้ถือหน่วยรูปแบบเดียวกัน")
+        return empty
+    t["_e"], t["_p"] = norm_id(t["from_acct"]), norm_id(t["to_acct"])
+    diff = t[cmp_ & (t["_e"] != t["_p"])]
+    found = []
+    for _, g in diff.groupby("_e", sort=False):
+        last = g.iloc[-1]
+        holder = str(last["from_acct"]).strip()
+        owners = sorted({str(x).strip() for x in g["to_acct"]})
+        found.append({
+            "entity_type": "entity", "entity_id": holder, "period": last["period"], "metric": "third_party_count",
+            "value": len(g), "threshold": 1,
+            "explanation": (f"ผู้ถือหน่วย {holder} มีรายการที่เจ้าของบัญชีชำระหรือรับเงินเป็น {', '.join(owners[:3])} "
+                            f"ซึ่งไม่ใช่ผู้ถือหน่วยเอง (รหัสอยู่ในรูปแบบเดียวกับรหัสผู้ถือหน่วย จึงเทียบได้) {len(g)} รายการ "
+                            f"({_ids_text(list(g['tx_id']))}) — สอดคล้องกับ pattern ผู้ชำระหรือผู้รับเงินเป็นบุคคลที่สาม ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": list(g["tx_id"])})
+    return _finish(rid, FUND_FAMILY, "F-R2", "FUND.SHARED_ACCT.MIN_HOLDERS", found, cfg, roles)
+
+
+# ---- FUND-SHARED-ACCT (F-R3) ----
+def fund_shared_acct(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid, kmin = "FUND-SHARED-ACCT", cfg["FUND.SHARED_ACCT.MIN_HOLDERS"]
+    roles = ["record_id", "date", "entity", "counterparty"]
+    t = _fund_tx(tables)
+    t = t[t["to_acct"].notna() & t["_e"].notna()].assign(_p=lambda d: norm_id(d["to_acct"]))
+    found = []
+    for _, g in t.groupby("_p", sort=False):
+        n = g["_e"].nunique()
+        if n >= kmin:
+            acct = str(g["to_acct"].iloc[0]).strip()
+            found.append({
+                "entity_type": "counterparty", "entity_id": acct, "period": g["period"].max(), "metric": "holder_count",
+                "value": int(n), "threshold": kmin,
+                "explanation": (f"บัญชี {acct} ถูกใช้ชำระหรือรับเงินโดยผู้ถือหน่วยต่างกัน {n} ราย ({len(g):,} รายการ: "
+                                f"{_ids_text(list(g['tx_id']))}) ตั้งแต่ FUND.SHARED_ACCT.MIN_HOLDERS {kmin} ราย ({STD_NOTE}) — "
+                                f"สอดคล้องกับ pattern บัญชีรับเงินเดียวใช้กับผู้ถือหน่วยหลายราย ควรตรวจสอบเพิ่มเติม"),
+                "record_refs": list(g["tx_id"])})
+    return _finish(rid, FUND_FAMILY, "F-R3", "FUND.SHARED_ACCT.MIN_HOLDERS", found, cfg, roles)
+
+
+# ---- FUND-FREQUENT (F-R4) ----
+def fund_frequent(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid, nmin = "FUND-FREQUENT", cfg["FUND.FREQ.MIN_TX_MONTH"]
+    roles = ["record_id", "date", "entity", "category"]
+    t = _fund_count_rows(tables, rid)
+    if t is None:
+        return _finish(rid, FUND_FAMILY, "F-R4", "FUND.FREQ.MIN_TX_MONTH", [], cfg, roles)
+    found = []
+    for _, r in _freq_hits(t, nmin).iterrows():
+        holder = str(r["holder"]).strip()
+        found.append({
+            "entity_type": "entity", "entity_id": holder, "period": r["period"], "metric": "tx_per_month",
+            "value": int(r["n"]), "threshold": nmin,
+            "explanation": (f"ผู้ถือหน่วย {holder} ทำรายการซื้อ ขาย หรือสับเปลี่ยน {int(r['n'])} รายการในเดือน {r['period']} "
+                            f"ตั้งแต่ FUND.FREQ.MIN_TX_MONTH {nmin} รายการ ({STD_NOTE}) ({_ids_text(r['refs'])}) — "
+                            f"สอดคล้องกับ pattern การซื้อขายหรือสับเปลี่ยนถี่ ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": list(r["refs"])})
+    return _finish(rid, FUND_FAMILY, "F-R4", "FUND.FREQ.MIN_TX_MONTH", found, cfg, roles)
+
+
+# ---- FUND-CHURN (F-R5) ----
+def fund_churn(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid, smin, nmin = "FUND-CHURN", cfg["FUND.CHURN.MIN_CLIENT_SHARE"], cfg["FUND.CHURN.MIN_CLIENTS"]
+    roles = ["record_id", "date", "entity", "category", "channel"]
+    empty = _finish(rid, FUND_FAMILY, "F-R5", "FUND.CHURN.MIN_CLIENT_SHARE", [], cfg, roles)
+    counted = _fund_count_rows(tables, rid)
+    if counted is None:
+        return empty
+    hits = _freq_hits(counted, cfg["FUND.FREQ.MIN_TX_MONTH"])
+    all_tx = _fund_tx(tables)
+    all_tx = all_tx[all_tx["_e"].notna() & all_tx["channel"].notna() & (all_tx["channel"].astype(str).str.strip() != "")]
+    all_tx = all_tx.assign(_a=all_tx["channel"].astype(str).str.strip())
+    found = []
+    for agent, g in all_tx.groupby("_a", sort=True):
+        clients = set(g["_e"])
+        for per, h in hits[hits["_e"].isin(clients)].groupby("period", sort=True):
+            n = h["_e"].nunique()
+            share = n / len(clients)
+            if n >= nmin and share >= smin - EPS:
+                refs = sorted({r for refs in h["refs"] for r in refs})
+                found.append({
+                    "entity_type": "agent", "entity_id": agent, "period": per, "metric": "frequent_client_share",
+                    "value": round(share, 4), "threshold": smin,
+                    "explanation": (f"ตัวแทนขาย {agent} มีผู้ถือหน่วย {len(clients):,} ราย ซึ่ง {n} ราย ({share:.1%}) ซื้อขายหรือสับเปลี่ยนถี่ตามเกณฑ์ "
+                                    f"FUND.FREQ.MIN_TX_MONTH ในเดือน {per} ตั้งแต่ FUND.CHURN.MIN_CLIENT_SHARE {smin:.0%} และ "
+                                    f"FUND.CHURN.MIN_CLIENTS {nmin} ราย ({STD_NOTE}) — สอดคล้องกับ pattern ตัวแทนขายชักนำให้ซื้อขายถี่ "
+                                    f"ควรตรวจสอบเพิ่มเติม"),
+                    "record_refs": refs})
+    return _finish(rid, FUND_FAMILY, "F-R5", "FUND.CHURN.MIN_CLIENT_SHARE", found, cfg, roles)
+
+
+# ---- FUND-LATE-TRADE (F-R6) ----
+def _cutoff_minutes(text) -> int:
+    m = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", str(text))
+    if not m or int(m[1]) > 23 or int(m[2]) > 59:
+        raise AidaError(f"FUND.CUTOFF_TIME ต้องเป็นเวลารูปแบบ HH:MM (เช่น 15:30) แต่ได้ \"{text}\" — แก้ค่าในการตั้งค่าองค์กรแล้วรันใหม่")
+    return int(m[1]) * 60 + int(m[2])
+
+
+def _as_dt(s: pd.Series) -> pd.Series:
+    return s if pd.api.types.is_datetime64_any_dtype(s) else to_naive_ts(s)[0]
+
+
+def fund_late_trade(tables: dict, cfg: dict) -> pd.DataFrame:
+    rid, cut_text = "FUND-LATE-TRADE", cfg["FUND.CUTOFF_TIME"]
+    roles = ["record_id", "date", "due_date"]
+    empty = _finish(rid, FUND_FAMILY, "F-R6", "FUND.CUTOFF_TIME", [], cfg, roles)
+    cut = _cutoff_minutes(cut_text)
+    tx = tables["transactions"]
+    if "due_date" not in tx.columns or tx["due_date"].isna().all():
+        card_note(tables, rid, "1.0", f"ไม่มีวันที่ได้ราคา NAV (due_date) จึงตัดสินว่าได้ราคาวันเดียวกับวันที่ทำรายการหรือไม่ไม่ได้ — {REQ_NAV_DATE}")
+        return empty
+    ts, nav = _as_dt(tx["ts"]), _as_dt(tx["due_date"])
+    if not (ts.dropna() != ts.dropna().dt.normalize()).any():
+        card_note(tables, rid, "1.0", "คอลัมน์วันที่ของคำสั่งมีเฉพาะวัน ไม่มีเวลา (ชั่วโมง:นาที) จึงเทียบกับเวลาตัดรอบไม่ได้ และไม่รายงาน — "
+                                      + REQ_FUND_TIME)
+        return empty
+    t = tx.assign(_ts=ts, _nav=nav)
+    t = t[t["_ts"].notna() & t["_nav"].notna()]
+    t = t.assign(_m=t["_ts"].dt.hour * 60 + t["_ts"].dt.minute + (t["_ts"].dt.second > 0).astype(int))  # a second past the minute is later
+    hit = t[(t["_m"] > cut) & (t["_nav"].dt.normalize() == t["_ts"].dt.normalize())]
+    found = []
+    for _, r in hit.sort_values("_ts", kind="mergesort").iterrows():
+        oid = str(r["tx_id"]).strip()
+        holder = str(r["from_acct"]).strip() if "from_acct" in r.index and pd.notna(r["from_acct"]) else ""
+        found.append({
+            "entity_type": "order", "entity_id": oid, "period": f"{r['_ts']:%Y-%m}", "metric": "order_minute_of_day",
+            "value": int(r["_m"]), "threshold": cut,
+            "explanation": (f"คำสั่ง {oid}" + (f" ของผู้ถือหน่วย {holder}" if holder else "") + f" ทำรายการเมื่อ {r['_ts']:%Y-%m-%d %H:%M} "
+                            f"หลังเวลาตัดรอบ {int(cut) // 60:02d}:{int(cut) % 60:02d} (FUND.CUTOFF_TIME; {STD_NOTE}) แต่ได้ราคา NAV "
+                            f"ของวันเดียวกัน ({r['_nav']:%Y-%m-%d}) — สอดคล้องกับ pattern การทำรายการหลังเวลาตัดรอบ ควรตรวจสอบเพิ่มเติม"),
+            "record_refs": [oid]})
+    return _finish(rid, FUND_FAMILY, "F-R6", "FUND.CUTOFF_TIME", found, cfg, roles)
+
+
 def _spec(func, risk, family, requires, registry, types, optional=(), alt=(), codes=(), events=""):
     """`codes`: transaction-code meanings the check needs confirmed (require_codes); `events`: "required" when the
     check cannot run without the event table."""
@@ -2932,6 +3159,21 @@ CHECKS = {
                               events="required"),
     "LIFE-STAFF-CONC": _spec(life_staff_conc, "L-R6", "5.2 Concentration", ["record_id", "date", "category", "created_by"],
                              ["CONC.SINGLE_ENTITY_SHARE", "CONC.HHI", "CONC.TOPN"], ["L"], codes=["surrender"]),
+    # C2 checks, data type F (fund investor transactions)
+    "FUND-ROUNDTRIP": _spec(fund_roundtrip, "F-R1", FUND_FAMILY,
+                            ["record_id", "date", "entity", "contract", "category", "amount"],
+                            ["FUND.ROUNDTRIP.DAYS", "FUND.ROUNDTRIP.AMOUNT_BAND"], ["F"], codes=["buy", "sell"]),
+    "FUND-THIRD-PARTY": _spec(fund_third_party, "F-R2", FUND_FAMILY, ["record_id", "date", "entity", "counterparty"],
+                              [], ["F"]),
+    "FUND-SHARED-ACCT": _spec(fund_shared_acct, "F-R3", FUND_FAMILY, ["record_id", "date", "entity", "counterparty"],
+                              ["FUND.SHARED_ACCT.MIN_HOLDERS"], ["F"]),
+    "FUND-FREQUENT": _spec(fund_frequent, "F-R4", FUND_FAMILY, ["record_id", "date", "entity", "category"],
+                           ["FUND.FREQ.MIN_TX_MONTH"], ["F"], codes=list(FUND_MEANINGS)),  # any one of them (see _fund_codes)
+    "FUND-CHURN": _spec(fund_churn, "F-R5", FUND_FAMILY, ["record_id", "date", "entity", "category", "channel"],
+                        ["FUND.CHURN.MIN_CLIENT_SHARE", "FUND.CHURN.MIN_CLIENTS", "FUND.FREQ.MIN_TX_MONTH"], ["F"],
+                        codes=list(FUND_MEANINGS)),
+    "FUND-LATE-TRADE": _spec(fund_late_trade, "F-R6", FUND_FAMILY, ["record_id", "date", "entity", "due_date"],
+                             ["FUND.CUTOFF_TIME"], ["F"]),
 }
 
 
@@ -2957,7 +3199,8 @@ def plan_checks(tables: dict, cfg: dict = None) -> pd.DataFrame:
                        "วันที่เปลี่ยน และผู้รับผลประโยชน์) แล้วกำหนดบทบาท record_id, date, contract ให้ตารางนั้นใน Intake Review",
                        "ตารางประวัติการเปลี่ยนผู้รับผลประโยชน์")
             elif spec["codes"] and tables is not None:
-                r = _benchg_codes(tables)[0] if cid == "LIFE-BENCHG-CASH" else require_codes(tables, list(spec["codes"]))
+                r = (_benchg_codes(tables)[0] if cid == "LIFE-BENCHG-CASH" else _fund_codes(tables)[0] if cid in FUND_COUNT_CHECKS
+                     else require_codes(tables, list(spec["codes"])))
                 if r:
                     why = (r, "ความหมายรหัสประเภทรายการ")
             rows.append((cid, "Skip", why[0], why[1]) if why else (cid, "Run", "มีบทบาทคอลัมน์ที่ต้องใช้ครบ", "-"))
@@ -2970,11 +3213,12 @@ def plan_checks(tables: dict, cfg: dict = None) -> pd.DataFrame:
 # "risk_alt" names the risk.
 # a joined master table (opened_at) must match >= cfg["INTAKE.JOIN_MIN_PCT"] (AIDA-14, 90%) of the transaction keys
 JOIN_ROLES = ("opened_at",)  # roles that normally live in a secondary table joined by the entity id
-NEEDS_TIME_CHECKS = {"TEMP-OFFHOURS"}  # checks that read the time of day, not only the date
+NEEDS_TIME_CHECKS = {"TEMP-OFFHOURS", "FUND-LATE-TRADE"}  # checks that read the time of day, not only the date
 TYPE_TEXT = {"E": "รายการโอนเงินระหว่างบัญชี", "C": "รับชำระค่างวดสินเชื่อ", "A": "จ่ายเงินเจ้าหนี้",
              "L": "รายการกรมธรรม์ประกันชีวิต", "F": "ธุรกรรมกองทุนรวมของผู้ถือหน่วย"}
 REQ_TRANSFERS = ("รายการเงินฝากและโอนเงินของบัญชีผู้ชำระ (รหัสรายการ, วันเวลา, บัญชีต้นทาง, บัญชีปลายทาง, ยอดเงิน) "
                  "เพื่อดูการรับโอนและส่งต่อเงิน")
+TIME_PARTIAL_RISKS = {"F-R6"}  # risks whose only check needs the time of day: no time gives บางส่วน (🟡) + Data Request
 REQ_TIME = "วันที่ของรายการที่มีเวลา (ชั่วโมง:นาที) เพื่อดูรายการนอกเวลาทำการ"
 _B1 = ["record_id", "date", "amount", "entity", "counterparty"]
 _GENR = ["record_id", "date", "amount", "entity"]
@@ -3110,6 +3354,48 @@ RISK_LIBRARY = {
                   ["L"], ["LIFE-STAFF-CONC"], ["record_id", "date", "category", "created_by"], 1, 30,
                   {"created_by": "ตัวแทนหรือพนักงานผู้ทำรายการ (created_by) ของแต่ละรายการ",
                    "category": "ประเภทรายการ (เวนคืน/กู้/เคลม) ของแต่ละรายการ"}),
+    # C2: data type F (fund investor transactions)
+    "F-R1": _risk("ซื้อแล้วขายคืนเร็ว",
+                  "ผู้ถือหน่วยซื้อกองทุนแล้วขายคืนกองทุนเดิมภายใน FUND.ROUNDTRIP.DAYS วัน ด้วยยอดขายใกล้เคียงยอดซื้อ (ตาม FUND.ROUNDTRIP.AMOUNT_BAND) "
+                  "การสับเปลี่ยนไม่นับเป็นการซื้อหรือขาย สอดคล้องกับ pattern ที่ควรทบทวน",
+                  ["ซื้อแล้วขายคืนเร็ว", "ซื้อแล้วขายเร็ว", "ซื้อแล้วขายคืน", "ขายคืนเร็ว", "ซื้อขายกลับ",
+                   "quick round trip", "round trip", "round-trip", "buy then sell quickly", "buy and redeem quickly"],
+                  ["F"], ["FUND-ROUNDTRIP"], ["record_id", "date", "entity", "contract", "category", "amount"], 1, 30,
+                  {"category": "ประเภทรายการ (ซื้อ/ขาย/สับเปลี่ยน) ของแต่ละคำสั่ง", "contract": "รหัสกองทุนของแต่ละคำสั่ง"}),
+    "F-R2": _risk("ผู้ชำระหรือผู้รับเงินเป็นบุคคลที่สาม",
+                  "เจ้าของบัญชีที่ชำระหรือรับเงินไม่ใช่ผู้ถือหน่วย (เทียบเมื่อรหัสอยู่ในรูปแบบเดียวกับรหัสผู้ถือหน่วย) "
+                  "ถ้ารูปแบบเทียบกันไม่ได้การ์ดจะข้ามพร้อมเหตุผล",
+                  ["ผู้ชำระเป็นบุคคลที่สาม", "ผู้รับเงินเป็นบุคคลที่สาม", "บุคคลที่สามชำระ", "บุคคลที่สามรับเงิน", "บัญชีของบุคคลอื่น",
+                   "third-party payer", "third party payer", "third-party redemption", "third party redemption",
+                   "payer is a third party"],
+                  ["F"], ["FUND-THIRD-PARTY"], ["record_id", "date", "entity", "counterparty"], 1, 30,
+                  {"counterparty": "เจ้าของบัญชีที่ชำระหรือรับเงินของแต่ละคำสั่ง (ใช้รหัสผู้ถือหน่วยรูปแบบเดียวกับผู้ถือหน่วย)"}),
+    "F-R3": _risk("บัญชีรับเงินเดียวใช้กับผู้ถือหน่วยหลายราย",
+                  "บัญชีชำระหรือรับเงินเดียวถูกใช้โดยผู้ถือหน่วยต่างกันตั้งแต่ FUND.SHARED_ACCT.MIN_HOLDERS ราย",
+                  ["บัญชีเดียวหลายผู้ถือหน่วย", "บัญชีรับเงินเดียว", "บัญชีร่วมหลายผู้ถือหน่วย", "บัญชีเดียวใช้กับหลายราย",
+                   "shared bank account", "one account many unitholders", "shared account"],
+                  ["F"], ["FUND-SHARED-ACCT"], ["record_id", "date", "entity", "counterparty"], 1, 30,
+                  {"counterparty": "บัญชีที่ชำระหรือรับเงินของแต่ละคำสั่ง"}),
+    "F-R4": _risk("ซื้อขายหรือสับเปลี่ยนถี่",
+                  "ผู้ถือหน่วยทำรายการซื้อ ขาย หรือสับเปลี่ยนตั้งแต่ FUND.FREQ.MIN_TX_MONTH รายการต่อเดือน",
+                  ["ซื้อขายถี่", "สับเปลี่ยนถี่", "ซื้อขายหรือสับเปลี่ยนถี่", "ทำรายการถี่", "frequent trading", "frequent switching",
+                   "excessive trading", "frequent switch"],
+                  ["F"], ["FUND-FREQUENT"], ["record_id", "date", "entity", "category"], 1, 30,
+                  {"category": "ประเภทรายการ (ซื้อ/ขาย/สับเปลี่ยน) ของแต่ละคำสั่ง"}),
+    "F-R5": _risk("ตัวแทนขายชักนำให้ซื้อขายถี่",
+                  "ตัวแทนขายที่ผู้ถือหน่วยในความดูแลซื้อขายถี่ตั้งแต่ FUND.CHURN.MIN_CLIENT_SHARE ของผู้ถือหน่วยทั้งหมด "
+                  "และอย่างน้อย FUND.CHURN.MIN_CLIENTS ราย",
+                  ["ตัวแทนขายชักนำ", "ตัวแทนชักนำให้ซื้อขายถี่", "ตัวแทนขายกองทุนชักนำ", "ชักนำให้ซื้อขายถี่",
+                   "agent churning", "churning", "agent induces frequent trading", "agent-driven churn"],
+                  ["F"], ["FUND-CHURN"], ["record_id", "date", "entity", "category", "channel"], 1, 30,
+                  {"channel": "ตัวแทนขายของแต่ละคำสั่ง", "category": "ประเภทรายการ (ซื้อ/ขาย/สับเปลี่ยน) ของแต่ละคำสั่ง"}),
+    "F-R6": _risk("ทำรายการหลังเวลาตัดรอบ",
+                  "คำสั่งที่ทำหลังเวลาตัดรอบ (FUND.CUTOFF_TIME) แต่ได้ราคา NAV ของวันเดียวกัน — ต้องมีเวลาของคำสั่ง (ชั่วโมง:นาที) "
+                  "และวันที่ได้ราคา NAV; ถ้าข้อมูลมีเฉพาะวันที่จะได้สถานะบางส่วนพร้อมคำขอข้อมูล",
+                  ["ทำรายการหลังเวลาตัดรอบ", "หลังเวลาตัดรอบ", "เลยเวลาตัดรอบ", "หลังตัดรอบ", "after cut-off", "after cutoff",
+                   "late trading", "late trade", "after the cut-off time"],
+                  ["F"], ["FUND-LATE-TRADE"], ["record_id", "date", "entity", "due_date"], 1, 30,
+                  {"due_date": REQ_NAV_DATE, "_time": REQ_FUND_TIME}),
 }
 
 
@@ -3306,7 +3592,11 @@ def _assess_one(rid: str, ctx: dict) -> dict:
         reasons.append(f"ขาดบทบาทคอลัมน์ {_missing_text(miss_roles)}")
         for r in miss_roles:
             ask(lib["request_if_missing"].get(r) or f"คอลัมน์{ROLE_TEXT.get(r, r)} (บทบาท {r}) ของรายการ")
-    if not run or miss_roles or short:
+    time_only = bool(kinds) and all(k == "time" for k, _ in kinds) and rid in TIME_PARTIAL_RISKS
+    if time_only and not run and not miss_roles and not short:
+        status = "บางส่วน"  # only the time of day is missing: spec 5.2 gives 🟡 plus a Data Request, not ไม่พอ
+        reasons.append("ข้อมูลมีเฉพาะวันที่ ไม่มีเวลาของคำสั่ง จึงยังตัดสินรายการหลังเวลาตัดรอบไม่ได้ — ขอข้อมูลที่มีเวลาของคำสั่ง")
+    elif not run or miss_roles or short:
         status = "ไม่พอ"
     elif skipped:
         status = "บางส่วน"
@@ -3330,7 +3620,7 @@ def _assess_one(rid: str, ctx: dict) -> dict:
                            f"(ต่ำกว่า {ctx['join_min']:.0f}% ตาม INTAKE.JOIN_MIN_PCT) ผลที่ใช้ {role} จึงอาจไม่ครบ — ตรวจรูปแบบรหัสบัญชีของสองตาราง")
             if status == "พร้อม":
                 status = "บางส่วน"
-    if status == "บางส่วน" and skipped:
+    if status == "บางส่วน" and skipped and not time_only:
         reasons.append(f"รันได้ {len(run)} จาก {len(lib['checks'])} การ์ด")
     if status == "ไม่พอ" and not reasons:
         reasons.append("ไม่มีการ์ดใดรันได้กับข้อมูลนี้: " + "; ".join(skipped.values()))
@@ -4472,6 +4762,13 @@ def _finding_view(ev: pd.DataFrame, tx: pd.DataFrame, dtype) -> pd.DataFrame:
             refs = set(ref_list(v.at[i, "record_refs"]))
             if hit and refs and refs <= hit[1]:  # only the same records: other repeats keep their own Finding
                 v.at[i, "risk"] = hit[0]
+    holder_of = dict(zip(tx["tx_id"].astype(str), tx["from_acct"])) if "from_acct" in tx.columns else {}
+    for i in v.index[(v["recipe_id"] == "FUND-LATE-TRADE") & (v["entity_type"] == "order")]:
+        # F-R6 Evidence is keyed by the order; the Finding is the unitholder who placed it (one Finding per holder and month)
+        who = {str(holder_of.get(r)).strip() for r in ref_list(v.at[i, "record_refs"])
+               if holder_of.get(r) is not None and not pd.isna(holder_of.get(r)) and str(holder_of.get(r)).strip()}
+        if len(who) == 1:
+            v.at[i, "entity_type"], v.at[i, "entity_id"] = "entity", who.pop()
     lab = ENTITY_LABELS.get(dtype, {})
     v["entity_type"] = v["entity_type"].map(lambda x: lab.get(x, x))
     return v

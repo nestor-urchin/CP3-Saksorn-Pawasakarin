@@ -14,7 +14,7 @@ import sample_common as sc  # noqa: E402
 
 ROOT = HERE.parent
 REGISTRY = ROOT / "knowledge" / "AIDA-14-configuration-registry.md"
-ALL_IDS = ["R1", "R2", "R3", "R4", "G-R1", "G-R2", "G-R3", "G-R4", "C-R1", "C-R2", "C-R3", "L-R1", "L-R2", "L-R3", "L-R4", "L-R5", "L-R6",
+ALL_IDS = ["R1", "R2", "R3", "R4", "G-R1", "G-R2", "G-R3", "G-R4", "C-R1", "C-R2", "C-R3", "L-R1", "L-R2", "L-R3", "L-R4", "L-R5", "L-R6", "F-R1", "F-R2", "F-R3", "F-R4", "F-R5", "F-R6",
            "A-R1", "A-R2", "A-R3", "A-R4"]
 TABLES = {"C": ("payments", "contracts"), "A": ("payments",), "E": ("transactions", "accounts")}
 _CACHE = {}
